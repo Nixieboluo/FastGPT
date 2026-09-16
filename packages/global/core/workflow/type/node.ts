@@ -363,6 +363,7 @@ export const StoreNodeItemTypeSchema = FlowNodeCommonTypeSchema.extend({
       x: NumSchema,
       y: NumSchema
     })
-    .optional()
+    .optional(),
+  isFolded: BoolSchema.optional()
 });
 export type StoreNodeItemType = z.infer<typeof StoreNodeItemTypeSchema>;

@@ -2,99 +2,18 @@ import type { FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import type { Edge, Node } from 'reactflow';
 import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import { NodeInputKeyEnum, NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
-import { nodeInputIsReference } from '@fastgpt/global/core/workflow/utils';
+import {
+  applyWorkflowStartInputAutoFill,
+  getWorkflowStartAutoFillValue,
+  isWorkflowStartAutoFilledValue
+} from '@fastgpt/global/core/workflow/editor/startAutoFill';
 import type {
   FlowNodeInputItemType,
-  FlowNodeOutputItemType,
-  ReferenceItemValueType,
-  ReferenceValueType
+  FlowNodeOutputItemType
 } from '@fastgpt/global/core/workflow/type/io';
 import { isEqual } from 'lodash-es';
 
-/** 引用输入是否尚未选择（空占位 / 未选变量），区别于曾经选中但已失效的引用。 */
-const isUnsetReferenceValue = (value: unknown) => {
-  if (value === undefined || value === null || value === '') return true;
-  if (!Array.isArray(value)) return true;
-  if (value.length === 0) return true;
-
-  // 单引用 [nodeId, outputId]；占位符 ['', ''] 或格式不完整均视为未选择
-  if (value.length === 2 && !Array.isArray(value[0])) {
-    const [refNodeId, refOutputId] = value;
-    if (typeof refNodeId !== 'string') return true;
-    return !refNodeId || !refOutputId;
-  }
-
-  return false;
-};
-
-/** 根据流程开始节点输出，计算目标 input 的默认引用值；无匹配规则时返回 undefined。 */
-const getWorkflowStartAutoFillValue = ({
-  inputKey,
-  workflowStartNodeId,
-  hasUserFilesOutput
-}: {
-  inputKey: string;
-  workflowStartNodeId: string;
-  hasUserFilesOutput: boolean;
-}): ReferenceValueType | undefined => {
-  if (inputKey === NodeInputKeyEnum.userChatInput) {
-    return [workflowStartNodeId, NodeOutputKeyEnum.userChatInput];
-  }
-
-  if (inputKey === NodeInputKeyEnum.datasetSearchInput) {
-    const refs: ReferenceItemValueType[] = [[workflowStartNodeId, NodeOutputKeyEnum.userChatInput]];
-    if (hasUserFilesOutput) {
-      refs.push([workflowStartNodeId, NodeOutputKeyEnum.userFiles]);
-    }
-    return refs;
-  }
-
-  if (inputKey === NodeInputKeyEnum.fileUrlList) {
-    if (!hasUserFilesOutput) return undefined;
-    return [[workflowStartNodeId, NodeOutputKeyEnum.userFiles]];
-  }
-
-  return undefined;
-};
-
-/**
- * 为空白引用输入自动填充「流程开始」上游输出引用。
- * 仅处理引用类输入且 value 尚未配置的场景，不覆盖已有合法手动引用。
- */
-export const applyWorkflowStartInputAutoFill = ({
-  inputs,
-  workflowStartNodeId,
-  workflowStartOutputs
-}: {
-  inputs: FlowNodeInputItemType[];
-  workflowStartNodeId: string;
-  workflowStartOutputs: FlowNodeOutputItemType[];
-}): FlowNodeInputItemType[] => {
-  const hasUserFilesOutput = workflowStartOutputs.some(
-    (output) => output.id === NodeOutputKeyEnum.userFiles
-  );
-
-  return inputs.map((input) => {
-    if (!nodeInputIsReference(input) || !isUnsetReferenceValue(input.value)) {
-      return input;
-    }
-
-    const autoFillValue = getWorkflowStartAutoFillValue({
-      inputKey: input.key,
-      workflowStartNodeId,
-      hasUserFilesOutput
-    });
-
-    if (autoFillValue === undefined) {
-      return input;
-    }
-
-    return {
-      ...input,
-      value: autoFillValue
-    };
-  });
-};
+export { applyWorkflowStartInputAutoFill };
 
 type WorkflowStartAutoFillPatch = {
   nodeId: string;
@@ -171,27 +90,6 @@ export const collectWorkflowStartInputAutoFillPatches = ({
   });
 
   return patches;
-};
-
-/** 判断 input.value 是否为流程开始自动填充产生的引用，用于断线回滚时避免误清手动配置。 */
-const isWorkflowStartAutoFilledValue = ({
-  inputKey,
-  value,
-  workflowStartNodeId,
-  hasUserFilesOutput
-}: {
-  inputKey: string;
-  value: unknown;
-  workflowStartNodeId: string;
-  hasUserFilesOutput: boolean;
-}) => {
-  const autoFillValue = getWorkflowStartAutoFillValue({
-    inputKey,
-    workflowStartNodeId,
-    hasUserFilesOutput
-  });
-  if (autoFillValue === undefined) return false;
-  return isEqual(value, autoFillValue);
 };
 
 /**

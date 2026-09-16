@@ -338,7 +338,7 @@ describe('checkWorkflowNodeIssues', () => {
     expect(result.orphan.map((issue) => issue.code)).toContain('no_upstream');
   });
 
-  it('does not report unselectable references', () => {
+  it('reports unselectable references as workflow issues', () => {
     const node = makeNode('ref', FlowNodeTypeEnum.answerNode, {
       inputs: [
         {
@@ -356,7 +356,7 @@ describe('checkWorkflowNodeIssues', () => {
       edges: [{ id: 'e1', source: 'start', target: 'ref', type: EDGE_TYPE }]
     });
 
-    expect(result.ref?.map((issue) => issue.code) ?? []).not.toContain('invalid_reference');
+    expect(result.ref?.map((issue) => issue.code) ?? []).toContain('invalid_reference');
   });
 
   it('filters unselectable single and multiple references when storing workflow data', () => {
@@ -978,7 +978,7 @@ describe('checkWorkflowNodeIssues', () => {
     });
   });
 
-  it('does not return invalid reference message for unselectable references', () => {
+  it('returns invalid reference message for unselectable references', () => {
     const node = makeNode('ref', FlowNodeTypeEnum.answerNode, {
       inputs: [
         {
@@ -996,7 +996,7 @@ describe('checkWorkflowNodeIssues', () => {
       edges: [{ id: 'e1', source: 'start', target: 'ref', type: EDGE_TYPE }]
     });
 
-    expect(result.ref?.map((issue) => issue.code) ?? []).not.toContain('invalid_reference');
+    expect(result.ref?.map((issue) => issue.code) ?? []).toContain('invalid_reference');
   });
 
   it('treats unset reference as required_input_empty instead of invalid_reference', () => {
@@ -1591,7 +1591,7 @@ describe('checkWorkflowNodeIssues', () => {
         result[nodeId]?.filter((issue) => issue.inputKey === inputKey).map((issue) => issue.code) ??
         [];
 
-    it('does not report imported tool call file link auto-fill when current workflow start has no userFiles output', () => {
+    it('reports imported tool call file link auto-fill when current workflow start has no userFiles output', () => {
       const importedToolCall = makeImportedConnectedNode({
         nodeId: 'tool-call',
         template: ToolCallNode,
@@ -1620,7 +1620,7 @@ describe('checkWorkflowNodeIssues', () => {
       expect(getInput(importedToolCall, NodeInputKeyEnum.fileUrlList).value).toEqual([
         ['start', NodeOutputKeyEnum.userFiles]
       ]);
-      expect(getIssueCodes('tool-call', NodeInputKeyEnum.fileUrlList)(result)).not.toContain(
+      expect(getIssueCodes('tool-call', NodeInputKeyEnum.fileUrlList)(result)).toContain(
         'invalid_reference'
       );
     });
@@ -1629,7 +1629,7 @@ describe('checkWorkflowNodeIssues', () => {
       ['AI 对话', AiChatModule, 'ai-chat', NodeInputKeyEnum.fileUrlList],
       ['知识库搜索', DatasetSearchModule, 'dataset-search', NodeInputKeyEnum.datasetSearchInput]
     ] as const)(
-      'does not report imported %s stale file auto-fill as invalid reference',
+      'reports imported %s stale file auto-fill as invalid reference',
       (_nodeName, template, nodeId, inputKey) => {
         const importedNode = makeImportedConnectedNode({
           nodeId,
@@ -1660,7 +1660,7 @@ describe('checkWorkflowNodeIssues', () => {
           ]);
         }
 
-        expect(getIssueCodes(nodeId, inputKey)(result)).not.toContain('invalid_reference');
+        expect(getIssueCodes(nodeId, inputKey)(result)).toContain('invalid_reference');
       }
     );
 
@@ -1741,7 +1741,7 @@ describe('checkWorkflowNodeIssues', () => {
       );
     });
 
-    it('does not report truly invalid manual references', () => {
+    it('reports truly invalid manual references', () => {
       const invalidToolCall = makeImportedConnectedNode({
         nodeId: 'invalid-tool-call',
         template: ToolCallNode,
@@ -1757,12 +1757,12 @@ describe('checkWorkflowNodeIssues', () => {
         ]
       });
 
-      expect(
-        getIssueCodes('invalid-tool-call', NodeInputKeyEnum.userChatInput)(result)
-      ).not.toContain('invalid_reference');
+      expect(getIssueCodes('invalid-tool-call', NodeInputKeyEnum.userChatInput)(result)).toContain(
+        'invalid_reference'
+      );
     });
 
-    it('does not report invalid references mixed into an imported file input', () => {
+    it('reports invalid references mixed into an imported file input', () => {
       const invalidToolCall = makeImportedConnectedNode({
         nodeId: 'mixed-invalid-tool-call',
         template: ToolCallNode,
@@ -1789,11 +1789,11 @@ describe('checkWorkflowNodeIssues', () => {
 
       expect(
         getIssueCodes('mixed-invalid-tool-call', NodeInputKeyEnum.fileUrlList)(result)
-      ).not.toContain('invalid_reference');
+      ).toContain('invalid_reference');
     });
   });
 
-  it('does not report invalid_reference when referenced upstream node or output was deleted', () => {
+  it('reports invalid_reference when referenced upstream node or output was deleted', () => {
     const nodeWithDeletedNodeRef = makeNode('deleted-node', FlowNodeTypeEnum.chatNode, {
       inputs: [
         {
@@ -1829,13 +1829,11 @@ describe('checkWorkflowNodeIssues', () => {
       ]
     });
 
-    expect(result['deleted-node']?.map((issue) => issue.code) ?? []).not.toContain(
-      'invalid_reference'
-    );
+    expect(result['deleted-node']?.map((issue) => issue.code) ?? []).toContain('invalid_reference');
     expect(result['deleted-node']?.map((issue) => issue.code) ?? []).not.toContain(
       'required_input_empty'
     );
-    expect(result['deleted-output']?.map((issue) => issue.code) ?? []).not.toContain(
+    expect(result['deleted-output']?.map((issue) => issue.code) ?? []).toContain(
       'invalid_reference'
     );
     expect(result['deleted-output']?.map((issue) => issue.code) ?? []).not.toContain(
@@ -2087,6 +2085,18 @@ describe('workflow check helpers', () => {
     expect(getWorkflowCheckErrorNodeIds(issueMap, ['nodeA', 'nodeB', 'nodeC'])).toEqual([
       'nodeA',
       'nodeB'
+    ]);
+  });
+
+  it('keeps reference errors in workflow results', () => {
+    const issueMap = {
+      referenceNode: [{ level: 'error', code: 'invalid_reference' } as any],
+      configNode: [{ level: 'error', code: 'required_input_empty' } as any]
+    };
+
+    expect(getWorkflowCheckErrorNodeIds(issueMap, ['referenceNode', 'configNode'])).toEqual([
+      'referenceNode',
+      'configNode'
     ]);
   });
 
