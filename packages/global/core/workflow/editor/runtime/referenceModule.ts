@@ -28,7 +28,8 @@ import {
   getFieldIdentityKey,
   getInputReferences,
   isEmptyValue,
-  parseFieldIdentityKey
+  parseFieldIdentityKey,
+  valuesEqual
 } from './kernel';
 import type {
   DocumentReadApi,
@@ -271,7 +272,7 @@ const getReferenceSource = ({
 };
 
 /** 把来源节点的下游消费字段并入 affected records；graph 可以是 committed 或 staged 版本。 */
-export const addAffectedConsumerFields = ({
+const addAffectedConsumerFields = ({
   meta,
   graph,
   sourceNodeIds,
@@ -307,6 +308,97 @@ export const createReferenceModule = (document: DocumentReadApi) => {
   };
   const rebuildGraph = () => {
     referenceGraph = buildReferenceGraph(document.getDocument().nodes);
+  };
+
+  /**
+   * 提交本笔事务的 staged Reference Graph，并把领域依赖闭包写回 meta 的 affected records。
+   * 调用顺序即事件语义：先按 changed 节点传播，再按引用来源元数据变化传播，最后处理全局变量。
+   * 返回值是只用于缓存失效的额外字段身份，它们不进入 affected records。
+   */
+  const commitTransaction = ({
+    meta,
+    stagedGraph,
+    beforeGraph
+  }: {
+    meta: MutationMeta;
+    stagedGraph: ReferenceGraph;
+    beforeGraph: ReferenceGraph;
+  }): Map<string, WorkflowFieldIdentity> => {
+    commitStagedGraph(stagedGraph);
+    const committedGraph = referenceGraph;
+    const cacheOnlyFieldIds = new Map<string, WorkflowFieldIdentity>();
+    addAffectedConsumerFields({ meta, graph: beforeGraph, sourceNodeIds: meta.changedNodeIds });
+    addAffectedConsumerFields({ meta, graph: committedGraph, sourceNodeIds: meta.changedNodeIds });
+
+    const changedSourceNodeIds = new Set<string>();
+    meta.nodeChanges.forEach(({ before: previous, after: next }, nodeId) => {
+      if (!previous || !next) {
+        changedSourceNodeIds.add(nodeId);
+        return;
+      }
+      // HTTP 节点的参数配置同样决定其对外引用来源，所以要额外比较 inputs。
+      const sourceMetadataChanged =
+        previous.data.name !== next.data.name ||
+        previous.data.avatar !== next.data.avatar ||
+        previous.data.flowNodeType !== next.data.flowNodeType ||
+        previous.data.catchError !== next.data.catchError ||
+        !valuesEqual(previous.data.outputs, next.data.outputs) ||
+        (previous.data.flowNodeType === FlowNodeTypeEnum.httpRequest468 &&
+          !valuesEqual(previous.data.inputs, next.data.inputs));
+      if (sourceMetadataChanged) changedSourceNodeIds.add(nodeId);
+    });
+    [...meta.addedEdges.values(), ...meta.removedEdges.values()].forEach((edge) => {
+      if (edge.data.targetHandle === NodeOutputKeyEnum.selectedTools) {
+        changedSourceNodeIds.add(edge.data.target);
+      }
+    });
+    addAffectedConsumerFields({
+      meta,
+      graph: beforeGraph,
+      sourceNodeIds: changedSourceNodeIds,
+      fieldIds: cacheOnlyFieldIds
+    });
+    addAffectedConsumerFields({
+      meta,
+      graph: committedGraph,
+      sourceNodeIds: changedSourceNodeIds,
+      fieldIds: cacheOnlyFieldIds
+    });
+
+    if (meta.chatConfigChanged) {
+      const variableSources = new Set([VARIABLE_NODE_ID]);
+      addAffectedConsumerFields({ meta, graph: beforeGraph, sourceNodeIds: variableSources });
+      addAffectedConsumerFields({ meta, graph: committedGraph, sourceNodeIds: variableSources });
+      addAffectedConsumerFields({
+        meta,
+        graph: beforeGraph,
+        sourceNodeIds: variableSources,
+        fieldIds: cacheOnlyFieldIds
+      });
+      addAffectedConsumerFields({
+        meta,
+        graph: committedGraph,
+        sourceNodeIds: variableSources,
+        fieldIds: cacheOnlyFieldIds
+      });
+    }
+    return cacheOnlyFieldIds;
+  };
+
+  /**
+   * 结构变化后需要额外丢弃引用状态缓存的 affected input 字段。
+   * 只有真正持有引用的 input 才可能因为结构变化改变状态，其余字段无需失效。
+   */
+  const getStructureInvalidationFields = (meta: MutationMeta): WorkflowFieldIdentity[] => {
+    if (!meta.structureChanged) return [];
+    return [...meta.affectedFieldIds.values()].filter((field) => {
+      if (field.kind !== 'input') return false;
+      const input = document
+        .getNodeIndex()
+        .get(field.nodeId)
+        ?.record.data.inputs.find((item) => item.key === field.key);
+      return input ? getInputReferences(input).length > 0 : false;
+    });
   };
 
   /** 从目标节点反向遍历所有上游节点，visited 保证循环图有限终止。 */
@@ -534,8 +626,9 @@ export const createReferenceModule = (document: DocumentReadApi) => {
   return {
     getGraph,
     forkGraph,
-    commitStagedGraph,
     rebuildGraph,
+    commitTransaction,
+    getStructureInvalidationFields,
     getFieldStatuses,
     getReferenceOptions,
     invalidateFieldStatuses,

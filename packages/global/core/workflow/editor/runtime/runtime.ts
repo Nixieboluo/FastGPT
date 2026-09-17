@@ -1,5 +1,3 @@
-import { NodeOutputKeyEnum, VARIABLE_NODE_ID } from '../../constants';
-import { FlowNodeTypeEnum } from '../../node/constant';
 import type { CanonicalWorkflowData } from '../../migration/schema';
 import type { FlowNodeInputItemType, FlowNodeOutputItemType } from '../../type/io';
 import type { WorkflowCheckIssue } from '../../type/node';
@@ -26,16 +24,15 @@ import {
   freezeValue,
   getError,
   getFieldIdentityKey,
-  getInputReferences,
-  isObject,
-  valuesEqual
+  isObject
 } from './kernel';
 import { createDocumentModule, documentToCanonical } from './documentModule';
 import { createNodeViewModule } from './nodeViewModule';
-import { addAffectedConsumerFields, createReferenceModule } from './referenceModule';
+import { createReferenceModule } from './referenceModule';
 import { createIssueModule } from './issueModule';
 import {
   createHistoryModule,
+  createGeometryHistoryEntry,
   createHistoryEntry,
   materializeHistoryDocument
 } from './historyModule';
@@ -296,16 +293,9 @@ export const createWorkflowEditor = (
     workflowVersion++;
 
     const change = makeChange(meta, 'command');
-    history.push({
-      kind: 'delta',
-      beforeNodeCount: before.nodes.length,
-      afterNodeCount: after.nodes.length,
-      nodeChanges: staged.nodeChanges,
-      beforeEdgeCount: before.edges.length,
-      afterEdgeCount: after.edges.length,
-      edgeChanges: [],
-      change
-    });
+    history.push(
+      createGeometryHistoryEntry({ before, after, nodeChanges: staged.nodeChanges, change })
+    );
     publish(change);
     return { ok: true, change };
   };
@@ -367,20 +357,10 @@ export const createWorkflowEditor = (
       return { ok: true };
     }
 
-    meta.structureChanged =
-      meta.changedEdgeIds.size > 0 ||
-      [...meta.nodeChanges.values()].some(
-        ({ before: previous, after: next }) =>
-          !previous ||
-          !next ||
-          previous.data.parentNodeId !== next.data.parentNodeId ||
-          previous.data.flowNodeType !== next.data.flowNodeType ||
-          !valuesEqual(previous.data.outputs, next.data.outputs)
-      );
+    meta.structureChanged = document.resolveStructureChanged(meta);
     document.setDocument(working);
     workflowVersion++;
     if (meta.kind !== 'geometry') semanticVersion++;
-    const previousIssues = issue.getIssuesByNode();
     if (meta.kind === 'replace') {
       document.rebuildNodeIndex();
       document.rebuildGraphIndex();
@@ -393,94 +373,21 @@ export const createWorkflowEditor = (
       document.updateNodeIndexIncrementally(meta);
       document.updateGraphIndexIncrementally(meta);
       document.updateWorkflowStartIndex(meta);
-      reference.commitStagedGraph(workingReferenceGraph);
-      const committedGraph = reference.getGraph();
-      const issueNodeIds = new Set(meta.affectedNodeIds);
-      meta.changedNodeIds.forEach((nodeId) => issueNodeIds.add(nodeId));
-      const referenceFieldIds = new Map<string, WorkflowFieldIdentity>();
-      addAffectedConsumerFields({
+      // 单次派生按 Document -> Reference -> Issue 顺序执行；issue 候选集合必须在引用派生
+      // 之前收集，才能保证 affected records 的排列与派生顺序一致。
+      const issueNodeIds = issue.collectTransactionNodeIds(meta);
+      const cacheOnlyFieldIds = reference.commitTransaction({
         meta,
-        graph: beforeReferenceGraph,
-        sourceNodeIds: meta.changedNodeIds
+        stagedGraph: workingReferenceGraph,
+        beforeGraph: beforeReferenceGraph
       });
-      addAffectedConsumerFields({
-        meta,
-        graph: committedGraph,
-        sourceNodeIds: meta.changedNodeIds
-      });
-      const changedReferenceSourceNodeIds = new Set<string>();
-      meta.nodeChanges.forEach(({ before: previous, after: next }, nodeId) => {
-        if (!previous || !next) {
-          changedReferenceSourceNodeIds.add(nodeId);
-          return;
-        }
-        const sourceMetadataChanged =
-          previous.data.name !== next.data.name ||
-          previous.data.avatar !== next.data.avatar ||
-          previous.data.flowNodeType !== next.data.flowNodeType ||
-          previous.data.catchError !== next.data.catchError ||
-          !valuesEqual(previous.data.outputs, next.data.outputs) ||
-          (previous.data.flowNodeType === FlowNodeTypeEnum.httpRequest468 &&
-            !valuesEqual(previous.data.inputs, next.data.inputs));
-        if (sourceMetadataChanged) changedReferenceSourceNodeIds.add(nodeId);
-      });
-      [...meta.addedEdges.values(), ...meta.removedEdges.values()].forEach((edge) => {
-        if (edge.data.targetHandle === NodeOutputKeyEnum.selectedTools) {
-          changedReferenceSourceNodeIds.add(edge.data.target);
-        }
-      });
-      addAffectedConsumerFields({
-        meta,
-        graph: beforeReferenceGraph,
-        sourceNodeIds: changedReferenceSourceNodeIds,
-        fieldIds: referenceFieldIds
-      });
-      addAffectedConsumerFields({
-        meta,
-        graph: committedGraph,
-        sourceNodeIds: changedReferenceSourceNodeIds,
-        fieldIds: referenceFieldIds
-      });
-      if (meta.chatConfigChanged) {
-        const variableSources = new Set([VARIABLE_NODE_ID]);
-        addAffectedConsumerFields({
-          meta,
-          graph: beforeReferenceGraph,
-          sourceNodeIds: variableSources
-        });
-        addAffectedConsumerFields({ meta, graph: committedGraph, sourceNodeIds: variableSources });
-        addAffectedConsumerFields({
-          meta,
-          graph: beforeReferenceGraph,
-          sourceNodeIds: variableSources,
-          fieldIds: referenceFieldIds
-        });
-        addAffectedConsumerFields({
-          meta,
-          graph: committedGraph,
-          sourceNodeIds: variableSources,
-          fieldIds: referenceFieldIds
-        });
-      }
       document.addAffectedStructure(meta);
-      meta.affectedNodeIds.forEach((nodeId) => issueNodeIds.add(nodeId));
-      if (meta.structureChanged) issue.updateReachableNodeIds(meta.affectedNodeIds);
       invalidateFieldCaches([
         ...meta.changedFieldIds.values(),
-        ...referenceFieldIds.values(),
-        ...(meta.structureChanged
-          ? [...meta.affectedFieldIds.values()].filter((field) => {
-              if (field.kind !== 'input') return false;
-              const input = document
-                .getNodeIndex()
-                .get(field.nodeId)
-                ?.record.data.inputs.find((item) => item.key === field.key);
-              return input ? getInputReferences(input).length > 0 : false;
-            })
-          : [])
+        ...cacheOnlyFieldIds.values(),
+        ...reference.getStructureInvalidationFields(meta)
       ]);
-      issue.rebuildIssues(issueNodeIds);
-      issue.addChangedIssueRecords(meta, previousIssues, issueNodeIds);
+      issue.rebuildForTransaction({ meta, candidateNodeIds: issueNodeIds });
     }
     const change = makeChange(meta, 'command');
     history.push(createHistoryEntry({ before, after: document.getDocument(), change }));

@@ -1,6 +1,6 @@
 import type { HistorySnapshot, WorkflowChange } from '../types';
 import { freezeValue } from './kernel';
-import type { HistoryEntry, RuntimeDocument } from './types';
+import type { HistoryEntry, NodeRecordChange, RuntimeDocument } from './types';
 
 /**
  * History module：拥有 past/future 记录、replay 物化与有界历史。
@@ -22,6 +22,28 @@ export const createHistoryEntry = ({
 }): HistoryEntry => {
   return { kind: 'checkpoint', before, after, change };
 };
+
+/** 纯 geometry 事务的 delta 记录：只保存节点记录变化，边与 chatConfig 未参与本笔事务。 */
+export const createGeometryHistoryEntry = ({
+  before,
+  after,
+  nodeChanges,
+  change
+}: {
+  before: RuntimeDocument;
+  after: RuntimeDocument;
+  nodeChanges: NodeRecordChange[];
+  change: WorkflowChange;
+}): HistoryEntry => ({
+  kind: 'delta',
+  beforeNodeCount: before.nodes.length,
+  afterNodeCount: after.nodes.length,
+  nodeChanges,
+  beforeEdgeCount: before.edges.length,
+  afterEdgeCount: after.edges.length,
+  edgeChanges: [],
+  change
+});
 
 /** 用 history delta 还原目标文档，保留未改记录的原始引用。 */
 export const materializeHistoryDocument = ({

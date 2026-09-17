@@ -631,6 +631,21 @@ export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
     });
   };
 
+  /**
+   * 判定本笔事务是否改变工作流结构：边集合变化，或节点记录增删、父子归属、
+   * 节点类型、outputs 发生变化。结构信号决定 affected 闭包与整图投影是否需要失效。
+   */
+  const resolveStructureChanged = (meta: MutationMeta): boolean =>
+    meta.changedEdgeIds.size > 0 ||
+    [...meta.nodeChanges.values()].some(
+      ({ before, after }) =>
+        !before ||
+        !after ||
+        before.data.parentNodeId !== after.data.parentNodeId ||
+        before.data.flowNodeType !== after.data.flowNodeType ||
+        !valuesEqual(before.data.outputs, after.data.outputs)
+    );
+
   /** 结构边变化会影响目标及其下游的可达性，按两版边集合取保守闭包。 */
   const addAffectedStructure = (meta: MutationMeta) => {
     if (!meta.structureChanged) return;
@@ -1083,6 +1098,7 @@ export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
     setNextEdgeId,
     reduceCommand,
     applyWorkflowStartAutoFill,
+    resolveStructureChanged,
     addAffectedStructure,
     clear
   };

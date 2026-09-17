@@ -227,4 +227,62 @@ describe('workflow editor runtime modules', () => {
     expect(editor.getWorkflowData()).toEqual(document);
     expect(editor.undo().ok).toBe(true);
   });
+
+  it('disconnects one edge by its runtime edge id without touching the other', () => {
+    const editor = createRuntime();
+    editor.dispatch({
+      type: 'addNode',
+      node: {
+        nodeId: 'answer2',
+        flowNodeType: FlowNodeTypeEnum.answerNode,
+        name: 'Answer 2',
+        inputs: [],
+        outputs: []
+      } as never
+    });
+    const connected = editor.dispatch({
+      type: 'connectEdge',
+      edge: { source: 'start', target: 'answer2', sourceHandle: 'source', targetHandle: 'target' }
+    });
+    expect(connected.ok).toBe(true);
+    const [edgeId] = connected.change?.changedRecords.edgeIds ?? [];
+    expect(edgeId).toEqual(expect.any(String));
+    expect(editor.getWorkflow().edges).toHaveLength(2);
+
+    editor.dispatch({ type: 'updateNode', nodeId: 'answer', patch: { name: 'Renamed' } });
+
+    const disconnected = editor.dispatch({ type: 'disconnectEdge', edgeId });
+    expect(disconnected.ok).toBe(true);
+    expect(disconnected.change?.changedRecords.edgeIds).toEqual([edgeId]);
+    expect(editor.getWorkflow().edges).toEqual([
+      expect.objectContaining({ source: 'start', target: 'answer' })
+    ]);
+  });
+
+  it('keeps semantic reads untouched for a pure geometry transaction', () => {
+    const editor = createRuntime();
+    const query = { nodeId: 'answer', fieldKey: NodeInputKeyEnum.answerText };
+    editor.dispatch({ type: 'updateField', ...query, value: [['start', 'userChatInput']] });
+    const workflowBefore = editor.getWorkflow();
+    const nodeBefore = editor.getNode('answer');
+    const fieldBefore = editor.getField(query);
+
+    const result = editor.dispatch({
+      type: 'commitGeometry',
+      nodeId: 'answer',
+      position: { x: 1, y: 2 }
+    });
+
+    expect(result.change?.kind).toBe('geometry');
+    expect(result.change?.changedRecords.nodeIds).toEqual([]);
+    expect(result.change?.changedRecords.fieldIds).toEqual([]);
+    expect(result.change?.changedRecords.edgeIds).toEqual([]);
+    expect(result.change?.affectedRecords.nodeIds).toEqual([]);
+    expect(result.change?.affectedRecords.structure).toBe(false);
+    // 纯 geometry 不推进语义版本，语义 scoped snapshot 必须保持同一对象身份。
+    expect(editor.getWorkflow()).toBe(workflowBefore);
+    expect(editor.getNode('answer')).toBe(nodeBefore);
+    expect(editor.getField(query)).toBe(fieldBefore);
+    expect(editor.getNodeView('answer')?.position).toEqual({ x: 1, y: 2 });
+  });
 });

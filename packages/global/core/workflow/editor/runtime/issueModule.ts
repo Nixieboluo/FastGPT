@@ -464,6 +464,36 @@ export const createIssueModule = ({
     });
   };
 
+  /**
+   * 收集本笔事务需要重算 issue 的候选节点。必须在引用/结构派生之前调用：
+   * 候选集合顺序 affected 先、changed 后，决定 issues 数组与 affected records 的排列，
+   * 派生结束后由 rebuildForTransaction 并入新增的 affected 节点。
+   */
+  const collectTransactionNodeIds = (meta: MutationMeta): Set<string> => {
+    const nodeIds = new Set(meta.affectedNodeIds);
+    meta.changedNodeIds.forEach((nodeId) => nodeIds.add(nodeId));
+    return nodeIds;
+  };
+
+  /**
+   * 派生结束后重算 Issue View：并入新增 affected 节点，按结构变化刷新可达集合，
+   * 再把实际发生变化的 issue 写回 affected records。
+   * 调用前必须已丢弃过期字段状态缓存，否则会用旧引用状态判定 issue。
+   */
+  const rebuildForTransaction = ({
+    meta,
+    candidateNodeIds
+  }: {
+    meta: MutationMeta;
+    candidateNodeIds: Set<string>;
+  }) => {
+    const previousIssues = issuesByNode;
+    meta.affectedNodeIds.forEach((nodeId) => candidateNodeIds.add(nodeId));
+    if (meta.structureChanged) updateReachableNodeIds(meta.affectedNodeIds);
+    rebuildIssues(candidateNodeIds);
+    addChangedIssueRecords(meta, previousIssues, candidateNodeIds);
+  };
+
   const clear = () => {
     issuesByNode = new Map();
     reachableNodeIds = new Set();
@@ -473,8 +503,9 @@ export const createIssueModule = ({
     getIssuesByNode,
     getNodeIssues,
     rebuildIssues,
-    updateReachableNodeIds,
     addChangedIssueRecords,
+    collectTransactionNodeIds,
+    rebuildForTransaction,
     clear
   };
 };
