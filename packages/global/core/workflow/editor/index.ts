@@ -1,4 +1,4 @@
-export { createWorkflowEditor } from './runtime';
+export { createWorkflowEditor } from './runtime/runtime';
 export {
   hydrateWorkflowEditor,
   migrateStoreWorkflow,

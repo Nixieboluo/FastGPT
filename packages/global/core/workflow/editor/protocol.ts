@@ -4,7 +4,7 @@ import {
   StoreWorkflowInputSchema,
   type CanonicalWorkflowData
 } from '../migration';
-import { createWorkflowEditor } from './runtime';
+import { createWorkflowEditor } from './runtime/runtime';
 import type { WorkflowRuntimePort } from './types';
 
 export type StoreWorkflow = CanonicalWorkflowData;
