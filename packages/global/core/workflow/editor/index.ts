@@ -7,8 +7,6 @@ export {
 } from './protocol';
 export type {
   DeepReadonly,
-  DebugSessionSnapshot,
-  DebugStartOptions,
   HistorySnapshot,
   NodeViewState,
   RuntimeEdgeId,
@@ -30,6 +28,7 @@ export type {
   WorkflowReferenceOption,
   WorkflowReferenceStatusCode,
   WorkflowRuntimePort,
+  WorkflowSavepoint,
   WorkflowSemanticChange,
   WorkflowSnapshot
 } from './types';

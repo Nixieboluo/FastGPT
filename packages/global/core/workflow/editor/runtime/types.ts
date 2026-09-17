@@ -14,11 +14,21 @@ import type { AppChatConfigType } from '../../../app/type';
 
 /** Runtime 内部私有契约；不通过 editor/index.ts 对外暴露。 */
 
+/** Document 持有的节点语义记录；画布视图不在其中。 */
 export type NodeRecord = {
   data: WorkflowNodeData;
-  view: NodeViewState;
   /** 模板运行时元数据；不能进入 StoreWorkflow 或公开 snapshot。 */
   forbidDelete?: true;
+};
+
+/** Node View module 的私有存储：位置与折叠按 nodeId 索引，与语义记录分开演进。 */
+export type NodeViewStore = Map<string, NodeViewState>;
+
+/** 一笔事务里单个节点的视图变化；缺省一侧表示该侧没有视图（节点新增或删除）。 */
+export type NodeViewChange = {
+  nodeId: string;
+  before?: NodeViewState;
+  after?: NodeViewState;
 };
 
 export type IndexedNode = {
@@ -65,37 +75,35 @@ export type ReferenceGraph = {
 export type MutationMeta = {
   kind: 'semantic' | 'geometry' | 'replace';
   changedNodeIds: Set<string>;
-  changedNodeViewIds: Set<string>;
   changedFieldIds: Map<string, WorkflowFieldIdentity>;
   changedEdgeIds: Set<RuntimeEdgeId>;
   affectedNodeIds: Set<string>;
   affectedFieldIds: Map<string, WorkflowFieldIdentity>;
   structureChanged: boolean;
   chatConfigChanged: boolean;
-  deletedEdgeCount: number;
-  reportsDeletedEdgeCount: boolean;
   nodeChanges: Map<string, { before?: NodeRecord; after?: NodeRecord; afterIndex?: number }>;
+  /** 视图变化按 nodeId 保存事务前后值；公开事件的 nodeViewIds 与 history 都由它推导。 */
+  nodeViewChanges: Map<string, { before?: NodeViewState; after?: NodeViewState }>;
   addedEdges: Map<string, EdgeRecord>;
   removedEdges: Map<string, EdgeRecord>;
 };
 
+/** 两种记录都带事务前后的 Content Revision，replay 时恢复，Savepoint 因此可被撤销回干净状态。 */
 export type HistoryEntry =
   | {
       kind: 'delta';
-      beforeNodeCount: number;
-      afterNodeCount: number;
-      nodeChanges: Array<{ index: number; before?: NodeRecord; after?: NodeRecord }>;
-      beforeEdgeCount: number;
-      afterEdgeCount: number;
-      edgeChanges: Array<{ index: number; before?: EdgeRecord; after?: EdgeRecord }>;
-      beforeChatConfig?: AppChatConfigType;
-      afterChatConfig?: AppChatConfigType;
+      viewChanges: NodeViewChange[];
+      beforeContentRevision: number;
+      afterContentRevision: number;
       change: WorkflowChange;
     }
   | {
       kind: 'checkpoint';
       before: RuntimeDocument;
       after: RuntimeDocument;
+      viewChanges: NodeViewChange[];
+      beforeContentRevision: number;
+      afterContentRevision: number;
       change: WorkflowChange;
     };
 
@@ -106,6 +114,7 @@ export type FieldStatusCache = {
 
 export type CanonicalResult = {
   document: RuntimeDocument;
+  views: NodeViewStore;
   nextEdgeId: number;
 };
 
@@ -138,6 +147,8 @@ export type ReferenceReadApi = {
  */
 export type TransactionContext = {
   working: RuntimeDocument;
+  /** 已提交视图的可写副本；提交成功后由 Node View module 接管。 */
+  views: NodeViewStore;
   meta: MutationMeta;
   referenceGraph: ReferenceGraph;
 };
@@ -147,10 +158,7 @@ export type SemanticCommand = Exclude<WorkflowCommand, { type: 'commitGeometry' 
 
 export type GeometryCommand = Extract<WorkflowCommand, { type: 'commitGeometry' }>;
 
-/** 一次节点记录替换；index 用于避免在提交时扫描整个 document。 */
-export type NodeRecordChange = { index: number; before: NodeRecord; after: NodeRecord };
-
-/** 纯 geometry 事务的 staging 结果；由 Runtime Core 提交并发布。 */
+/** 纯 geometry 事务的 staging 结果；views 缺省表示本笔事务没有任何视图变化。 */
 export type GeometryStageResult =
   | { ok: false; error: WorkflowCommandError }
-  | { ok: true; nodeChanges?: NodeRecordChange[] };
+  | { ok: true; views?: NodeViewStore };

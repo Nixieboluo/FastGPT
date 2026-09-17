@@ -7,6 +7,23 @@ import { FlowNodeTypeEnum } from '../node/constant';
 import { NodeInputKeyEnum } from '../constants';
 import { AgentToolInputModeEnum } from '../../app/tool/constants';
 import { isToolInputValueConfigured } from '../../app/formEdit/utils';
+import type { FlowNodeInputItemType } from '../type/io';
+
+/**
+ * 画布测量值：容器宽高与容器头部输入区高度由 renderer 测量得出，不属于持久化语义。
+ * 入站边界统一清理，Runtime 内部也不再产生这些字段（替代来源见容器尺寸测量重做延后项）。
+ */
+const canvasSizeInputKeys = new Set<string>([
+  NodeInputKeyEnum.nodeWidth,
+  NodeInputKeyEnum.nodeHeight,
+  NodeInputKeyEnum.nestedNodeInputHeight
+]);
+
+/** 剥掉容器尺寸类隐藏 input；没有命中时返回原数组，避免无谓的新对象。 */
+export const stripCanvasSizeInputs = (inputs: FlowNodeInputItemType[]): FlowNodeInputItemType[] =>
+  inputs.some((input) => canvasSizeInputKeys.has(input.key))
+    ? inputs.filter((input) => !canvasSizeInputKeys.has(input.key))
+    : inputs;
 
 /**
  * 将外部 workflow 迁移为严格 canonical 数据。
@@ -35,7 +52,8 @@ export const migrateWorkflowToCurrent = (input: LegacyWorkflowDataInput): Canoni
     })
   );
 
-  const nodes = workflow.nodes.map((node) => {
+  const nodes = workflow.nodes.map((rawNode) => {
+    const node = { ...rawNode, inputs: stripCanvasSizeInputs(rawNode.inputs) };
     if (node.flowNodeType !== FlowNodeTypeEnum.agent) return node;
 
     return {

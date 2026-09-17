@@ -1,5 +1,5 @@
 import { NodeOutputKeyEnum } from '../../constants';
-import type { CanonicalWorkflowData } from '../../migration/schema';
+import { stripCanvasSizeInputs } from '../../migration/migrate';
 import { FlowNodeTypeEnum, isNestedParentNodeType } from '../../node/constant';
 import { StoreEdgeItemTypeSchema, type StoreEdgeItemType } from '../../type/edge';
 import { StoreNodeItemTypeSchema } from '../../type/node';
@@ -10,20 +10,27 @@ import { isWorkflowEdgeSourceHandleValid } from '../utils';
 import { applyWorkflowStartInputAutoFill } from '../startAutoFill';
 import type { RuntimeEdgeId } from '../types';
 import { addFieldIdentity, cloneValue, getError, getFieldIdentity, valuesEqual } from './kernel';
-import { mergeNodeView } from './nodeViewModule';
+import {
+  deleteStagedNodeView,
+  getStagedNodeView,
+  mergeNodeView,
+  replaceStagedNodeViews,
+  setStagedNodeView
+} from './nodeViewModule';
 import { updateReferenceGraphNode } from './referenceModule';
 import type {
+  CanonicalResult,
   EdgeRecord,
   GraphIndex,
   IndexedNode,
   MutationMeta,
-  NodeRecordChange,
   RuntimeDocument,
   SemanticCommand,
   TransactionContext
 } from './types';
 import {
   applyGraphIndexChanges,
+  applyPersistedDerivedFields,
   applyWorkflowStartChanges,
   buildDocument,
   buildGraphIndex,
@@ -34,6 +41,7 @@ import {
   commitNodeRecordUpdate,
   getPlacementError,
   hasForbidDelete,
+  isContainerArrayInputKey,
   recordEdgeChange,
   recordNodeChange,
   reuseEqualItems,
@@ -45,11 +53,11 @@ import {
 /**
  * Document module：拥有 Node Data、edges、chatConfig、Runtime Edge ID、node/graph 索引，
  * 以及语义命令的校验与 reduce。无状态规则在 ./documentRules，本文件只保留有状态工厂。
+ * 节点视图不在这里：Document 只持有语义记录，视图存储归 Node View module。
  */
 
-/** Create the Workflow Document module. */
-export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
-  const initial = buildDocument(canonicalData);
+/** Create the Workflow Document module；入参是入站边界已经组装好的初始文档与视图。 */
+export const createDocumentModule = (initial: CanonicalResult) => {
   let document = initial.document;
   let nextEdgeId = initial.nextEdgeId;
   let nodeIndex: Map<string, IndexedNode> = buildNodeIndex(document.nodes);
@@ -104,29 +112,6 @@ export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
 
   const rebuildWorkflowStartIds = () => {
     workflowStartIds = collectWorkflowStartIds(document.nodes);
-  };
-
-  /** 纯 geometry 事务只替换节点记录并同步索引，不触发语义索引重建。 */
-  const commitNodeRecords = (nodeChanges: NodeRecordChange[]) => {
-    const nextNodes = document.nodes.slice();
-    nodeChanges.forEach(({ index, after }) => {
-      nextNodes[index] = after;
-      nodeIndex.set(after.data.nodeId, { record: after, index });
-    });
-    document = { ...document, nodes: nextNodes };
-  };
-
-  /** undo/redo 后按已提交文档刷新指定节点记录，保留其余索引项身份。 */
-  const refreshNodeIndexRecords = (nodeIds: readonly string[]) => {
-    nodeIds.forEach((nodeId) => {
-      const indexedNode = nodeIndex.get(nodeId);
-      if (indexedNode) {
-        nodeIndex.set(nodeId, {
-          record: document.nodes[indexedNode.index],
-          index: indexedNode.index
-        });
-      }
-    });
   };
 
   const getWorkingNode = (nodeId: string, meta?: MutationMeta) => {
@@ -255,7 +240,8 @@ export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
           const nextData = { ...target.data, inputs: nextInputs };
           const previousData = target.data;
           const targetIndex = getWorkingNodeIndex({ working, nodeId, meta });
-          const nextRecord = { data: nextData, view: target.view };
+          // 保留原记录上的运行时元数据（forbidDelete），只替换语义数据。
+          const nextRecord = { ...target, data: nextData };
           working.nodes = working.nodes.slice();
           working.nodes[targetIndex] = nextRecord;
           updateReferenceGraphNode({
@@ -266,7 +252,7 @@ export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
           recordNodeChange({
             meta,
             nodeId,
-            before: { data: previousData, view: target.view },
+            before: target,
             after: nextRecord,
             afterIndex: targetIndex
           });
@@ -332,7 +318,7 @@ export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
 
   /** 在隔离 working document 上应用一个语义命令；异常只会丢弃本次 transaction。 */
   const reduceCommand = (
-    { working, meta, referenceGraph }: TransactionContext,
+    { working, views, meta, referenceGraph }: TransactionContext,
     command: SemanticCommand
   ): void => {
     switch (command.type) {
@@ -341,17 +327,18 @@ export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
         if (getWorkingNode(parsedNode.nodeId, meta)) {
           throw getError('duplicate_node', `Node already exists: ${parsedNode.nodeId}`);
         }
-        const nextRecord = splitNode(parsedNode, hasForbidDelete(command.node));
-        validateNodePlacement({ working, node: nextRecord });
-        working.nodes = [...working.nodes, nextRecord];
-        updateReferenceGraphNode({ graph: referenceGraph, after: nextRecord.data });
+        const { record, view } = splitNode(parsedNode, hasForbidDelete(command.node));
+        validateNodePlacement({ working, node: record });
+        working.nodes = [...working.nodes, record];
+        setStagedNodeView({ meta, views, nodeId: record.data.nodeId, view });
+        updateReferenceGraphNode({ graph: referenceGraph, after: record.data });
         recordNodeChange({
           meta,
           nodeId: parsedNode.nodeId,
-          after: nextRecord,
+          after: record,
           afterIndex: working.nodes.length - 1
         });
-        collectNodeFieldChanges({ changedFieldIds: meta.changedFieldIds, after: nextRecord.data });
+        collectNodeFieldChanges({ changedFieldIds: meta.changedFieldIds, after: record.data });
         meta.structureChanged = true;
         return;
       }
@@ -367,23 +354,20 @@ export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
         }
         working.nodes = working.nodes.slice();
         const current = working.nodes[index];
-        const nextNode = splitNode(
+        const { record: nextNode, view } = splitNode(
           parsedNode,
           current.forbidDelete === true || hasForbidDelete(command.node)
         );
         validateNodePlacement({ working, node: nextNode, excludeNodeId: command.nodeId });
-        working.nodes[index] = {
-          data: nextNode.data,
-          view: valuesEqual(current.view, nextNode.view) ? current.view : nextNode.view,
-          ...(nextNode.forbidDelete ? { forbidDelete: true } : {})
-        };
+        working.nodes[index] = nextNode;
+        setStagedNodeView({ meta, views, nodeId: command.nodeId, view });
         commitNodeRecordUpdate({
           meta,
           referenceGraph,
           nodeId: command.nodeId,
           index,
           before: current,
-          after: working.nodes[index]
+          after: nextNode
         });
         return;
       }
@@ -391,12 +375,14 @@ export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
         const index = getWorkingNodeIndex({ working, nodeId: command.nodeId, meta });
         if (index < 0) throw getError('not_found', `Node not found: ${command.nodeId}`);
         const current = working.nodes[index];
+        const currentView = getStagedNodeView(views, command.nodeId);
         working.nodes = working.nodes.slice();
+        // patch 里的 position/isFolded 会被当前视图覆盖：几何只能走 commitGeometry。
         const nextData = StoreNodeItemTypeSchema.parse({
           ...cloneValue(current.data),
           ...cloneValue(command.patch),
-          ...(current.view.position ? { position: current.view.position } : {}),
-          ...(current.view.isFolded !== undefined ? { isFolded: current.view.isFolded } : {})
+          ...(currentView.position ? { position: currentView.position } : {}),
+          ...(currentView.isFolded !== undefined ? { isFolded: currentView.isFolded } : {})
         });
         if (nextData.nodeId !== command.nodeId)
           throw getError('invalid_command', 'updateNode cannot change nodeId');
@@ -405,20 +391,24 @@ export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
         }
         const stableData = {
           ...nextData,
-          inputs: reuseEqualItems(current.data.inputs, nextData.inputs),
+          inputs: stripCanvasSizeInputs(reuseEqualItems(current.data.inputs, nextData.inputs)),
           outputs: reuseEqualItems(current.data.outputs, nextData.outputs)
         };
         const { position, isFolded, inputs: _inputs, outputs: _outputs, ...data } = stableData;
-        const nextView = mergeNodeView({ current: current.view, position, isFolded });
         working.nodes[index] = {
           data: { ...data, inputs: stableData.inputs, outputs: stableData.outputs },
-          view: valuesEqual(current.view, nextView) ? current.view : nextView,
           ...(current.forbidDelete ? { forbidDelete: true } : {})
         };
         const nextRecord = working.nodes[index];
         if (getPlacementError({ working, node: nextRecord, parentId: nextData.parentNodeId })) {
           throw getError('invalid_placement', 'Node placement is not allowed');
         }
+        setStagedNodeView({
+          meta,
+          views,
+          nodeId: command.nodeId,
+          view: mergeNodeView({ current: currentView, position, isFolded })
+        });
         commitNodeRecordUpdate({
           meta,
           referenceGraph,
@@ -454,7 +444,7 @@ export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
           );
         }
         working.nodes = working.nodes.slice();
-        working.nodes[index] = { data, view: current.view };
+        working.nodes[index] = { ...current, data };
         commitNodeRecordUpdate({
           meta,
           referenceGraph,
@@ -487,6 +477,7 @@ export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
             before: node.data
           });
         });
+        deletedIds.forEach((nodeId) => deleteStagedNodeView({ meta, views, nodeId }));
         working.nodes = working.nodes.filter((node) => !deletedIds.has(node.data.nodeId));
         const removedEdges = working.edges.filter(
           (edge) => deletedIds.has(edge.data.source) || deletedIds.has(edge.data.target)
@@ -498,7 +489,6 @@ export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
           (edge) => !deletedIds.has(edge.data.source) && !deletedIds.has(edge.data.target)
         );
         meta.structureChanged = true;
-        meta.deletedEdgeCount += removedEdges.length;
         return;
       }
       case 'connectEdge': {
@@ -569,7 +559,7 @@ export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
         );
         working.nodes = working.nodes.slice();
         const nextData = { ...node.data, parentNodeId: command.containerId };
-        working.nodes[nodeIndex] = { data: nextData, view: node.view };
+        working.nodes[nodeIndex] = { ...node, data: nextData };
         recordNodeChange({
           meta,
           nodeId: command.nodeId,
@@ -590,9 +580,7 @@ export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
           working.edges = working.edges.filter(
             ({ id }) => !removedEdges.some((edge) => edge.id === id)
           );
-          meta.deletedEdgeCount += removedEdges.length;
         }
-        meta.reportsDeletedEdgeCount = true;
         return;
       }
       case 'updateChatConfig': {
@@ -604,7 +592,7 @@ export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
       case 'replaceDocument': {
         if (
           meta.changedNodeIds.size > 0 ||
-          meta.changedNodeViewIds.size > 0 ||
+          meta.nodeViewChanges.size > 0 ||
           meta.changedFieldIds.size > 0 ||
           meta.changedEdgeIds.size > 0 ||
           meta.chatConfigChanged
@@ -618,12 +606,41 @@ export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
         working.nodes = rebuilt.document.nodes;
         working.edges = rebuilt.document.edges;
         working.chatConfig = rebuilt.document.chatConfig;
+        replaceStagedNodeViews({ meta, views, next: rebuilt.views });
         nextEdgeId = rebuilt.nextEdgeId;
         meta.kind = 'replace';
         meta.structureChanged = true;
         return;
       }
     }
+  };
+
+  /**
+   * Persisted Derived Field 维护：容器子节点清单与容器数组输入的值类型由 Document 重算，
+   * 作为普通字段参与变化记录与历史，渲染副作用不再写回文档。
+   * 只在结构、chatConfig 或数组输入自身变化时执行，其余事务直接跳过，避免每次字段编辑全表扫描。
+   */
+  const applyDerivedFields = ({ working, meta, referenceGraph }: TransactionContext) => {
+    const arrayInputChanged = [...meta.changedFieldIds.values()].some(
+      (field) => field.kind === 'input' && isContainerArrayInputKey(field.key)
+    );
+    if (!meta.structureChanged && !meta.chatConfigChanged && !arrayInputChanged) return;
+
+    const derived = applyPersistedDerivedFields({
+      nodes: working.nodes,
+      chatConfig: working.chatConfig
+    });
+    if (derived.changes.length === 0) return;
+    working.nodes = derived.nodes;
+    derived.changes.forEach(({ index, before, after }) => {
+      updateReferenceGraphNode({ graph: referenceGraph, before: before.data, after: after.data });
+      recordNodeChange({ meta, nodeId: after.data.nodeId, before, after, afterIndex: index });
+      collectNodeFieldChanges({
+        changedFieldIds: meta.changedFieldIds,
+        before: before.data,
+        after: after.data
+      });
+    });
   };
 
   const clear = () => {
@@ -654,12 +671,11 @@ export const createDocumentModule = (canonicalData: CanonicalWorkflowData) => {
     updateGraphIndexIncrementally,
     updateWorkflowStartIndex,
     rebuildWorkflowStartIds,
-    commitNodeRecords,
-    refreshNodeIndexRecords,
     getNextEdgeId,
     setNextEdgeId,
     reduceCommand,
     applyWorkflowStartAutoFill,
+    applyDerivedFields,
     addAffectedStructure,
     clear
   };

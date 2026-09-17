@@ -2,8 +2,6 @@ import type { CanonicalWorkflowData } from '../../migration/schema';
 import type { FlowNodeInputItemType, FlowNodeOutputItemType } from '../../type/io';
 import type { WorkflowCheckIssue } from '../../type/node';
 import type {
-  DebugSessionSnapshot,
-  DebugStartOptions,
   WorkflowChange,
   WorkflowAffectedRecords,
   WorkflowChangedRecords,
@@ -16,6 +14,7 @@ import type {
   WorkflowFieldSnapshot,
   WorkflowNodeSnapshot,
   WorkflowRuntimePort,
+  WorkflowSavepoint,
   WorkflowSnapshot
 } from '../types';
 import {
@@ -27,7 +26,7 @@ import {
   isObject
 } from './kernel';
 import { createDocumentModule } from './documentModule';
-import { documentToCanonical, resolveStructureChanged } from './documentRules';
+import { buildDocument, documentToCanonical, resolveStructureChanged } from './documentRules';
 import { createNodeViewModule } from './nodeViewModule';
 import { createReferenceModule } from './referenceModule';
 import { createIssueModule } from './issueModule';
@@ -35,7 +34,7 @@ import {
   createHistoryModule,
   createGeometryHistoryEntry,
   createHistoryEntry,
-  materializeHistoryDocument
+  collectViewChanges
 } from './historyModule';
 import type {
   GeometryCommand,
@@ -56,16 +55,14 @@ const MAX_CHANGE_LOG = 100;
 const createMutationMeta = (kind: MutationMeta['kind'] = 'semantic'): MutationMeta => ({
   kind,
   changedNodeIds: new Set(),
-  changedNodeViewIds: new Set(),
   changedFieldIds: new Map(),
   changedEdgeIds: new Set(),
   affectedNodeIds: new Set(),
   affectedFieldIds: new Map(),
   structureChanged: false,
   chatConfigChanged: false,
-  deletedEdgeCount: 0,
-  reportsDeletedEdgeCount: false,
   nodeChanges: new Map(),
+  nodeViewChanges: new Map(),
   addedEdges: new Map(),
   removedEdges: new Map()
 });
@@ -103,20 +100,26 @@ const isWorkflowCommand = (value: unknown): value is WorkflowCommand =>
 export const createWorkflowEditor = (
   strictCanonicalData: CanonicalWorkflowData
 ): WorkflowRuntimePort => {
+  // 入站边界只组装一次：语义记录归 Document，位置与折叠归 Node View。
+  const initial = buildDocument(strictCanonicalData);
   // 固定依赖顺序：Document -> NodeView -> Reference -> Issue -> History。
-  const document = createDocumentModule(strictCanonicalData);
-  const nodeView = createNodeViewModule(document);
+  const document = createDocumentModule(initial);
+  const nodeView = createNodeViewModule({ document, views: initial.views });
   const reference = createReferenceModule(document);
   const issue = createIssueModule({ document, reference });
   const history = createHistoryModule();
 
   let disposed = false;
+  /** 通知版本：单调递增，供快照缓存与订阅使用，不参与保存状态判定。 */
   let workflowVersion = 0;
   let semanticVersion = 0;
   let transactionId = 0;
-  let debugVersion = 0;
-  let debugSequence = 0;
-  let debugSession: DebugSessionSnapshot | undefined;
+  /** 当前已提交内容的 Content Revision；undo/redo 会恢复成 history 记录里的值。 */
+  let contentRevision = 0;
+  /** Content Revision 分配器；只增不减，保证一个内容状态只对应一个版本号（ADR 0002）。 */
+  let contentRevisionCounter = 0;
+  /** 已确认保存的内容版本；与当前内容版本不同即为脏。 */
+  let savedRevision = 0;
   const listeners = new Set<(change: WorkflowChange) => void>();
   const changeLog: WorkflowChange[] = [];
   const nodeSnapshotCache = new Map<
@@ -134,7 +137,6 @@ export const createWorkflowEditor = (
     }
   >();
   let workflowSnapshotCache: { version: number; snapshot: WorkflowSnapshot } | undefined;
-  let debugSnapshotCache: { version: number; snapshot: DebugSessionSnapshot } | undefined;
 
   const ensureActive = () => {
     if (disposed) throw new Error('Workflow editor has been disposed');
@@ -149,7 +151,7 @@ export const createWorkflowEditor = (
     };
     const changedRecords: WorkflowChangedRecords = {
       nodeIds: [...meta.changedNodeIds],
-      nodeViewIds: [...meta.changedNodeViewIds],
+      nodeViewIds: [...meta.nodeViewChanges.keys()],
       fieldIds: [...meta.changedFieldIds.values()],
       edgeIds: [...meta.changedEdgeIds],
       chatConfig: meta.chatConfigChanged
@@ -225,16 +227,6 @@ export const createWorkflowEditor = (
     return snapshot;
   };
 
-  /** 返回当前独立 Debug State；其 workflow snapshot 不随编辑事务变化。 */
-  const getDebugSnapshot = (): DebugSessionSnapshot | undefined => {
-    ensureActive();
-    if (!debugSession) return undefined;
-    if (debugSnapshotCache?.version === debugVersion) return debugSnapshotCache.snapshot;
-    const snapshot = freezeValue(cloneValue(debugSession));
-    debugSnapshotCache = { version: debugVersion, snapshot };
-    return snapshot;
-  };
-
   /** 返回单字段 snapshot，并按字段引用与引用状态缓存身份。 */
   const getFieldSnapshot = ({
     nodeId,
@@ -281,21 +273,26 @@ export const createWorkflowEditor = (
     else document.reduceCommand(ctx, command);
   };
 
-  /** 纯 geometry 事务只改 Node View、history 和事件，跳过语义派生状态。 */
+  /** 纯 geometry 事务只改 Node View、history 和事件，完全不触碰 Document 与语义派生状态。 */
   const dispatchGeometry = (commands: readonly GeometryCommand[]): WorkflowDispatchResult => {
     const meta = createMutationMeta('geometry');
     const staged = nodeView.stageGeometryBatch(commands, meta);
     if (!staged.ok) return { ok: false, error: staged.error };
-    if (!staged.nodeChanges) return { ok: true };
+    if (!staged.views) return { ok: true };
 
-    const before = document.getDocument();
-    document.commitNodeRecords(staged.nodeChanges);
-    const after = document.getDocument();
+    const beforeContentRevision = contentRevision;
+    nodeView.commitViews(staged.views);
     workflowVersion++;
+    contentRevision = ++contentRevisionCounter;
 
     const change = makeChange(meta, 'command');
     history.push(
-      createGeometryHistoryEntry({ before, after, nodeChanges: staged.nodeChanges, change })
+      createGeometryHistoryEntry({
+        viewChanges: collectViewChanges(meta),
+        beforeContentRevision,
+        afterContentRevision: contentRevision,
+        change
+      })
     );
     publish(change);
     return { ok: true, change };
@@ -333,8 +330,9 @@ export const createWorkflowEditor = (
       edges: before.edges.slice(),
       chatConfig: before.chatConfig
     };
+    const views = new Map(nodeView.getViews());
     const meta = createMutationMeta();
-    const ctx: TransactionContext = { working, meta, referenceGraph: workingReferenceGraph };
+    const ctx: TransactionContext = { working, views, meta, referenceGraph: workingReferenceGraph };
     try {
       list.forEach((command) => applyCommand(ctx, command));
       if (list.some((command) => command.type === 'connectEdge')) {
@@ -350,7 +348,7 @@ export const createWorkflowEditor = (
     const hasChanges =
       meta.kind === 'replace' ||
       meta.changedNodeIds.size > 0 ||
-      meta.changedNodeViewIds.size > 0 ||
+      meta.nodeViewChanges.size > 0 ||
       meta.changedEdgeIds.size > 0 ||
       meta.chatConfigChanged;
     if (!hasChanges) {
@@ -358,9 +356,14 @@ export const createWorkflowEditor = (
       return { ok: true };
     }
 
-    meta.structureChanged = resolveStructureChanged(meta);
+    // 整文档替换是全量失效分支，结构信号必须发布，不能被增量判定覆盖。
+    meta.structureChanged = meta.kind === 'replace' || resolveStructureChanged(meta);
+    document.applyDerivedFields(ctx);
+    const beforeContentRevision = contentRevision;
     document.setDocument(working);
+    nodeView.commitViews(views);
     workflowVersion++;
+    contentRevision = ++contentRevisionCounter;
     if (meta.kind !== 'geometry') semanticVersion++;
     if (meta.kind === 'replace') {
       document.rebuildNodeIndex();
@@ -391,14 +394,19 @@ export const createWorkflowEditor = (
       issue.rebuildForTransaction({ meta, candidateNodeIds: issueNodeIds });
     }
     const change = makeChange(meta, 'command');
-    history.push(createHistoryEntry({ before, after: document.getDocument(), change }));
+    history.push(
+      createHistoryEntry({
+        before,
+        after: document.getDocument(),
+        viewChanges: collectViewChanges(meta),
+        beforeContentRevision,
+        afterContentRevision: contentRevision,
+        change
+      })
+    );
     pruneSnapshotCaches();
     publish(change);
-    return {
-      ok: true,
-      change,
-      ...(meta.reportsDeletedEdgeCount ? { deletedEdgeCount: meta.deletedEdgeCount } : {})
-    };
+    return { ok: true, change };
   };
 
   /** 以 undo/redo 来源重放 history，不新增 history entry。 */
@@ -409,13 +417,13 @@ export const createWorkflowEditor = (
     if (!entry) return { ok: false, error: getError('invalid_command', `Nothing to ${direction}`) };
     const originalChange = entry.change;
     const previousIssues = issue.getIssuesByNode();
-    document.setDocument(
-      materializeHistoryDocument({ current: document.getDocument(), entry, direction })
-    );
     workflowVersion++;
-    if (originalChange.kind === 'geometry') {
-      document.refreshNodeIndexRecords(originalChange.changedRecords.nodeViewIds);
-    } else {
+    // Content Revision 由 history 记录恢复，因此撤销回已保存内容会自然回到干净状态。
+    contentRevision =
+      direction === 'undo' ? entry.beforeContentRevision : entry.afterContentRevision;
+    nodeView.applyHistoryViews(entry.viewChanges, direction);
+    if (entry.kind === 'checkpoint') {
+      document.setDocument(direction === 'undo' ? entry.before : entry.after);
       document.rebuildNodeIndex();
       semanticVersion++;
       document.rebuildGraphIndex();
@@ -427,8 +435,9 @@ export const createWorkflowEditor = (
     }
     const meta = createMutationMeta(originalChange.kind);
     originalChange.changedRecords.nodeIds.forEach((nodeId) => meta.changedNodeIds.add(nodeId));
+    // replay 只借 meta 组装事件；视图值已经由 history 记录恢复，这里不需要前后值。
     originalChange.changedRecords.nodeViewIds.forEach((nodeId) =>
-      meta.changedNodeViewIds.add(nodeId)
+      meta.nodeViewChanges.set(nodeId, {})
     );
     originalChange.changedRecords.fieldIds.forEach((field) =>
       addFieldIdentity(meta.changedFieldIds, field)
@@ -462,7 +471,9 @@ export const createWorkflowEditor = (
     /** 返回不含 runtime-only state 的 canonical 深拷贝；runtime disposed 后拒绝读取。 */
     getWorkflowData: () => {
       ensureActive();
-      return cloneValue(documentToCanonical(document.getDocument()));
+      return cloneValue(
+        documentToCanonical({ document: document.getDocument(), views: nodeView.getViews() })
+      );
     },
     getNode: (nodeId) => getNodeSnapshot(nodeId),
     getNodeView: (nodeId) => {
@@ -470,8 +481,19 @@ export const createWorkflowEditor = (
       return nodeView.getNodeViewSnapshot(nodeId);
     },
     getField: getFieldSnapshot,
-    getDebug: getDebugSnapshot,
     getHistory: () => history.getSnapshot(),
+    getSavepoint: () => {
+      ensureActive();
+      return freezeValue({
+        contentRevision,
+        isDirty: contentRevision !== savedRevision
+      }) as WorkflowSavepoint;
+    },
+    markSaved: (revision) => {
+      // 保存请求可能在 runtime 释放之后才回来；此时没有可回填的状态，忽略即可。
+      if (disposed) return;
+      savedRevision = revision;
+    },
     getChangeLog: () => freezeValue([...changeLog]) as readonly WorkflowChange[],
     dispatch,
     subscribe: (listener) => {
@@ -481,41 +503,6 @@ export const createWorkflowEditor = (
     },
     undo: () => replayHistory('undo'),
     redo: () => replayHistory('redo'),
-    startDebug: (options: DebugStartOptions = {}) => {
-      ensureActive();
-      const sessionId = `debug-${++debugSequence}`;
-      debugSession = {
-        sessionId,
-        status: 'running',
-        workflow: cloneValue(documentToCanonical(document.getDocument())),
-        formValues: cloneValue(options.formValues ?? {}),
-        results: {}
-      };
-      debugVersion++;
-      debugSnapshotCache = undefined;
-      return getDebugSnapshot()!;
-    },
-    setDebugResult: (nodeId, result) => {
-      if (disposed || !debugSession) return;
-      debugSession = {
-        ...debugSession,
-        results: { ...debugSession.results, [nodeId]: cloneValue(result) }
-      };
-      debugVersion++;
-      debugSnapshotCache = undefined;
-    },
-    finishDebug: (status = 'success') => {
-      if (disposed || !debugSession) return;
-      debugSession = { ...debugSession, status };
-      debugVersion++;
-      debugSnapshotCache = undefined;
-    },
-    clearDebug: () => {
-      if (disposed) return;
-      debugSession = undefined;
-      debugVersion++;
-      debugSnapshotCache = undefined;
-    },
     isDisposed: () => disposed,
     dispose: () => {
       if (disposed) return;
@@ -526,8 +513,6 @@ export const createWorkflowEditor = (
       nodeSnapshotCache.clear();
       fieldSnapshotCache.clear();
       workflowSnapshotCache = undefined;
-      debugSnapshotCache = undefined;
-      debugSession = undefined;
       nodeView.clear();
       reference.clear();
       issue.clear();

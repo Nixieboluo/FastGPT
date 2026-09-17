@@ -1,83 +1,69 @@
 import type { HistorySnapshot, WorkflowChange } from '../types';
 import { freezeValue } from './kernel';
-import type { HistoryEntry, NodeRecordChange, RuntimeDocument } from './types';
+import type { HistoryEntry, MutationMeta, NodeViewChange, RuntimeDocument } from './types';
 
 /**
- * History module：拥有 past/future 记录、replay 物化与有界历史。
- * replay 复用正常派生路径，不追加新的 history entry。
+ * History module：拥有 past/future 记录与有界历史。
+ *
+ * 语义事务用 checkpoint（事务前后两个数组壳，节点记录共享引用），纯几何事务只存视图 delta。
+ * 两类记录都带事务前后的 Content Revision，replay 时一并恢复，
+ * 因此撤销回已保存内容会自然回到干净状态（见 ADR 0002）。
  */
 
 /** ponytail: keep history bounded; raise only after measuring a real undo-depth need. */
 const MAX_HISTORY = 100;
 
+/** 把事务内登记的视图变化摊平成 history 记录；缺省一侧表示该侧节点不存在。 */
+export const collectViewChanges = (meta: MutationMeta): NodeViewChange[] =>
+  [...meta.nodeViewChanges].map(([nodeId, { before, after }]) => ({
+    nodeId,
+    ...(before ? { before } : {}),
+    ...(after ? { after } : {})
+  }));
+
 /** 保留事务前后浅数组快照；节点记录本身保持共享，避免提交时扫描整个 document。 */
 export const createHistoryEntry = ({
   before,
   after,
+  viewChanges,
+  beforeContentRevision,
+  afterContentRevision,
   change
 }: {
   before: RuntimeDocument;
   after: RuntimeDocument;
-  change: WorkflowChange;
-}): HistoryEntry => {
-  return { kind: 'checkpoint', before, after, change };
-};
-
-/** 纯 geometry 事务的 delta 记录：只保存节点记录变化，边与 chatConfig 未参与本笔事务。 */
-export const createGeometryHistoryEntry = ({
-  before,
-  after,
-  nodeChanges,
-  change
-}: {
-  before: RuntimeDocument;
-  after: RuntimeDocument;
-  nodeChanges: NodeRecordChange[];
+  viewChanges: NodeViewChange[];
+  beforeContentRevision: number;
+  afterContentRevision: number;
   change: WorkflowChange;
 }): HistoryEntry => ({
-  kind: 'delta',
-  beforeNodeCount: before.nodes.length,
-  afterNodeCount: after.nodes.length,
-  nodeChanges,
-  beforeEdgeCount: before.edges.length,
-  afterEdgeCount: after.edges.length,
-  edgeChanges: [],
+  kind: 'checkpoint',
+  before,
+  after,
+  viewChanges,
+  beforeContentRevision,
+  afterContentRevision,
   change
 });
 
-/** 用 history delta 还原目标文档，保留未改记录的原始引用。 */
-export const materializeHistoryDocument = ({
-  current,
-  entry,
-  direction
+/** 纯 geometry 事务的 delta 记录：只有视图变化，Document 与语义派生状态都未参与本笔事务。 */
+export const createGeometryHistoryEntry = ({
+  viewChanges,
+  beforeContentRevision,
+  afterContentRevision,
+  change
 }: {
-  current: RuntimeDocument;
-  entry: HistoryEntry;
-  direction: 'undo' | 'redo';
-}): RuntimeDocument => {
-  if (entry.kind === 'checkpoint') return direction === 'undo' ? entry.before : entry.after;
-
-  const useBefore = direction === 'undo';
-  const nodeChanges = new Map(entry.nodeChanges.map((change) => [change.index, change]));
-  const edgeChanges = new Map(entry.edgeChanges.map((change) => [change.index, change]));
-  const nodeCount = useBefore ? entry.beforeNodeCount : entry.afterNodeCount;
-  const edgeCount = useBefore ? entry.beforeEdgeCount : entry.afterEdgeCount;
-  const nodes = Array.from({ length: nodeCount }, (_, index) => {
-    const change = nodeChanges.get(index);
-    return (useBefore ? change?.before : change?.after) ?? current.nodes[index];
-  });
-  const edges = Array.from({ length: edgeCount }, (_, index) => {
-    const change = edgeChanges.get(index);
-    return (useBefore ? change?.before : change?.after) ?? current.edges[index];
-  });
-  return {
-    nodes,
-    edges,
-    chatConfig: useBefore
-      ? (entry.beforeChatConfig ?? current.chatConfig)
-      : (entry.afterChatConfig ?? current.chatConfig)
-  };
-};
+  viewChanges: NodeViewChange[];
+  beforeContentRevision: number;
+  afterContentRevision: number;
+  change: WorkflowChange;
+}): HistoryEntry => ({
+  kind: 'delta',
+  viewChanges,
+  beforeContentRevision,
+  afterContentRevision,
+  change
+});
 
 /** Create the Workflow History module. */
 export const createHistoryModule = () => {

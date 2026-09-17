@@ -6,6 +6,7 @@ import {
 } from '@fastgpt/global/core/workflow/node/constant';
 import { NodeInputKeyEnum, WorkflowIOValueTypeEnum } from '@fastgpt/global/core/workflow/constants';
 import { createWorkflowEditor } from '@fastgpt/global/core/workflow/editor/runtime/runtime';
+import { hydrateWorkflowEditor, migrateStoreWorkflow } from '@fastgpt/global/core/workflow/editor';
 import type {
   WorkflowChange,
   WorkflowCommand,
@@ -55,6 +56,57 @@ const createRuntime = (): WorkflowRuntimePort => {
   });
   return editor;
 };
+
+/** 容器夹具：loopRun 带一份过期的子节点清单，用于验证结构变化后的派生字段重算。 */
+const createContainerRuntime = (): WorkflowRuntimePort =>
+  createWorkflowEditor({
+    nodes: [
+      {
+        nodeId: 'start',
+        flowNodeType: FlowNodeTypeEnum.workflowStart,
+        name: 'Start',
+        inputs: [],
+        outputs: [
+          {
+            id: 'userChatInput',
+            key: 'userChatInput',
+            type: FlowNodeOutputTypeEnum.source,
+            valueType: WorkflowIOValueTypeEnum.string
+          }
+        ]
+      },
+      {
+        nodeId: 'loop',
+        flowNodeType: FlowNodeTypeEnum.loopRun,
+        name: 'Loop',
+        inputs: [
+          {
+            key: NodeInputKeyEnum.loopRunMode,
+            label: 'Mode',
+            renderTypeList: [FlowNodeInputTypeEnum.input],
+            value: 'array'
+          },
+          {
+            key: NodeInputKeyEnum.loopRunInputArray,
+            label: 'Array',
+            renderTypeList: [FlowNodeInputTypeEnum.reference],
+            valueType: WorkflowIOValueTypeEnum.arrayAny,
+            value: []
+          },
+          {
+            key: NodeInputKeyEnum.childrenNodeIdList,
+            label: '',
+            renderTypeList: [FlowNodeInputTypeEnum.hidden],
+            valueType: WorkflowIOValueTypeEnum.arrayString,
+            value: ['ghost']
+          }
+        ],
+        outputs: []
+      }
+    ],
+    edges: [],
+    chatConfig: {}
+  });
 
 describe('workflow editor runtime modules', () => {
   it('commits a command batch atomically', () => {
@@ -348,9 +400,8 @@ describe('workflow editor runtime modules', () => {
     const result = editor.dispatch({ type: 'replaceDocument', document });
     expect(result.ok).toBe(true);
     expect(result.change?.kind).toBe('replace');
-    // dispatch 在提交前按 nodeChanges/edgeIds 重算 structureChanged，会覆盖 replace 分支置位的值。
-    // 这是拆分前就存在的行为，契约调整放在后续独立变更里处理。
-    expect(result.change?.affectedRecords.structure).toBe(false);
+    // 整文档替换是全量失效分支，必须发布结构失效，投影与引用闭包才会整体重算。
+    expect(result.change?.affectedRecords.structure).toBe(true);
     expect(editor.getWorkflowData()).toEqual(document);
     expect(editor.undo().ok).toBe(true);
   });
@@ -460,5 +511,348 @@ describe('workflow editor runtime modules', () => {
     expect(outputsChanged.ok).toBe(true);
     expect(outputsChanged.change?.affectedRecords.structure).toBe(true);
     expect(outputsChanged.change?.affectedRecords.nodeIds).toContain('answer');
+  });
+
+  it('starts clean and keeps a no-op transaction clean', () => {
+    const editor = createWorkflowEditor({ nodes: [], edges: [], chatConfig: {} });
+    expect(editor.getSavepoint()).toEqual({ contentRevision: 0, isDirty: false });
+
+    const noop = editor.dispatch({
+      type: 'updateChatConfig',
+      chatConfig: editor.getWorkflowData().chatConfig as never
+    });
+    expect(noop.change).toBeUndefined();
+    expect(editor.getSavepoint()).toEqual({ contentRevision: 0, isDirty: false });
+  });
+
+  it('restores the content revision through undo and redo', () => {
+    const editor = createRuntime();
+    const beforeEdit = editor.getSavepoint();
+
+    editor.dispatch({ type: 'updateNode', nodeId: 'answer', patch: { name: 'Renamed' } });
+    const afterEdit = editor.getSavepoint();
+    expect(afterEdit.isDirty).toBe(true);
+    expect(afterEdit.contentRevision).toBeGreaterThan(beforeEdit.contentRevision);
+
+    editor.undo();
+    expect(editor.getSavepoint()).toEqual(beforeEdit);
+    editor.redo();
+    expect(editor.getSavepoint()).toEqual(afterEdit);
+  });
+
+  it('keeps edits made during a save request unsaved', () => {
+    const editor = createRuntime();
+    editor.dispatch({ type: 'updateNode', nodeId: 'answer', patch: { name: 'Saved' } });
+    // host 在发起保存请求前取内容版本，请求成功后回填该版本。
+    const { contentRevision } = editor.getSavepoint();
+    editor.dispatch({ type: 'updateNode', nodeId: 'answer', patch: { name: 'During request' } });
+    editor.markSaved(contentRevision);
+    expect(editor.getSavepoint().isDirty).toBe(true);
+
+    // 撤销回已保存内容恢复干净状态，再重做又变脏。
+    editor.undo();
+    expect(editor.getSavepoint().isDirty).toBe(false);
+    editor.redo();
+    expect(editor.getSavepoint().isDirty).toBe(true);
+
+    // 几何提交同样是内容变化。
+    editor.markSaved(editor.getSavepoint().contentRevision);
+    expect(editor.getSavepoint().isDirty).toBe(false);
+    editor.dispatch({ type: 'commitGeometry', nodeId: 'answer', position: { x: 1, y: 2 } });
+    expect(editor.getSavepoint().isDirty).toBe(true);
+    editor.undo();
+    expect(editor.getSavepoint().isDirty).toBe(false);
+  });
+
+  it('restores a deleted node view and persists the committed position', () => {
+    const editor = createRuntime();
+    editor.dispatch({ type: 'commitGeometry', nodeId: 'answer', position: { x: 5, y: 6 } });
+    expect(
+      editor.getWorkflowData().nodes.find((node) => node.nodeId === 'answer')?.position
+    ).toEqual({ x: 5, y: 6 });
+
+    editor.dispatch({ type: 'removeNodes', nodeIds: ['answer'] });
+    expect(editor.getNodeView('answer')).toBeUndefined();
+
+    editor.undo();
+    expect(editor.getNodeView('answer')?.position).toEqual({ x: 5, y: 6 });
+    editor.undo();
+    expect(editor.getNodeView('answer')?.position).toBeUndefined();
+  });
+
+  it('drops an added node view when the add is undone', () => {
+    const editor = createRuntime();
+    editor.dispatch({
+      type: 'addNode',
+      node: {
+        nodeId: 'answer2',
+        flowNodeType: FlowNodeTypeEnum.answerNode,
+        name: 'Answer 2',
+        position: { x: 3, y: 4 },
+        inputs: [],
+        outputs: []
+      } as never
+    });
+    expect(editor.getNodeView('answer2')?.position).toEqual({ x: 3, y: 4 });
+
+    editor.undo();
+    expect(editor.getNodeView('answer2')).toBeUndefined();
+    editor.redo();
+    expect(
+      editor.getWorkflowData().nodes.find((node) => node.nodeId === 'answer2')?.position
+    ).toEqual({ x: 3, y: 4 });
+  });
+
+  it('restores node views across a whole document replace', () => {
+    const editor = createRuntime();
+    editor.dispatch({ type: 'commitGeometry', nodeId: 'answer', position: { x: 1, y: 1 } });
+
+    const document = editor.getWorkflowData();
+    editor.dispatch({
+      type: 'replaceDocument',
+      document: {
+        ...document,
+        nodes: document.nodes.map((node) =>
+          node.nodeId === 'answer' ? { ...node, position: { x: 9, y: 9 } } : { ...node }
+        )
+      } as never
+    });
+    expect(editor.getNodeView('answer')?.position).toEqual({ x: 9, y: 9 });
+
+    editor.undo();
+    expect(editor.getNodeView('answer')?.position).toEqual({ x: 1, y: 1 });
+    editor.redo();
+    expect(editor.getNodeView('answer')?.position).toEqual({ x: 9, y: 9 });
+  });
+
+  it('commits geometry together with a semantic command in one transaction', () => {
+    const editor = createRuntime();
+    const result = editor.dispatch([
+      { type: 'updateNode', nodeId: 'answer', patch: { name: 'Moved' } },
+      { type: 'commitGeometry', nodeId: 'answer', position: { x: 7, y: 8 } }
+    ] satisfies readonly WorkflowCommand[]);
+
+    expect(result.ok).toBe(true);
+    expect(result.change?.kind).toBe('semantic');
+    expect(result.change?.changedRecords.nodeIds).toEqual(['answer']);
+    expect(result.change?.changedRecords.nodeViewIds).toEqual(['answer']);
+    expect(editor.getNode('answer')?.name).toBe('Moved');
+    expect(editor.getNodeView('answer')?.position).toEqual({ x: 7, y: 8 });
+
+    editor.undo();
+    expect(editor.getNode('answer')?.name).toBe('Answer');
+    expect(editor.getNodeView('answer')?.position).toBeUndefined();
+  });
+
+  it('recomputes the container children list on structure changes', () => {
+    const editor = createContainerRuntime();
+    const getChildren = () =>
+      editor
+        .getNode('loop')
+        ?.inputs.find((input) => input.key === NodeInputKeyEnum.childrenNodeIdList)?.value;
+
+    // 水合不重算：存量数据原样保留，打开工作流不会凭空产生历史或未保存状态。
+    expect(getChildren()).toEqual(['ghost']);
+
+    const added = editor.dispatch({
+      type: 'addNode',
+      node: {
+        nodeId: 'child',
+        flowNodeType: FlowNodeTypeEnum.answerNode,
+        name: 'Child',
+        parentNodeId: 'loop',
+        inputs: [],
+        outputs: []
+      } as never
+    });
+    expect(added.ok).toBe(true);
+    expect(getChildren()).toEqual(['child']);
+    // 派生字段作为普通字段参与变化记录。
+    expect(added.change?.changedRecords.nodeIds).toContain('loop');
+    expect(added.change?.changedRecords.fieldIds).toContainEqual({
+      nodeId: 'loop',
+      key: NodeInputKeyEnum.childrenNodeIdList,
+      kind: 'input'
+    });
+
+    editor.dispatch({ type: 'removeNodes', nodeIds: ['child'] });
+    expect(getChildren()).toEqual([]);
+
+    // 容器归属变化同样触发重算。
+    editor.dispatch({
+      type: 'addNode',
+      node: {
+        nodeId: 'floating',
+        flowNodeType: FlowNodeTypeEnum.answerNode,
+        name: 'Floating',
+        inputs: [],
+        outputs: []
+      } as never
+    });
+    expect(getChildren()).toEqual([]);
+    editor.dispatch({ type: 'attachToContainer', nodeId: 'floating', containerId: 'loop' });
+    expect(getChildren()).toEqual(['floating']);
+
+    // 整文档替换按新文档重算。
+    const document = editor.getWorkflowData();
+    editor.dispatch({
+      type: 'replaceDocument',
+      document: {
+        ...document,
+        nodes: [
+          ...document.nodes,
+          {
+            nodeId: 'c1',
+            flowNodeType: FlowNodeTypeEnum.answerNode,
+            name: 'C1',
+            parentNodeId: 'loop',
+            inputs: [],
+            outputs: []
+          }
+        ]
+      } as never
+    });
+    expect(getChildren()).toEqual(['floating', 'c1']);
+  });
+
+  it('derives the container array value type from the referenced output', () => {
+    const editor = createContainerRuntime();
+    const getArrayValueType = () =>
+      editor
+        .getNode('loop')
+        ?.inputs.find((input) => input.key === NodeInputKeyEnum.loopRunInputArray)?.valueType;
+    expect(getArrayValueType()).toBe(WorkflowIOValueTypeEnum.arrayAny);
+
+    editor.dispatch({
+      type: 'updateField',
+      nodeId: 'loop',
+      fieldKey: NodeInputKeyEnum.loopRunInputArray,
+      value: [['start', 'userChatInput']]
+    });
+    expect(getArrayValueType()).toBe(WorkflowIOValueTypeEnum.arrayString);
+
+    // 引用清空后回落到 arrayAny，与旧编辑器的推断口径一致。
+    editor.dispatch({
+      type: 'updateField',
+      nodeId: 'loop',
+      fieldKey: NodeInputKeyEnum.loopRunInputArray,
+      value: []
+    });
+    expect(getArrayValueType()).toBe(WorkflowIOValueTypeEnum.arrayAny);
+  });
+
+  it('cleans canvas size fields at the migration boundary and never stores them', () => {
+    // migration 边界先清理，Runtime 内部再拒绝写入，两层都不产生画布测量值。
+    const migrated = migrateStoreWorkflow({
+      nodes: [
+        {
+          nodeId: 'loop',
+          flowNodeType: FlowNodeTypeEnum.loopRun,
+          name: 'Loop',
+          inputs: [
+            {
+              key: NodeInputKeyEnum.childrenNodeIdList,
+              label: '',
+              renderTypeList: [FlowNodeInputTypeEnum.hidden],
+              valueType: WorkflowIOValueTypeEnum.arrayString,
+              value: []
+            },
+            {
+              key: NodeInputKeyEnum.nodeWidth,
+              label: '',
+              renderTypeList: [FlowNodeInputTypeEnum.hidden],
+              valueType: WorkflowIOValueTypeEnum.number,
+              value: 900
+            }
+          ],
+          outputs: []
+        }
+      ],
+      edges: [],
+      chatConfig: {}
+    });
+    expect(migrated.nodes[0].inputs.map((input) => input.key)).toEqual([
+      NodeInputKeyEnum.childrenNodeIdList
+    ]);
+
+    const editor = hydrateWorkflowEditor({
+      nodes: [
+        {
+          nodeId: 'loop',
+          flowNodeType: FlowNodeTypeEnum.loopRun,
+          name: 'Loop',
+          position: { x: 1, y: 2 },
+          inputs: [
+            {
+              key: NodeInputKeyEnum.childrenNodeIdList,
+              label: '',
+              renderTypeList: [FlowNodeInputTypeEnum.hidden],
+              valueType: WorkflowIOValueTypeEnum.arrayString,
+              value: []
+            },
+            {
+              key: NodeInputKeyEnum.nodeWidth,
+              label: '',
+              renderTypeList: [FlowNodeInputTypeEnum.hidden],
+              valueType: WorkflowIOValueTypeEnum.number,
+              value: 900
+            },
+            {
+              key: NodeInputKeyEnum.nodeHeight,
+              label: '',
+              renderTypeList: [FlowNodeInputTypeEnum.hidden],
+              valueType: WorkflowIOValueTypeEnum.number,
+              value: 500
+            },
+            {
+              key: NodeInputKeyEnum.nestedNodeInputHeight,
+              label: '',
+              renderTypeList: [FlowNodeInputTypeEnum.hidden],
+              valueType: WorkflowIOValueTypeEnum.number,
+              value: 320
+            }
+          ],
+          outputs: []
+        }
+      ],
+      edges: [],
+      chatConfig: {}
+    });
+
+    const inputKeys = () => (editor.getNode('loop')?.inputs ?? []).map((input) => input.key);
+    expect(inputKeys()).toEqual([NodeInputKeyEnum.childrenNodeIdList]);
+    // 位置属于 Node View，不随尺寸字段一起被清理。
+    expect(editor.getNodeView('loop')?.position).toEqual({ x: 1, y: 2 });
+
+    // 命令写不进容器尺寸字段。
+    editor.dispatch({
+      type: 'updateNode',
+      nodeId: 'loop',
+      patch: {
+        inputs: [
+          {
+            key: NodeInputKeyEnum.nodeWidth,
+            label: '',
+            renderTypeList: [FlowNodeInputTypeEnum.hidden],
+            valueType: WorkflowIOValueTypeEnum.number,
+            value: 1200
+          }
+        ] as never
+      }
+    });
+    expect(editor.getWorkflowData().nodes[0].inputs).toEqual([]);
+  });
+
+  it('keeps debug and the deleted edge count off the public surface', () => {
+    const editor = createRuntime();
+    const result = editor.dispatch({ type: 'removeNodes', nodeIds: ['answer'] });
+    expect(result.ok).toBe(true);
+    expect(result.change?.changedRecords.edgeIds).toHaveLength(1);
+    expect(result).not.toHaveProperty('deletedEdgeCount');
+    // @ts-expect-error 删除边计数已从公开 dispatch 结果移除，条数由边变化记录推导。
+    expect(result.deletedEdgeCount).toBeUndefined();
+    expect(editor).not.toHaveProperty('startDebug');
+    // @ts-expect-error Debug 面已从 Workflow Runtime Port 移除，等独立设计。
+    expect(editor.getDebug).toBeUndefined();
   });
 });

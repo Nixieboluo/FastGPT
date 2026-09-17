@@ -1,13 +1,23 @@
-import { NodeInputKeyEnum } from '../../constants';
+import {
+  ArrayTypeMap,
+  NodeInputKeyEnum,
+  VARIABLE_NODE_ID,
+  WorkflowIOValueTypeEnum
+} from '../../constants';
 import { CanonicalWorkflowDataSchema, type CanonicalWorkflowData } from '../../migration/schema';
+import { stripCanvasSizeInputs } from '../../migration/migrate';
 import {
   FlowNodeTypeEnum,
   isNestedChildSystemNodeType,
   isNestedParentNodeType
 } from '../../node/constant';
 import type { StoreNodeItemType } from '../../type/node';
+import type { FlowNodeInputItemType } from '../../type/io';
+import type { AppChatConfigType } from '../../../app/type';
+import { isValidArrayReferenceValue } from '../../utils';
 import { buildNodeTemplateContext, getNodeContainerCheckError } from '../../template/context';
-import type { WorkflowFieldIdentity, WorkflowNodeData } from '../types';
+import type { NodeViewState, WorkflowFieldIdentity, WorkflowNodeData } from '../types';
+import { getWorkflowGlobalVariables } from '../variables';
 import {
   addFieldIdentity,
   cloneValue,
@@ -25,6 +35,7 @@ import type {
   IndexedNode,
   MutationMeta,
   NodeRecord,
+  NodeViewStore,
   ReferenceGraph,
   RuntimeDocument
 } from './types';
@@ -156,8 +167,9 @@ export const collectNodeFieldChanges = ({
 };
 
 /**
- * 提交一次节点记录替换：同步 staged 引用图，只在数据或视图真的变化时登记 node change，
+ * 提交一次节点记录替换：同步 staged 引用图，只在语义数据真的变化时登记 node change，
  * 并收集受影响的字段身份。replace/updateNode/updateField 三个命令共用这一条提交路径。
+ * 视图变化由 Node View module 单独登记，这里只比较语义数据。
  */
 export const commitNodeRecordUpdate = ({
   meta,
@@ -175,7 +187,7 @@ export const commitNodeRecordUpdate = ({
   after: NodeRecord;
 }) => {
   updateReferenceGraphNode({ graph: referenceGraph, before: before.data, after: after.data });
-  if (!valuesEqual(before.data, after.data) || !valuesEqual(before.view, after.view)) {
+  if (!valuesEqual(before.data, after.data)) {
     recordNodeChange({ meta, nodeId, before, after, afterIndex: index });
   }
   collectNodeFieldChanges({
@@ -183,21 +195,26 @@ export const commitNodeRecordUpdate = ({
     before: before.data,
     after: after.data
   });
-  if (!valuesEqual(before.view, after.view)) meta.changedNodeViewIds.add(nodeId);
 };
 
+/**
+ * 把入站节点拆成语义记录与视图；两侧分别归 Document 与 Node View module 所有。
+ * 容器尺寸类隐藏 input 在这里被剥掉：画布测量值不进入 Workflow Document，命令也写不进来。
+ */
 export const splitNode = (
   node: StoreNodeItemType,
   forbidDelete = hasForbidDelete(node)
-): NodeRecord => {
+): { record: NodeRecord; view: NodeViewState } => {
   const { position, isFolded, ...data } = cloneValue(node);
   return {
-    data,
+    record: {
+      data: { ...data, inputs: stripCanvasSizeInputs(data.inputs) },
+      ...(forbidDelete ? { forbidDelete: true } : {})
+    },
     view: {
       ...(position ? { position } : {}),
       ...(isFolded !== undefined ? { isFolded } : {})
-    },
-    ...(forbidDelete ? { forbidDelete: true } : {})
+    }
   };
 };
 
@@ -205,9 +222,12 @@ export const splitNode = (
 export const buildDocument = (input: unknown, edgeIdStart = 0): CanonicalResult => {
   const canonical = CanonicalWorkflowDataSchema.parse(input);
   const rawNodes = isObject(input) && Array.isArray(input.nodes) ? input.nodes : [];
-  const nodes = canonical.nodes.map((node, index) =>
-    splitNode(node, hasForbidDelete(rawNodes[index]))
-  );
+  const views: NodeViewStore = new Map();
+  const nodes = canonical.nodes.map((node, index) => {
+    const { record, view } = splitNode(node, hasForbidDelete(rawNodes[index]));
+    views.set(record.data.nodeId, view);
+    return record;
+  });
   const nodeIds = new Set<string>();
   nodes.forEach((node) => {
     if (nodeIds.has(node.data.nodeId))
@@ -228,17 +248,30 @@ export const buildDocument = (input: unknown, edgeIdStart = 0): CanonicalResult 
       edges,
       chatConfig: cloneValue(canonical.chatConfig)
     },
+    views,
     nextEdgeId
   };
 };
 
-/** 将内部 document 重新组合成外部 canonical document，供比较与 Debug 快照共用。 */
-export const documentToCanonical = (document: RuntimeDocument): CanonicalWorkflowData => ({
-  nodes: document.nodes.map(({ data, view }) => ({
-    ...cloneValue(data),
-    ...(view.position ? { position: cloneValue(view.position) } : {}),
-    ...(view.isFolded !== undefined ? { isFolded: view.isFolded } : {})
-  })),
+/**
+ * 将内部分离存储重新组合成外部 canonical document：语义记录来自 Document，
+ * position/isFolded 来自 Node View module。持久化结构只在这个边界组装一次。
+ */
+export const documentToCanonical = ({
+  document,
+  views
+}: {
+  document: RuntimeDocument;
+  views: NodeViewStore;
+}): CanonicalWorkflowData => ({
+  nodes: document.nodes.map(({ data }) => {
+    const view = views.get(data.nodeId);
+    return {
+      ...cloneValue(data),
+      ...(view?.position ? { position: cloneValue(view.position) } : {}),
+      ...(view?.isFolded !== undefined ? { isFolded: view.isFolded } : {})
+    };
+  }),
   edges: document.edges.map((edge) => cloneValue(edge.data)),
   chatConfig: cloneValue(document.chatConfig)
 });
@@ -493,4 +526,135 @@ export const collectDescendantNodeIds = (
   };
   rootIds.forEach(visit);
   return descendants;
+};
+
+/** Persisted Derived Field：容器子节点清单。执行层读它，因此必须留在持久化数据里。 */
+const childrenNodeIdListKey = NodeInputKeyEnum.childrenNodeIdList;
+
+/** Persisted Derived Field：容器数组输入，其值类型由被引用来源的类型决定。 */
+const containerArrayInputKeys = new Set<string>([
+  NodeInputKeyEnum.nestedInputArray,
+  NodeInputKeyEnum.loopRunInputArray
+]);
+
+/** Document 判断本笔事务是否触碰了需要重算值类型的容器数组输入。 */
+export const isContainerArrayInputKey = (key: string) => containerArrayInputKeys.has(key);
+
+/** 条件模式的 Loop Run 没有数组输入，与旧编辑器一致跳过值类型推断。 */
+const skipsArrayValueTypeInference = (data: WorkflowNodeData, key: string) =>
+  key === NodeInputKeyEnum.loopRunInputArray &&
+  data.flowNodeType === FlowNodeTypeEnum.loopRun &&
+  data.inputs.find((input) => input.key === NodeInputKeyEnum.loopRunMode)?.value === 'conditional';
+
+/**
+ * 推断容器数组输入的值类型：取第一个引用的来源类型并映射成对应数组类型。
+ * 口径与旧编辑器的渲染副作用一致，引用缺失或无法解析时回落到 arrayAny。
+ */
+const resolveArrayInputValueType = ({
+  value,
+  nodes,
+  nodeIds,
+  chatConfig
+}: {
+  value: unknown;
+  nodes: NodeRecord[];
+  nodeIds: string[];
+  chatConfig: AppChatConfigType;
+}): WorkflowIOValueTypeEnum => {
+  if (!Array.isArray(value) || value.length === 0 || !isValidArrayReferenceValue(value, nodeIds)) {
+    return WorkflowIOValueTypeEnum.arrayAny;
+  }
+  // isValidArrayReferenceValue 是类型守卫，这里 value 已收窄成引用数组。
+  const [sourceNodeId, outputId] = value[0];
+  const sourceType =
+    sourceNodeId === VARIABLE_NODE_ID
+      ? getWorkflowGlobalVariables({ chatConfig }).find((item) => item.key === outputId)?.valueType
+      : nodes
+          .find(({ data }) => data.nodeId === sourceNodeId)
+          ?.data.outputs.find((output) => output.id === outputId)?.valueType;
+  return ArrayTypeMap[sourceType as keyof typeof ArrayTypeMap] ?? WorkflowIOValueTypeEnum.arrayAny;
+};
+
+/** 重算单个节点的派生字段；没有变化时返回原 inputs 数组，保持字段身份稳定。 */
+const deriveNodeInputs = ({
+  node,
+  nodes,
+  nodeIds,
+  chatConfig,
+  childrenByParent
+}: {
+  node: NodeRecord;
+  nodes: NodeRecord[];
+  nodeIds: string[];
+  chatConfig: AppChatConfigType;
+  childrenByParent: Map<string, string[]>;
+}): FlowNodeInputItemType[] => {
+  let inputs = node.data.inputs;
+
+  const childrenInput = inputs.find((input) => input.key === childrenNodeIdListKey);
+  if (childrenInput) {
+    const children = childrenByParent.get(node.data.nodeId) ?? [];
+    if (!valuesEqual(childrenInput.value ?? [], children)) {
+      inputs = inputs.map((input) =>
+        input === childrenInput ? { ...input, value: [...children] } : input
+      );
+    }
+  }
+
+  const arrayInput = inputs.find(
+    (input) =>
+      containerArrayInputKeys.has(input.key) && !skipsArrayValueTypeInference(node.data, input.key)
+  );
+  if (arrayInput) {
+    const valueType = resolveArrayInputValueType({
+      value: arrayInput.value,
+      nodes,
+      nodeIds,
+      chatConfig
+    });
+    if (arrayInput.valueType !== valueType) {
+      inputs = inputs.map((input) => (input === arrayInput ? { ...input, valueType } : input));
+    }
+  }
+
+  return inputs;
+};
+
+/**
+ * 重算全部 Persisted Derived Field：容器子节点清单与容器数组输入的值类型。
+ * 两者的值完全由文档其他内容决定，但执行层要读，所以必须持久化；由 Runtime 在结构变化、
+ * chatConfig 变化或数组输入自身变化时重算，渲染副作用不再写回文档。
+ * 返回替换后的节点数组与逐节点变化，调用方据此登记 node change 与字段变化。
+ */
+export const applyPersistedDerivedFields = ({
+  nodes,
+  chatConfig
+}: {
+  nodes: NodeRecord[];
+  chatConfig: AppChatConfigType;
+}): {
+  nodes: NodeRecord[];
+  changes: Array<{ index: number; before: NodeRecord; after: NodeRecord }>;
+} => {
+  const childrenByParent = new Map<string, string[]>();
+  const nodeIds: string[] = [];
+  nodes.forEach(({ data }) => {
+    nodeIds.push(data.nodeId);
+    if (!data.parentNodeId) return;
+    const children = childrenByParent.get(data.parentNodeId) ?? [];
+    children.push(data.nodeId);
+    childrenByParent.set(data.parentNodeId, children);
+  });
+
+  const changes: Array<{ index: number; before: NodeRecord; after: NodeRecord }> = [];
+  let nextNodes = nodes;
+  nodes.forEach((node, index) => {
+    const inputs = deriveNodeInputs({ node, nodes, nodeIds, chatConfig, childrenByParent });
+    if (inputs === node.data.inputs) return;
+    const after: NodeRecord = { ...node, data: { ...node.data, inputs } };
+    if (nextNodes === nodes) nextNodes = nodes.slice();
+    nextNodes[index] = after;
+    changes.push({ index, before: node, after });
+  });
+  return { nodes: nextNodes, changes };
 };

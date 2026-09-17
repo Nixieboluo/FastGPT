@@ -93,21 +93,21 @@ export type WorkflowSnapshot = DeepReadonly<{
   issues: WorkflowCheckIssue[];
 }>;
 
-/** 独立 Debug State 会话。workflow 是启动瞬间的 immutable snapshot。 */
-export type DebugSessionSnapshot = DeepReadonly<{
-  sessionId: string;
-  status: 'idle' | 'running' | 'success' | 'failed';
-  workflow: CanonicalWorkflowData;
-  formValues: Record<string, unknown>;
-  results: Record<string, unknown>;
-}>;
-
 /** 一次 history entry 的公开状态。 */
 export type HistorySnapshot = DeepReadonly<{
   canUndo: boolean;
   canRedo: boolean;
   undoCount: number;
   redoCount: number;
+}>;
+
+/**
+ * 保存点：已确认保存的内容版本，以及当前内容是否与之不同。
+ * Content Revision 由 history 恢复，因此撤销回已保存内容会自然回到干净状态。
+ */
+export type WorkflowSavepoint = DeepReadonly<{
+  contentRevision: number;
+  isDirty: boolean;
 }>;
 
 /** 通知来源，undo/redo 也通过同一 external-store 事件通道发布。 */
@@ -177,7 +177,7 @@ export type WorkflowChange =
   | WorkflowGeometryChange
   | WorkflowReplaceChange;
 
-/** 运行时可接受的闭合工作流命令。Debug 与 Canvas frame 不属于该联合。 */
+/** 运行时可接受的闭合工作流命令。瞬时 Canvas frame 不属于该联合。 */
 export type WorkflowCommand =
   | { type: 'addNode'; node: StoreNodeItemType }
   | { type: 'replaceNode'; nodeId: string; node: StoreNodeItemType }
@@ -224,12 +224,6 @@ export type WorkflowDispatchResult = {
   ok: boolean;
   change?: WorkflowChange;
   error?: WorkflowCommandError;
-  deletedEdgeCount?: number;
-};
-
-/** Debug 启动参数，不触碰 Workflow Document 生命周期。 */
-export type DebugStartOptions = {
-  formValues?: Record<string, unknown>;
 };
 
 /** Workflow Runtime Port 的唯一行为测试与 adapter seam。 */
@@ -239,17 +233,18 @@ export type WorkflowRuntimePort = {
   getNode: (nodeId: string) => WorkflowNodeSnapshot | undefined;
   getNodeView: (nodeId: string) => WorkflowNodeViewSnapshot | undefined;
   getField: (query: WorkflowFieldQuery) => WorkflowFieldSnapshot | undefined;
-  getDebug: () => DebugSessionSnapshot | undefined;
   getHistory: () => HistorySnapshot;
+  getSavepoint: () => WorkflowSavepoint;
   getChangeLog: () => readonly WorkflowChange[];
   dispatch: (command: WorkflowCommand | readonly WorkflowCommand[]) => WorkflowDispatchResult;
   subscribe: (listener: (change: WorkflowChange) => void) => () => void;
   undo: () => WorkflowDispatchResult;
   redo: () => WorkflowDispatchResult;
-  startDebug: (options?: DebugStartOptions) => DebugSessionSnapshot;
-  setDebugResult: (nodeId: string, result: unknown) => void;
-  finishDebug: (status?: 'success' | 'failed') => void;
-  clearDebug: () => void;
+  /**
+   * 回填保存点。host 在发起保存请求前读取内容版本，请求成功后用该版本调用本方法，
+   * 失败不调用；请求期间产生的新编辑因此仍然算未保存。
+   */
+  markSaved: (contentRevision: number) => void;
   isDisposed: () => boolean;
   dispose: () => void;
 };

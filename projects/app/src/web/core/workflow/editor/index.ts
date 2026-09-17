@@ -21,8 +21,6 @@ export {
 } from './react';
 export type {
   DeepReadonly,
-  DebugSessionSnapshot,
-  DebugStartOptions,
   HistorySnapshot,
   NodeViewState,
   RuntimeEdgeId,
@@ -44,6 +42,7 @@ export type {
   WorkflowReferenceOption,
   WorkflowReferenceStatusCode,
   WorkflowRuntimePort,
+  WorkflowSavepoint,
   WorkflowSemanticChange,
   WorkflowSnapshot
 } from '@fastgpt/global/core/workflow/editor';
