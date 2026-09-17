@@ -26,7 +26,8 @@ import {
   getFieldIdentityKey,
   isObject
 } from './kernel';
-import { createDocumentModule, documentToCanonical } from './documentModule';
+import { createDocumentModule } from './documentModule';
+import { documentToCanonical, resolveStructureChanged } from './documentRules';
 import { createNodeViewModule } from './nodeViewModule';
 import { createReferenceModule } from './referenceModule';
 import { createIssueModule } from './issueModule';
@@ -357,7 +358,7 @@ export const createWorkflowEditor = (
       return { ok: true };
     }
 
-    meta.structureChanged = document.resolveStructureChanged(meta);
+    meta.structureChanged = resolveStructureChanged(meta);
     document.setDocument(working);
     workflowVersion++;
     if (meta.kind !== 'geometry') semanticVersion++;

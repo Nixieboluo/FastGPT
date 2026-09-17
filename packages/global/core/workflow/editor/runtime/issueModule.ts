@@ -11,7 +11,15 @@ import type { FlowNodeInputItemType } from '../../type/io';
 import type { WorkflowCheckIssue } from '../../type/node';
 import type { WorkflowReferenceStatus } from '../types';
 import { addFieldIdentity, isEmptyValue, isObject, valuesEqual } from './kernel';
-import type { DocumentReadApi, MutationMeta, NodeRecord, ReferenceReadApi } from './types';
+import { getPlacementError } from './documentRules';
+import type {
+  DocumentReadApi,
+  EdgeRecord,
+  GraphIndex,
+  MutationMeta,
+  NodeRecord,
+  ReferenceReadApi
+} from './types';
 
 /**
  * Issue module：拥有 issue 派生结果与可达节点集合。
@@ -76,6 +84,224 @@ const issueForStatus = ({
     message,
     inputKey: input.key
   };
+};
+
+/**
+ * 各节点类型的专属校验规则。入参全部来自 Document 只读数据，不依赖 Issue module 状态，
+ * 因此可以放在 module 级别；返回值按顺序交给调用方去重后写入 Issue View。
+ */
+const collectNodeTypeIssues = ({
+  node,
+  nodes,
+  graphIndex,
+  isSourceEdgeValid
+}: {
+  node: NodeRecord;
+  nodes: NodeRecord[];
+  graphIndex: GraphIndex;
+  isSourceEdgeValid: (edge: EdgeRecord) => boolean;
+}) => {
+  const issues: { code: string; message: string; inputKey?: string }[] = [];
+  const addIssue = (code: string, message: string, inputKey?: string) => {
+    issues.push({ code, message, ...(inputKey ? { inputKey } : {}) });
+  };
+  const inputs = node.data.inputs;
+  const inputMap = new Map(inputs.map((input) => [input.key, input]));
+  const getInputValue = (key: string) => {
+    const input = inputMap.get(key);
+    return input?.value ?? input?.defaultValue;
+  };
+  // 被工具选择边指向的节点算工具节点，代码节点的动态入参校验会放宽。
+  const isToolNode = (graphIndex.byTarget.get(node.data.nodeId) ?? []).some(
+    (edge) => edge.data.targetHandle === NodeOutputKeyEnum.selectedTools && isSourceEdgeValid(edge)
+  );
+
+  if (node.data.flowNodeType === FlowNodeTypeEnum.ifElseNode) {
+    const ifElseList = getInputValue(NodeInputKeyEnum.ifElseList);
+    const hasIncompleteCondition =
+      !Array.isArray(ifElseList) ||
+      ifElseList.some(
+        (branch) =>
+          !isObject(branch) ||
+          !Array.isArray(branch.list) ||
+          branch.list.some((condition) => {
+            if (!isObject(condition)) return true;
+            const hasEmptyVariable = isEmptyReferenceValue(condition.variable);
+            const hasEmptyValue =
+              condition.value === undefined ||
+              (condition.valueType === 'reference' && isEmptyReferenceValue(condition.value));
+            return (
+              hasEmptyVariable ||
+              condition.condition === undefined ||
+              (hasEmptyValue &&
+                condition.condition !== 'isEmpty' &&
+                condition.condition !== 'isNotEmpty')
+            );
+          })
+      );
+    if (hasIncompleteCondition) {
+      addIssue(
+        'if_else_incomplete',
+        'If/Else contains an incomplete condition',
+        NodeInputKeyEnum.ifElseList
+      );
+    }
+  }
+
+  if (node.data.flowNodeType === FlowNodeTypeEnum.userSelect) {
+    const options = getInputValue(NodeInputKeyEnum.userSelectOptions);
+    if (!Array.isArray(options) || options.length === 0) {
+      addIssue(
+        'user_select_empty',
+        'User selection needs at least one option',
+        NodeInputKeyEnum.userSelectOptions
+      );
+    } else if (options.some((option) => !isObject(option) || !option.value)) {
+      addIssue(
+        'user_select_value_empty',
+        'User selection options cannot be empty',
+        NodeInputKeyEnum.userSelectOptions
+      );
+    }
+  }
+
+  if (node.data.flowNodeType === FlowNodeTypeEnum.formInput) {
+    const forms = getInputValue(NodeInputKeyEnum.userInputForms);
+    if (!Array.isArray(forms) || forms.length === 0) {
+      addIssue(
+        'form_input_empty',
+        'Form input needs at least one field',
+        NodeInputKeyEnum.userInputForms
+      );
+    }
+  }
+
+  if (node.data.flowNodeType === FlowNodeTypeEnum.datasetConcatNode) {
+    if (!inputs.some((input) => input.canEdit)) {
+      addIssue(
+        'required_input_empty',
+        'Dataset concat needs at least one dataset quote',
+        NodeInputKeyEnum.datasetQuoteList
+      );
+    }
+  }
+
+  if (node.data.flowNodeType === FlowNodeTypeEnum.classifyQuestion) {
+    const agents = getInputValue(NodeInputKeyEnum.agents);
+    if (!Array.isArray(agents) || agents.length === 0) {
+      addIssue(
+        'classify_question_empty',
+        'Classification needs at least one category',
+        NodeInputKeyEnum.agents
+      );
+    } else if (agents.some((agent) => !isObject(agent) || !agent.value)) {
+      addIssue(
+        'classify_question_value_empty',
+        'Classification values cannot be empty',
+        NodeInputKeyEnum.agents
+      );
+    }
+  }
+
+  if (node.data.flowNodeType === FlowNodeTypeEnum.code) {
+    const hasIncompleteDynamicInput = inputs.some((input) => {
+      if (
+        [NodeInputKeyEnum.code, NodeInputKeyEnum.codeType, NodeInputKeyEnum.addInputParam].includes(
+          input.key as NodeInputKeyEnum
+        ) ||
+        !input.canEdit
+      ) {
+        return false;
+      }
+      if (
+        isToolNode &&
+        isAgentGeneratedToolInput(
+          initToolInputTypeByDefaultMode(input, { allowUserChatInputAgentGenerated: true })
+        ) &&
+        canInputBeAgentGenerated(input)
+      ) {
+        return false;
+      }
+      return !input.key || !input.label || isEmptyReferenceValue(input.value);
+    });
+    if (hasIncompleteDynamicInput) {
+      addIssue('code_input_incomplete', 'Code input variables are incomplete');
+    }
+  }
+
+  if (node.data.flowNodeType === FlowNodeTypeEnum.httpRequest468) {
+    if (isEmptyValue(getInputValue(NodeInputKeyEnum.httpReqUrl))) {
+      addIssue('http_url_empty', 'HTTP request needs a URL', NodeInputKeyEnum.httpReqUrl);
+    }
+  }
+
+  if (node.data.flowNodeType === FlowNodeTypeEnum.contentExtract) {
+    const extractKeys = getInputValue(NodeInputKeyEnum.extractKeys);
+    if (!Array.isArray(extractKeys) || extractKeys.length === 0) {
+      addIssue(
+        'context_extract_empty',
+        'Content extraction needs at least one target field',
+        NodeInputKeyEnum.extractKeys
+      );
+    }
+  }
+
+  if (node.data.flowNodeType === FlowNodeTypeEnum.loopRun) {
+    if (getInputValue(NodeInputKeyEnum.loopRunMode) === 'conditional') {
+      const childIds = getInputValue(NodeInputKeyEnum.childrenNodeIdList);
+      const childIdSet = new Set(Array.isArray(childIds) ? childIds : []);
+      const hasBreak = nodes.some(
+        (child) =>
+          childIdSet.has(child.data.nodeId) &&
+          child.data.flowNodeType === FlowNodeTypeEnum.loopRunBreak
+      );
+      if (!hasBreak) {
+        addIssue('loop_run_missing_break', 'Conditional loop needs a Loop Break node');
+      }
+    }
+  }
+
+  if (node.data.flowNodeType === FlowNodeTypeEnum.toolCall) {
+    const hasToolConnection = (graphIndex.bySource.get(node.data.nodeId) ?? []).some(
+      (edge) =>
+        edge.data.sourceHandle === NodeOutputKeyEnum.selectedTools && isSourceEdgeValid(edge)
+    );
+    if (!hasToolConnection && getInputValue(NodeInputKeyEnum.useAgentSandbox) !== true) {
+      addIssue(
+        'tool_call_empty',
+        'Tool call needs a tool or the agent sandbox',
+        NodeInputKeyEnum.useAgentSandbox
+      );
+    }
+  }
+
+  if (node.data.flowNodeType === FlowNodeTypeEnum.variableUpdate) {
+    const updateList = getInputValue(NodeInputKeyEnum.updateList);
+    const isUpdateValueEmpty = (item: Record<string, unknown>) => {
+      if (item.renderType === 'reference') return isEmptyReferenceValue(item.value);
+      if (item.arrayMode === 'clear' || item.booleanMode) return false;
+      const value = item.value;
+      return (
+        !Array.isArray(value) || value[1] === undefined || value[1] === null || value[1] === ''
+      );
+    };
+    if (
+      !Array.isArray(updateList) ||
+      updateList.length === 0 ||
+      updateList.some(
+        (item) =>
+          !isObject(item) || isEmptyReferenceValue(item.variable) || isUpdateValueEmpty(item)
+      )
+    ) {
+      addIssue(
+        'required_input_empty',
+        'Variable update contains an incomplete item',
+        NodeInputKeyEnum.updateList
+      );
+    }
+  }
+
+  return issues;
 };
 
 /** Create the Workflow Issue module. */
@@ -186,16 +412,6 @@ export const createIssueModule = ({
             ...(inputKey ? { inputKey } : {})
           });
         };
-        const inputs = node.data.inputs;
-        const inputMap = new Map(inputs.map((input) => [input.key, input]));
-        const getInputValue = (key: string) => {
-          const input = inputMap.get(key);
-          return input?.value ?? input?.defaultValue;
-        };
-        const isToolNode = (graphIndex.byTarget.get(node.data.nodeId) ?? []).some(
-          (edge) =>
-            edge.data.targetHandle === NodeOutputKeyEnum.selectedTools && isSourceEdgeValid(edge)
-        );
 
         node.data.inputs.forEach((input) => {
           const value = input.value ?? input.defaultValue;
@@ -214,201 +430,14 @@ export const createIssueModule = ({
           });
         });
 
-        if (node.data.flowNodeType === FlowNodeTypeEnum.ifElseNode) {
-          const ifElseList = getInputValue(NodeInputKeyEnum.ifElseList);
-          const hasIncompleteCondition =
-            !Array.isArray(ifElseList) ||
-            ifElseList.some(
-              (branch) =>
-                !isObject(branch) ||
-                !Array.isArray(branch.list) ||
-                branch.list.some((condition) => {
-                  if (!isObject(condition)) return true;
-                  const hasEmptyVariable = isEmptyReferenceValue(condition.variable);
-                  const hasEmptyValue =
-                    condition.value === undefined ||
-                    (condition.valueType === 'reference' && isEmptyReferenceValue(condition.value));
-                  return (
-                    hasEmptyVariable ||
-                    condition.condition === undefined ||
-                    (hasEmptyValue &&
-                      condition.condition !== 'isEmpty' &&
-                      condition.condition !== 'isNotEmpty')
-                  );
-                })
-            );
-          if (hasIncompleteCondition) {
-            addIssue(
-              'if_else_incomplete',
-              'If/Else contains an incomplete condition',
-              NodeInputKeyEnum.ifElseList
-            );
-          }
-        }
+        collectNodeTypeIssues({
+          node,
+          nodes: current.nodes,
+          graphIndex,
+          isSourceEdgeValid
+        }).forEach(({ code, message, inputKey }) => addIssue(code, message, inputKey));
 
-        if (node.data.flowNodeType === FlowNodeTypeEnum.userSelect) {
-          const options = getInputValue(NodeInputKeyEnum.userSelectOptions);
-          if (!Array.isArray(options) || options.length === 0) {
-            addIssue(
-              'user_select_empty',
-              'User selection needs at least one option',
-              NodeInputKeyEnum.userSelectOptions
-            );
-          } else if (options.some((option) => !isObject(option) || !option.value)) {
-            addIssue(
-              'user_select_value_empty',
-              'User selection options cannot be empty',
-              NodeInputKeyEnum.userSelectOptions
-            );
-          }
-        }
-
-        if (node.data.flowNodeType === FlowNodeTypeEnum.formInput) {
-          const forms = getInputValue(NodeInputKeyEnum.userInputForms);
-          if (!Array.isArray(forms) || forms.length === 0) {
-            addIssue(
-              'form_input_empty',
-              'Form input needs at least one field',
-              NodeInputKeyEnum.userInputForms
-            );
-          }
-        }
-
-        if (node.data.flowNodeType === FlowNodeTypeEnum.datasetConcatNode) {
-          if (!inputs.some((input) => input.canEdit)) {
-            addIssue(
-              'required_input_empty',
-              'Dataset concat needs at least one dataset quote',
-              NodeInputKeyEnum.datasetQuoteList
-            );
-          }
-        }
-
-        if (node.data.flowNodeType === FlowNodeTypeEnum.classifyQuestion) {
-          const agents = getInputValue(NodeInputKeyEnum.agents);
-          if (!Array.isArray(agents) || agents.length === 0) {
-            addIssue(
-              'classify_question_empty',
-              'Classification needs at least one category',
-              NodeInputKeyEnum.agents
-            );
-          } else if (agents.some((agent) => !isObject(agent) || !agent.value)) {
-            addIssue(
-              'classify_question_value_empty',
-              'Classification values cannot be empty',
-              NodeInputKeyEnum.agents
-            );
-          }
-        }
-
-        if (node.data.flowNodeType === FlowNodeTypeEnum.code) {
-          const hasIncompleteDynamicInput = inputs.some((input) => {
-            if (
-              [
-                NodeInputKeyEnum.code,
-                NodeInputKeyEnum.codeType,
-                NodeInputKeyEnum.addInputParam
-              ].includes(input.key as NodeInputKeyEnum) ||
-              !input.canEdit
-            ) {
-              return false;
-            }
-            if (
-              isToolNode &&
-              isAgentGeneratedToolInput(
-                initToolInputTypeByDefaultMode(input, {
-                  allowUserChatInputAgentGenerated: true
-                })
-              ) &&
-              canInputBeAgentGenerated(input)
-            ) {
-              return false;
-            }
-            return !input.key || !input.label || isEmptyReferenceValue(input.value);
-          });
-          if (hasIncompleteDynamicInput) {
-            addIssue('code_input_incomplete', 'Code input variables are incomplete');
-          }
-        }
-
-        if (node.data.flowNodeType === FlowNodeTypeEnum.httpRequest468) {
-          if (isEmptyValue(getInputValue(NodeInputKeyEnum.httpReqUrl))) {
-            addIssue('http_url_empty', 'HTTP request needs a URL', NodeInputKeyEnum.httpReqUrl);
-          }
-        }
-
-        if (node.data.flowNodeType === FlowNodeTypeEnum.contentExtract) {
-          const extractKeys = getInputValue(NodeInputKeyEnum.extractKeys);
-          if (!Array.isArray(extractKeys) || extractKeys.length === 0) {
-            addIssue(
-              'context_extract_empty',
-              'Content extraction needs at least one target field',
-              NodeInputKeyEnum.extractKeys
-            );
-          }
-        }
-
-        if (node.data.flowNodeType === FlowNodeTypeEnum.loopRun) {
-          if (getInputValue(NodeInputKeyEnum.loopRunMode) === 'conditional') {
-            const childIds = getInputValue(NodeInputKeyEnum.childrenNodeIdList);
-            const childIdSet = new Set(Array.isArray(childIds) ? childIds : []);
-            const hasBreak = current.nodes.some(
-              (child) =>
-                childIdSet.has(child.data.nodeId) &&
-                child.data.flowNodeType === FlowNodeTypeEnum.loopRunBreak
-            );
-            if (!hasBreak) {
-              addIssue('loop_run_missing_break', 'Conditional loop needs a Loop Break node');
-            }
-          }
-        }
-
-        if (node.data.flowNodeType === FlowNodeTypeEnum.toolCall) {
-          const hasToolConnection = (graphIndex.bySource.get(node.data.nodeId) ?? []).some(
-            (edge) =>
-              edge.data.sourceHandle === NodeOutputKeyEnum.selectedTools && isSourceEdgeValid(edge)
-          );
-          if (!hasToolConnection && getInputValue(NodeInputKeyEnum.useAgentSandbox) !== true) {
-            addIssue(
-              'tool_call_empty',
-              'Tool call needs a tool or the agent sandbox',
-              NodeInputKeyEnum.useAgentSandbox
-            );
-          }
-        }
-
-        if (node.data.flowNodeType === FlowNodeTypeEnum.variableUpdate) {
-          const updateList = getInputValue(NodeInputKeyEnum.updateList);
-          const isUpdateValueEmpty = (item: Record<string, unknown>) => {
-            if (item.renderType === 'reference') return isEmptyReferenceValue(item.value);
-            if (item.arrayMode === 'clear' || item.booleanMode) return false;
-            const value = item.value;
-            return (
-              !Array.isArray(value) ||
-              value[1] === undefined ||
-              value[1] === null ||
-              value[1] === ''
-            );
-          };
-          if (
-            !Array.isArray(updateList) ||
-            updateList.length === 0 ||
-            updateList.some(
-              (item) =>
-                !isObject(item) || isEmptyReferenceValue(item.variable) || isUpdateValueEmpty(item)
-            )
-          ) {
-            addIssue(
-              'required_input_empty',
-              'Variable update contains an incomplete item',
-              NodeInputKeyEnum.updateList
-            );
-          }
-        }
-
-        if (
-          document.getPlacementError({ working: current, node, parentId: node.data.parentNodeId })
-        ) {
+        if (getPlacementError({ working: current, node, parentId: node.data.parentNodeId })) {
           addIssue('invalid_placement', 'Node placement is not allowed');
         }
 

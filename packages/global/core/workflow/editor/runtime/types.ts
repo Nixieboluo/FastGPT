@@ -122,15 +122,6 @@ export type DocumentReadApi = {
     nodeId: string;
     meta?: MutationMeta;
   }) => number;
-  readonly getPlacementError: ({
-    working,
-    node,
-    parentId
-  }: {
-    working: RuntimeDocument;
-    node: NodeRecord;
-    parentId?: string;
-  }) => 'invalid_placement' | undefined;
 };
 
 /** Issue module 需要的 Reference 只读窄接口。 */

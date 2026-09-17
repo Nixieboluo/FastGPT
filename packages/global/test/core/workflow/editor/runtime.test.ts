@@ -85,6 +85,133 @@ describe('workflow editor runtime modules', () => {
     expect(editor.getHistory()).toEqual(beforeHistory);
   });
 
+  it('replaces a node record and carries its delete protection forward', () => {
+    const editor = createRuntime();
+    const result = editor.dispatch({
+      type: 'replaceNode',
+      nodeId: 'answer',
+      node: {
+        nodeId: 'answer',
+        flowNodeType: FlowNodeTypeEnum.answerNode,
+        name: 'Replaced',
+        position: { x: 10, y: 12 },
+        forbidDelete: true,
+        inputs: [],
+        outputs: []
+      } as never
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.change?.changedRecords.nodeIds).toEqual(['answer']);
+    expect(result.change?.changedRecords.nodeViewIds).toEqual(['answer']);
+    expect(editor.getNode('answer')?.name).toBe('Replaced');
+    expect(editor.getNodeView('answer')?.position).toEqual({ x: 10, y: 12 });
+    expect(editor.dispatch({ type: 'removeNodes', nodeIds: ['answer'] }).error?.code).toBe(
+      'invalid_command'
+    );
+  });
+
+  it('removes a node together with the edges attached to it', () => {
+    const editor = createRuntime();
+    const result = editor.dispatch({ type: 'removeNodes', nodeIds: ['answer'] });
+
+    expect(result.ok).toBe(true);
+    expect(result.change?.changedRecords.nodeIds).toEqual(['answer']);
+    expect(result.change?.changedRecords.edgeIds).toHaveLength(1);
+    expect(editor.getNode('answer')).toBeUndefined();
+    expect(editor.getWorkflow().edges).toEqual([]);
+  });
+
+  it('keeps a break node inside a conditional loop', () => {
+    const editor = createWorkflowEditor({ nodes: [], edges: [], chatConfig: {} });
+    const added = editor.dispatch([
+      {
+        type: 'addNode',
+        node: {
+          nodeId: 'loop',
+          flowNodeType: FlowNodeTypeEnum.loopRun,
+          name: 'Loop',
+          inputs: [
+            {
+              key: NodeInputKeyEnum.loopRunMode,
+              label: 'Mode',
+              renderTypeList: [FlowNodeInputTypeEnum.input],
+              value: 'conditional'
+            }
+          ],
+          outputs: []
+        }
+      },
+      {
+        type: 'addNode',
+        node: {
+          nodeId: 'break',
+          flowNodeType: FlowNodeTypeEnum.loopRunBreak,
+          name: 'Break',
+          parentNodeId: 'loop',
+          inputs: [],
+          outputs: []
+        }
+      }
+    ] satisfies readonly WorkflowCommand[]);
+    expect(added.ok).toBe(true);
+
+    expect(editor.dispatch({ type: 'removeNodes', nodeIds: ['break'] }).error?.code).toBe(
+      'invalid_command'
+    );
+    expect(editor.getNode('break')).toBeDefined();
+    expect(editor.dispatch({ type: 'removeNodes', nodeIds: ['loop'] }).ok).toBe(true);
+    expect(editor.getNode('break')).toBeUndefined();
+  });
+
+  it('records only the touched field for a single field update', () => {
+    const editor = createRuntime();
+    const result = editor.dispatch({
+      type: 'updateField',
+      nodeId: 'answer',
+      fieldKey: NodeInputKeyEnum.answerText,
+      value: 'hello'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.change?.changedRecords.nodeIds).toEqual(['answer']);
+    expect(result.change?.changedRecords.nodeViewIds).toEqual([]);
+    expect(result.change?.changedRecords.fieldIds).toEqual([
+      { nodeId: 'answer', key: NodeInputKeyEnum.answerText, kind: 'input' }
+    ]);
+    expect(
+      editor.getField({ nodeId: 'answer', fieldKey: NodeInputKeyEnum.answerText })?.input?.value
+    ).toBe('hello');
+  });
+
+  it('derives node type specific issues', () => {
+    const editor = createWorkflowEditor({
+      nodes: [
+        {
+          nodeId: 'http',
+          flowNodeType: FlowNodeTypeEnum.httpRequest468,
+          name: 'HTTP',
+          inputs: [],
+          outputs: []
+        },
+        {
+          nodeId: 'ifElse',
+          flowNodeType: FlowNodeTypeEnum.ifElseNode,
+          name: 'If',
+          inputs: [],
+          outputs: []
+        }
+      ],
+      edges: [],
+      chatConfig: {}
+    });
+
+    expect(editor.getNode('http')?.issues.map((issue) => issue.code)).toContain('http_url_empty');
+    expect(editor.getNode('ifElse')?.issues.map((issue) => issue.code)).toContain(
+      'if_else_incomplete'
+    );
+  });
+
   it('commits geometry once and restores it through history', () => {
     const editor = createRuntime();
     const changes: WorkflowChange[] = [];
