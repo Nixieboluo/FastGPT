@@ -285,4 +285,53 @@ describe('workflow editor runtime modules', () => {
     expect(editor.getField(query)).toBe(fieldBefore);
     expect(editor.getNodeView('answer')?.position).toEqual({ x: 1, y: 2 });
   });
+
+  it('signals structure invalidation only when the graph really changes', () => {
+    const editor = createRuntime();
+
+    const renamed = editor.dispatch({
+      type: 'updateNode',
+      nodeId: 'start',
+      patch: { name: 'Renamed Start' }
+    });
+    expect(renamed.change?.affectedRecords.structure).toBe(false);
+
+    const added = editor.dispatch({
+      type: 'addNode',
+      node: {
+        nodeId: 'answer2',
+        flowNodeType: FlowNodeTypeEnum.answerNode,
+        name: 'Answer 2',
+        inputs: [],
+        outputs: []
+      } as never
+    });
+    expect(added.change?.affectedRecords.structure).toBe(true);
+    expect(added.change?.affectedRecords.nodeIds).toContain('answer2');
+
+    // 改变 outputs 属于结构变化，affected 需要带上引用闭包里的下游节点。
+    const outputsChanged = editor.dispatch({
+      type: 'updateNode',
+      nodeId: 'start',
+      patch: {
+        outputs: [
+          {
+            id: 'userChatInput',
+            key: 'userChatInput',
+            type: FlowNodeOutputTypeEnum.source,
+            valueType: WorkflowIOValueTypeEnum.string
+          },
+          {
+            id: 'extra',
+            key: 'extra',
+            type: FlowNodeOutputTypeEnum.source,
+            valueType: WorkflowIOValueTypeEnum.string
+          }
+        ]
+      } as never
+    });
+    expect(outputsChanged.ok).toBe(true);
+    expect(outputsChanged.change?.affectedRecords.structure).toBe(true);
+    expect(outputsChanged.change?.affectedRecords.nodeIds).toContain('answer');
+  });
 });
