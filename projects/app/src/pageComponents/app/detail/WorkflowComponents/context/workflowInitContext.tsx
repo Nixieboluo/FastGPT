@@ -1,29 +1,50 @@
+// [workflow-runtime-cutover] 临时兼容桥：本 Context 从数据源退化为投影 + 翻译层。
+// Runtime 拥有唯一的 Workflow Document / Node View；这里只保留 reactflow 交互状态
+// （选中、拖拽帧、测量尺寸、层级），把旧调用点的 setNodes/setEdges/onNodesChange/
+// onEdgesChange 翻译成 Runtime 命令。迁移结束后薄壳随调用点改造删除。
 import type {
   FlowNodeItemType,
   FlowNodeTemplateType
 } from '@fastgpt/global/core/workflow/type/node';
-import { createContext } from 'use-context-selector';
+import { createContext, useContextSelector } from 'use-context-selector';
 
 import { NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
+import type { WorkflowCommand } from '@fastgpt/global/core/workflow/editor/types';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
-import { useDeepCompareEffect, useMemoizedFn } from 'ahooks';
+import { useMemoizedFn } from 'ahooks';
+import { useTranslation } from 'next-i18next';
 import React, {
   type Dispatch,
   type ReactNode,
   type SetStateAction,
   useCallback,
+  useEffect,
   useMemo,
-  useRef
+  useRef,
+  useState
 } from 'react';
 import {
   type Edge,
   type EdgeChange,
   type Node,
   type NodeChange,
-  useEdgesState,
-  useNodesState
+  applyEdgeChanges,
+  applyNodeChanges
 } from 'reactflow';
+import { WorkflowRuntimeHostContext } from '@/web/core/workflow/editor/cutover/runtimeHost';
+import {
+  createProjectionCache,
+  projectRuntimeCanvas
+} from '@/web/core/workflow/editor/cutover/projection';
+import {
+  diffCanvasEdges,
+  diffCanvasNodes,
+  translateDragEndChanges,
+  translateEdgeRemoveChanges,
+  translateNodeRemoveChanges,
+  type CanvasNode
+} from '@/web/core/workflow/editor/cutover/translate';
 
 type OnChange<ChangesType> = (changes: ChangesType[]) => void;
 
@@ -122,9 +143,152 @@ const WorkflowInitContextProvider = ({
   children: ReactNode;
   basicNodeTemplates: FlowNodeTemplateType[];
 }) => {
-  // Nodes
-  const [nodes = [], setNodes, onNodesChange] = useNodesState<FlowNodeItemType>([]);
-  const getNodes = useMemoizedFn(() => nodes);
+  const { t } = useTranslation();
+  const runtime = useContextSelector(WorkflowRuntimeHostContext, (v) => v.runtime);
+  const runtimeTick = useContextSelector(WorkflowRuntimeHostContext, (v) => v.runtimeTick);
+  const overlaysRef = useContextSelector(WorkflowRuntimeHostContext, (v) => v.overlaysRef);
+  const patchViewData = useContextSelector(WorkflowRuntimeHostContext, (v) => v.patchViewData);
+
+  // 交互状态层：reactflow 本地数组，语义值以 Runtime 投影为准。
+  const [nodes, setNodesRaw] = useState<CanvasNode[]>([]);
+  const [edges, setEdgesRaw] = useState<Edge<any>[]>([]);
+  // ref 与本地数组同步更新，保证同一 tick 内连续写入（先删节点再删边等）读到最新值。
+  const nodesRef = useRef<CanvasNode[]>(nodes);
+  const edgesRef = useRef<Edge<any>[]>(edges);
+  const projectionCache = useRef(createProjectionCache());
+
+  const isRuntimeActive = () => !!runtime && !runtime.isDisposed();
+
+  /** 从 Runtime 全量重投影（含 overlay 与交互状态合并）；命令被拒时也用它回滚乐观写入。 */
+  const syncFromRuntime = useMemoizedFn(() => {
+    if (!isRuntimeActive()) return;
+    const projected = projectRuntimeCanvas({
+      runtime: runtime!,
+      overlays: overlaysRef.current,
+      t,
+      localNodes: nodesRef.current,
+      localEdges: edgesRef.current,
+      cache: projectionCache.current
+    });
+    nodesRef.current = projected.nodes;
+    edgesRef.current = projected.edges;
+    setNodesRaw(projected.nodes);
+    setEdgesRaw(projected.edges);
+  });
+
+  // 语言切换会让模板物化结果失效，投影缓存按节点 key 无法感知 t，直接整体作废。
+  useEffect(() => {
+    projectionCache.current = createProjectionCache();
+  }, [t]);
+
+  // Runtime 事件 / overlay 写入 -> 重投影。
+  useEffect(() => {
+    syncFromRuntime();
+  }, [syncFromRuntime, runtime, runtimeTick]);
+
+  const dispatchCommands = useMemoizedFn((commands: WorkflowCommand[]) => {
+    if (commands.length === 0 || !isRuntimeActive()) return;
+    const res = runtime!.dispatch(commands);
+    if (!res.ok) {
+      console.warn('[workflow-runtime-cutover] command rejected:', res.error);
+      // 事务失败不产生事件，主动回滚乐观写入，保证画布与文档一致。
+      syncFromRuntime();
+    }
+  });
+
+  const setNodes = useMemoizedFn((action: SetStateAction<CanvasNode[]>) => {
+    const prev = nodesRef.current;
+    const next = typeof action === 'function' ? action(prev) : action;
+    if (next === prev) return;
+    nodesRef.current = next;
+    setNodesRaw(next);
+    if (!isRuntimeActive()) return;
+
+    const { commands, viewPatches } = diffCanvasNodes({ prev, next });
+    patchViewData(viewPatches);
+    dispatchCommands(commands);
+  });
+
+  const setEdges = useMemoizedFn((action: SetStateAction<Edge<any>[]>) => {
+    const prev = edgesRef.current;
+    const next = typeof action === 'function' ? action(prev) : action;
+    if (next === prev) return;
+    edgesRef.current = next;
+    setEdgesRaw(next);
+    if (!isRuntimeActive()) return;
+
+    dispatchCommands(diffCanvasEdges({ prev, next, runtimeEdges: runtime!.getWorkflow().edges }));
+  });
+
+  const onNodesChange = useMemoizedFn((changes: NodeChange[]) => {
+    const prev = nodesRef.current;
+
+    // Runtime 删除节点会级联删除后代；本地同步补全 remove 变更，避免重投影前残留一帧。
+    let effectiveChanges = changes;
+    const removeIds = changes
+      .filter((change) => change.type === 'remove')
+      .map((change) => change.id);
+    if (removeIds.length > 0) {
+      const removed = new Set(removeIds);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        prev.forEach((node) => {
+          const parentId = node.data.parentNodeId;
+          if (parentId && removed.has(parentId) && !removed.has(node.id)) {
+            removed.add(node.id);
+            grew = true;
+          }
+        });
+      }
+      if (removed.size > removeIds.length) {
+        const extra = [...removed]
+          .filter((id) => !removeIds.includes(id))
+          .map((id) => ({ type: 'remove' as const, id }));
+        effectiveChanges = changes.concat(extra);
+      }
+    }
+
+    const next = applyNodeChanges(effectiveChanges, prev);
+    if (next !== prev) {
+      nodesRef.current = next;
+      setNodesRaw(next);
+    }
+    if (!isRuntimeActive()) return;
+
+    // 拖拽帧只留在本地；手势结束（dragging:false）后批量提交几何。
+    dispatchCommands([
+      ...translateNodeRemoveChanges(effectiveChanges),
+      ...translateDragEndChanges({
+        changes,
+        getPosition: (nodeId) => nodesRef.current.find((node) => node.id === nodeId)?.position
+      })
+    ]);
+  });
+
+  const onEdgesChange = useMemoizedFn((changes: EdgeChange[]) => {
+    const prev = edgesRef.current;
+    const next = applyEdgeChanges(changes, prev);
+    if (next !== prev) {
+      edgesRef.current = next;
+      setEdgesRaw(next);
+    }
+    if (!isRuntimeActive()) return;
+
+    const removeIds = changes
+      .filter((change) => change.type === 'remove')
+      .map((change) => change.id);
+    if (removeIds.length === 0) return;
+    dispatchCommands(
+      translateEdgeRemoveChanges({
+        ids: removeIds,
+        localEdges: prev,
+        runtimeEdges: runtime!.getWorkflow().edges
+      })
+    );
+  });
+
+  const getNodes = useMemoizedFn(() => nodesRef.current);
 
   const nodeFormat = useMemo(() => {
     const nodeIds: string[] = [];
@@ -133,7 +297,6 @@ const WorkflowInitContextProvider = ({
     const childrenNodeIdListMap: Record<string, string[]> = {};
     const selectedNodesMap: Record<string, boolean> = {};
     const foldedNodesMap: Record<string, boolean> = {};
-    const compareNodeList: any[] = [];
     let workflowStartNode: FlowNodeItemType | undefined = undefined;
     let allNodeFolded = true;
     let hasToolNode = false;
@@ -145,34 +308,6 @@ const WorkflowInitContextProvider = ({
       nodeIds.push(node.data.nodeId);
       nodeList.push(node.data);
       nodesMap[node.data.nodeId] = node.data;
-      compareNodeList.push({
-        nodeId: node.data.nodeId,
-        name: node.data.name,
-        parentNodeId: node.data.parentNodeId,
-        flowNodeType: node.data.flowNodeType,
-        version: node.data.version,
-        versionLabel: node.data.versionLabel,
-        isLatestVersion: node.data.isLatestVersion,
-        isFolded: node.data.isFolded,
-        inputs: node.data.inputs.map((input) => {
-          return {
-            key: input.key,
-            label: input.label,
-            valueType: input.valueType
-          };
-        }),
-        outputs: node.data.outputs.map((output) => {
-          return {
-            key: output.key,
-            id: output.id,
-            label: output.label,
-            type: output.type,
-            valueType: output.valueType,
-            invalid: output.invalid
-          };
-        }),
-        catchError: node.data.catchError
-      });
 
       if (node.data.parentNodeId) {
         childrenNodeIdListMap[node.data.parentNodeId] = [
@@ -213,9 +348,7 @@ const WorkflowInitContextProvider = ({
       allNodeFolded,
       hasToolNode,
       hasLoopRunNode,
-
-      foldedNodesMap,
-      compareNodeList
+      foldedNodesMap
     };
   }, [nodes]);
 
@@ -223,10 +356,6 @@ const WorkflowInitContextProvider = ({
   const nodeIds = useMemoEnhance(() => nodeFormat.nodeIds, [nodeFormat.nodeIds]);
   const nodeList = useMemoEnhance(() => nodeFormat.nodeList, [nodeFormat.nodeList]);
   const nodesMap = useMemoEnhance(() => nodeFormat.nodesMap, [nodeFormat.nodesMap]);
-  const compareNodeList = useMemoEnhance(
-    () => nodeFormat.compareNodeList,
-    [nodeFormat.compareNodeList]
-  );
   const selectedNodesMap = useMemoEnhance(
     () => nodeFormat.selectedNodesMap,
     [nodeFormat.selectedNodesMap]
@@ -253,36 +382,22 @@ const WorkflowInitContextProvider = ({
     (nodeId: string | null | undefined, condition?: (node: FlowNodeItemType) => boolean) => {
       if (!nodeId) return undefined;
       const node = nodesMap[nodeId];
-      if (node) {
-        if (condition) {
-          return condition(node) ? node : undefined;
-        }
-        return node;
-      }
-
-      return undefined;
+      if (!node) return undefined;
+      return condition ? (condition(node) ? node : undefined) : node;
     },
-    [compareNodeList]
+    [nodesMap]
   );
 
-  const rawNodeFormat = useMemo(() => {
-    const rawNodesMap: Record<string, Node<FlowNodeItemType, string | undefined>> = {};
-
+  const rawNodesMap = useMemo(() => {
+    const map: Record<string, CanvasNode> = {};
     nodes.forEach((node) => {
-      rawNodesMap[node.id] = node;
+      map[node.id] = node;
     });
-
-    return {
-      rawNodesMap
-    };
+    return map;
   }, [nodes]);
-  const rawNodesMap = useMemoEnhance(() => rawNodeFormat.rawNodesMap, [rawNodeFormat]);
   const getRawNodeById = useMemoizedFn((nodeId: string | null | undefined) => {
     return nodeId ? rawNodesMap[nodeId] : undefined;
   });
-
-  // Edges
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
   const toolNodesMap = useMemoEnhance(() => {
     const selectedToolEdgeMap: Record<string, boolean> = {};
@@ -303,27 +418,9 @@ const WorkflowInitContextProvider = ({
     );
   }, [nodeList, edges]);
 
-  // Snapshot blocking flag
+  // Snapshot blocking flag（旧快照机制的兼容占位；历史已由 Runtime 承担）
   const forbiddenSaveSnapshot = useRef(false);
 
-  // Elevate childNodes
-  useDeepCompareEffect(() => {
-    setNodes((nodes) =>
-      nodes.map((node) => (node.data.parentNodeId ? { ...node, zIndex: 1001 } : node))
-    );
-  }, [nodeList]);
-
-  // Elevate edges of childNodes - 使用nodesMap优化O(n)查找为O(1)
-  useDeepCompareEffect(() => {
-    setEdges((state) =>
-      state.map((item) => {
-        const sourceNode = nodesMap[item.source];
-        return sourceNode?.parentNodeId ? { ...item, zIndex: 1001 } : item;
-      })
-    );
-  }, [nodesMap, edges.length, setEdges]);
-
-  // 数据Context - 只包含 原始nodes
   const rawNodeContextValue = useMemo(
     () => ({
       nodes,
@@ -333,16 +430,15 @@ const WorkflowInitContextProvider = ({
     [nodes, rawNodesMap, getRawNodeById]
   );
 
-  const nodeDataContextValue = useMemoEnhance(() => {
-    console.log('WoworkflowNodeDataContextValue 更新了');
-    return {
+  const nodeDataContextValue = useMemoEnhance(
+    () => ({
       selectedNodesMap
-    };
-  }, [selectedNodesMap]);
+    }),
+    [selectedNodesMap]
+  );
 
-  const workflowBufferDataContextValue = useMemoEnhance(() => {
-    console.log('WoworkflowBufferDataContextValue 更新了');
-    return {
+  const workflowBufferDataContextValue = useMemoEnhance(
+    () => ({
       nodeIds,
       basicNodeTemplates,
       workflowStartNode,
@@ -362,27 +458,28 @@ const WorkflowInitContextProvider = ({
       forbiddenSaveSnapshot,
       nodeAmount: nodeList.length,
       childrenNodeIdListMap
-    };
-  }, [
-    nodeIds,
-    basicNodeTemplates,
-    workflowStartNode,
-    allNodeFolded,
-    hasToolNode,
-    hasLoopRunNode,
-    toolNodesMap,
-    foldedNodesMap,
-    getNodeById,
-    setNodes,
-    onNodesChange,
-    getNodes,
-    getNodeList,
-    edges,
-    setEdges,
-    onEdgesChange,
-    nodeList.length,
-    childrenNodeIdListMap
-  ]);
+    }),
+    [
+      nodeIds,
+      basicNodeTemplates,
+      workflowStartNode,
+      allNodeFolded,
+      hasToolNode,
+      hasLoopRunNode,
+      toolNodesMap,
+      foldedNodesMap,
+      getNodeById,
+      setNodes,
+      onNodesChange,
+      getNodes,
+      getNodeList,
+      edges,
+      setEdges,
+      onEdgesChange,
+      nodeList.length,
+      childrenNodeIdListMap
+    ]
+  );
 
   return (
     <WorkflowInitContext.Provider value={rawNodeContextValue}>

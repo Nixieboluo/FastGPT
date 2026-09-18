@@ -5,21 +5,12 @@
  * @date 2025-01-18
  */
 
-import React, {
-  type PropsWithChildren,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState
-} from 'react';
+import React, { type PropsWithChildren, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'next-i18next';
 import { createContext, useContextSelector } from 'use-context-selector';
-import { useDebounceEffect, useUnmount } from 'ahooks';
-import { WorkflowBufferDataContext, WorkflowInitContext } from './workflowInitContext';
-import { compareSnapshot } from '@/web/core/workflow/utils';
+import { useUnmount } from 'ahooks';
 import { AppContext } from '@/pageComponents/app/detail/context';
-import { WorkflowSnapshotContext } from './workflowSnapshotContext';
+import { WorkflowRuntimeHostContext } from '@/web/core/workflow/editor/cutover/runtimeHost';
 import { WorkflowUtilsContext } from './workflowUtilsContext';
 import {
   removeWorkflowLocalDraftByApp,
@@ -51,14 +42,11 @@ export const WorkflowPersistenceProvider: React.FC<PropsWithChildren> = ({ child
   const { t } = useTranslation();
   // 获取依赖的 context
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
-  const nodes = useContextSelector(WorkflowInitContext, (v) => v.nodes);
-  const edges = useContextSelector(WorkflowBufferDataContext, (v) => v.edges);
   const { userInfo } = useUserStore();
-  const { past, future } = useContextSelector(WorkflowSnapshotContext, (v) => v);
+  // [workflow-runtime-cutover] 临时兼容桥：isSaved 改读 Runtime Savepoint（当前内容版本是否等于已保存版本）。
+  const runtime = useContextSelector(WorkflowRuntimeHostContext, (v) => v.runtime);
+  const runtimeTick = useContextSelector(WorkflowRuntimeHostContext, (v) => v.runtimeTick);
   const loginTmbId = userInfo?.team?.tmbId;
-
-  // 保存状态
-  const [isSaved, setIsSaved] = useState(true);
   // 离开保存标志
   const leaveSaveSign = useRef(true);
   const flowData2StoreData = useContextSelector(WorkflowUtilsContext, (v) => v.flowData2StoreData);
@@ -96,38 +84,20 @@ export const WorkflowPersistenceProvider: React.FC<PropsWithChildren> = ({ child
   });
 
   /**
-   * 计算 isSaved 状态 - 防抖 500ms
-   * 当前状态与已保存快照比较
+   * isSaved：任何已提交事务都算脏（含几何与 chatConfig），撤销回已保存内容会自然回到干净状态。
+   * runtimeTick 驱动重算；未初始化时视为已保存。
    */
-  useDebounceEffect(
-    () => {
-      const savedSnapshot =
-        [...future].reverse().find((snapshot) => snapshot.isSaved) ||
-        past.find((snapshot) => snapshot.isSaved);
+  const isSaved = useMemo(() => {
+    void runtimeTick;
+    if (!runtime || runtime.isDisposed()) return true;
+    return !runtime.getSavepoint().isDirty;
+  }, [runtime, runtimeTick]);
 
-      const val = compareSnapshot(
-        {
-          nodes: savedSnapshot?.nodes,
-          edges: savedSnapshot?.edges,
-          chatConfig: savedSnapshot?.chatConfig
-        },
-        {
-          nodes,
-          edges,
-          chatConfig: appDetail.chatConfig
-        }
-      );
-      setIsSaved(val);
-
-      if (val) {
-        removeCurrentLocalDraft();
-      }
-    },
-    [future, past, nodes, edges, appDetail.chatConfig, removeCurrentLocalDraft],
-    {
-      wait: 500
+  useEffect(() => {
+    if (isSaved) {
+      removeCurrentLocalDraft();
     }
-  );
+  }, [isSaved, removeCurrentLocalDraft]);
 
   /**
    * 自动保存函数
@@ -220,7 +190,6 @@ export const WorkflowPersistenceProvider: React.FC<PropsWithChildren> = ({ child
   });
 
   const contextValue = useMemo(() => {
-    console.log('WorkflowPersistenceContextValue 更新了');
     return {
       isSaved,
       leaveSaveSign

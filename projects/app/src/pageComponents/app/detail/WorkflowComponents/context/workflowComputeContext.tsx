@@ -1,16 +1,10 @@
 // 复杂计算上下文
 
 import React, { useCallback, useMemo } from 'react';
-import { createContext, useContextSelector } from 'use-context-selector';
-import { WorkflowBufferDataContext, WorkflowInitContext } from './workflowInitContext';
+import { createContext } from 'use-context-selector';
 import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
-import {
-  Input_Template_Node_Height,
-  Input_Template_Node_Width
-} from '@fastgpt/global/core/workflow/template/input';
 import type { Node } from 'reactflow';
 import type { FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
-import { useMemoizedFn } from 'ahooks';
 
 // 创建 Context
 type WorkflowComputeContextValue = {
@@ -52,9 +46,6 @@ export const WorkflowLayoutContext = createContext<WorkflowComputeContextValue>(
 });
 
 export const WorkflowComputeProvider = ({ children }: { children: React.ReactNode }) => {
-  const nodes = useContextSelector(WorkflowInitContext, (v) => v.nodes);
-  const { setNodes } = useContextSelector(WorkflowBufferDataContext, (v) => v);
-
   /**
    * 获取父节点(Loop节点)的大小和位置
    * 基于子节点的位置计算父节点应该的位置和大小
@@ -129,40 +120,14 @@ export const WorkflowComputeProvider = ({ children }: { children: React.ReactNod
   );
 
   /**
-   * 重置父节点的大小和位置
-   * 调用 getParentNodeSizeAndPosition 计算新的大小和位置并更新
+   * [workflow-runtime-cutover] 已接受的过渡期回归：容器尺寸字段（nodeWidth/nodeHeight/
+   * nestedNodeInputHeight）在 migration 边界被清理，Runtime 不再存储它们，
+   * 渲染副作用也不再写回文档（决策 9/10）。容器外框按兜底尺寸渲染，
+   * 修复属于容器尺寸测量重做，见延后项文档；这里保留空实现维持旧调用点形状。
    */
-  const resetParentNodeSizeAndPosition = useMemoizedFn((parentId: string) => {
-    const res = getParentNodeSizeAndPosition({ nodes, parentId });
-    if (!res) return;
-
-    const { parentX, parentY, childWidth, childHeight } = res;
-
-    // 一次性更新 inputs + position
-    setNodes((currentNodes) =>
-      currentNodes.map((node) => {
-        if (node.id !== parentId) return node;
-
-        // 更新 inputs 中的 width 和 height
-        const updatedInputs = node.data.inputs.map((input) => {
-          if (input.key === NodeInputKeyEnum.nodeWidth) {
-            return { ...Input_Template_Node_Width, value: childWidth };
-          }
-          if (input.key === NodeInputKeyEnum.nodeHeight) {
-            return { ...Input_Template_Node_Height, value: childHeight };
-          }
-          return input;
-        });
-
-        // 同时更新 position 和 data
-        return {
-          ...node,
-          position: { x: parentX, y: parentY },
-          data: { ...node.data, inputs: updatedInputs }
-        };
-      })
-    );
-  });
+  const resetParentNodeSizeAndPosition = useCallback((_parentId: string) => {
+    // no-op
+  }, []);
 
   const contextValue = useMemo(() => {
     return {

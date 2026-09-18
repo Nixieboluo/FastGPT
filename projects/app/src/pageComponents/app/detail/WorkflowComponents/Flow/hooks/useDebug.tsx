@@ -12,7 +12,6 @@ import { type StoreNodeItemType } from '@fastgpt/global/core/workflow/type/node'
 import { useToast } from '@fastgpt/web/hooks/useToast';
 import { useCallback, useMemo, useState } from 'react';
 import { useReactFlow } from 'reactflow';
-import { uiWorkflow2StoreWorkflow } from '../../utils';
 
 import LabelAndFormRender from '@/components/core/app/formRender/LabelAndForm';
 import {
@@ -32,6 +31,7 @@ import { useContextSelector } from 'use-context-selector';
 import { AppContext } from '../../../context';
 import { WorkflowActionsContext } from '../../context/workflowActionsContext';
 import { WorkflowDebugContext } from '../../context/workflowDebugContext';
+import { WorkflowUtilsContext } from '../../context/workflowUtilsContext';
 import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
 import {
   checkInputShouldRenderInDebug,
@@ -73,6 +73,8 @@ export const useDebug = () => {
   );
   const onStartNodeDebug = useContextSelector(WorkflowDebugContext, (v) => v.onStartNodeDebug);
   const setDebugChatId = useContextSelector(WorkflowDebugContext, (v) => v.setDebugChatId);
+  // [workflow-runtime-cutover] 调试输入改读 host 出站边界（与保存发布同一个 codec）。
+  const flowData2StoreData = useContextSelector(WorkflowUtilsContext, (v) => v.flowData2StoreData);
 
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
 
@@ -118,13 +120,7 @@ export const useDebug = () => {
 
     if (!hasError) {
       onRemoveError();
-      const storeNodes = uiWorkflow2StoreWorkflow({
-        nodes,
-        edges,
-        chatConfig: appDetail.chatConfig
-      });
-
-      return JSON.stringify(storeNodes);
+      return JSON.stringify(flowData2StoreData());
     }
 
     onSyncWorkflowCheckIssues(issueMap);
@@ -160,7 +156,8 @@ export const useDebug = () => {
     onUpdateNodeError,
     t,
     toast,
-    workflowT
+    workflowT,
+    flowData2StoreData
   ]);
 
   const openDebugNode = useCallback(

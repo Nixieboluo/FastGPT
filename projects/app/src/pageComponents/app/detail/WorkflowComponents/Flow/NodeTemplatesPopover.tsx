@@ -1,4 +1,3 @@
-import { collectWorkflowStartInputAutoFillPatches } from '@/web/core/workflow/workflowStartAutoFill';
 import { Popover, PopoverBody, PopoverContent } from '@chakra-ui/react';
 import { getNanoid } from '@fastgpt/global/common/string/tools';
 import {
@@ -15,7 +14,7 @@ import React from 'react';
 import { type Node } from 'reactflow';
 import { useContextSelector } from 'use-context-selector';
 import { WorkflowActionsContext } from '../context/workflowActionsContext';
-import { WorkflowBufferDataContext, WorkflowInitContext } from '../context/workflowInitContext';
+import { WorkflowBufferDataContext } from '../context/workflowInitContext';
 import { WorkflowModalContext } from '../context/workflowModalContext';
 import NodeTemplateListHeader from './components/NodeTemplates/header';
 import NodeTemplateList from './components/NodeTemplates/list';
@@ -25,10 +24,8 @@ import { popoverHeight, popoverWidth } from './hooks/useWorkflow';
 const NodeTemplatesPopover = () => {
   const { handleParams, setHandleParams } = useContextSelector(WorkflowModalContext, (v) => v);
 
-  const nodes = useContextSelector(WorkflowInitContext, (v) => v.nodes);
-  const { edges, setNodes, setEdges, workflowStartNode, getNodeById, hasToolNode, hasLoopRunNode } =
+  const { edges, setNodes, setEdges, getNodeById, hasToolNode, hasLoopRunNode } =
     useContextSelector(WorkflowBufferDataContext, (v) => v);
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
   const onRefreshSingleNodeWorkflowCheckIssues = useContextSelector(
     WorkflowActionsContext,
     (v) => v.onRefreshSingleNodeWorkflowCheckIssues
@@ -107,18 +104,6 @@ const NodeTemplatesPopover = () => {
       const newState = state.concat(newEdges);
       return newState;
     });
-
-    if (workflowStartNode) {
-      const patches = collectWorkflowStartInputAutoFillPatches({
-        nodes: nodes.concat(validNewNodes),
-        edges: edges.concat(newEdges),
-        workflowStartNode
-      });
-
-      if (patches.length > 0) {
-        onChangeNode(patches.map((patch) => ({ ...patch, type: 'updateInput' as const })));
-      }
-    }
 
     setHandleParams(null);
 

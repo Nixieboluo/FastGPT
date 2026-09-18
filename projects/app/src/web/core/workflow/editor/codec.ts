@@ -15,6 +15,7 @@ import {
   StoreNodeItemTypeSchema,
   type FlowNodeItemType
 } from '@fastgpt/global/core/workflow/type/node';
+import type { CanonicalWorkflowData } from '@fastgpt/global/core/workflow/migration';
 
 type HydrateWorkflowEditorOptions = {
   input: unknown;
@@ -23,16 +24,16 @@ type HydrateWorkflowEditorOptions = {
 };
 
 /**
- * 保存、发布、本地草稿、离开确认和调试共用的编辑器入站边界（ADR 0001）。
- * 先迁移，再做 Template Materialization，剥离画布专用字段得到严格 canonical 数据后创建 Runtime；
- * 模板目录与 i18n 都留在边界外。保存时归一化（工具序列化、引用裁剪）只发生在出站边界，
- * 入站提前执行会把未水合数据当成用户编辑结果处理。
+ * 入站边界（ADR 0001）：migration 之后做 Template Materialization，剥离画布专用字段，
+ * 得到严格 canonical 数据。模板目录与 i18n 都留在边界外；保存时归一化（工具序列化、
+ * 引用裁剪）只发生在出站边界，入站提前执行会把未水合数据当成用户编辑结果处理。
+ * hydrate 与版本切换（replaceDocument）共用同一份物化结果。
  */
-export const hydrateRuntime = ({
+export const materializeWorkflow = ({
   input,
   chatConfig,
   t
-}: HydrateWorkflowEditorOptions): WorkflowRuntimePort => {
+}: HydrateWorkflowEditorOptions): CanonicalWorkflowData => {
   const workflow = migrateStoreWorkflow(
     chatConfig ? { ...(input as Record<string, unknown>), chatConfig } : input
   );
@@ -59,8 +60,17 @@ export const hydrateRuntime = ({
     return StoreNodeItemTypeSchema.parse({ ...flowNode.data, position: flowNode.position });
   });
 
-  return hydrateWorkflowEditor({ nodes, edges: canonicalEdges, chatConfig: workflow.chatConfig });
+  // 物化会重新引入模板默认的容器尺寸字段，再走一次 migration 统一清理，保证严格 canonical。
+  return migrateStoreWorkflow({ nodes, edges: canonicalEdges, chatConfig: workflow.chatConfig });
 };
+
+/** 保存、发布、本地草稿、离开确认和调试共用的编辑器入口：物化后创建 Runtime。 */
+export const hydrateRuntime = ({
+  input,
+  chatConfig,
+  t
+}: HydrateWorkflowEditorOptions): WorkflowRuntimePort =>
+  hydrateWorkflowEditor(materializeWorkflow({ input, chatConfig, t }));
 
 /**
  * 出站边界：读取 Runtime 完整导出，并用旧保存路径的 Workflow Normalization 原样包住

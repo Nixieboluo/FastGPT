@@ -1,36 +1,37 @@
-// 工作流快照管理层
-import { AppContext } from '@/pageComponents/app/detail/context';
+// [workflow-runtime-cutover] 临时兼容桥：撤销重做完全走 Runtime History；
+// past/future 数组退化为 host 版本列表的兼容视图（现有 UI 只读 title 并回传条目）。
+// 迁移结束后薄壳随调用点改造删除。
+import { materializeWorkflow } from '@/web/core/workflow/editor/codec';
 import {
-  compareSnapshot,
-  storeEdge2RenderEdge,
-  storeNode2FlowNode
-} from '@/web/core/workflow/utils';
-import { formatTime2YMDHMS } from '@fastgpt/global/common/string/time';
+  WorkflowRuntimeHostContext,
+  type WorkflowVersionEntry
+} from '@/web/core/workflow/editor/cutover/runtimeHost';
 import type { AppChatConfigType } from '@fastgpt/global/core/app/type';
 import type { AppVersionSchemaType } from '@fastgpt/global/core/app/version/type';
-import { NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
+import { useMemoizedFn } from 'ahooks';
 import { useTranslation } from 'next-i18next';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React from 'react';
 import type { Edge, Node } from 'reactflow';
 import { createContext, useContextSelector } from 'use-context-selector';
-import type { WorkflowStateType } from './type';
-import { WorkflowBufferDataContext } from './workflowInitContext';
 
-export type WorkflowSnapshotsType = WorkflowStateType & {
+export type WorkflowSnapshotsType = {
+  nodes: Node[];
+  edges: Edge[];
+  chatConfig: AppChatConfigType;
   title: string;
   isSaved?: boolean;
 };
 
 // 创建 Context
 type WorkflowSnapshotContextValue = {
-  /** 历史快照列表 */
+  /** 历史快照列表（兼容视图：host 版本列表，nodes/edges 恒为空数组） */
   past: WorkflowSnapshotsType[];
 
-  /** 设置历史快照列表 */
+  /** 设置历史快照列表（拦截 Header 保存成功后的 isSaved 标记，回填 Savepoint） */
   setPast: React.Dispatch<React.SetStateAction<WorkflowSnapshotsType[]>>;
 
-  /** 未来快照列表 */
+  /** 未来快照列表（Runtime History 接管后恒为空） */
   future: WorkflowSnapshotsType[];
 
   /** 撤销 */
@@ -45,7 +46,7 @@ type WorkflowSnapshotContextValue = {
   /** 是否可以重做 */
   canRedo: boolean;
 
-  /** 推入历史快照 */
+  /** 推入历史快照（Runtime History 接管后为空操作） */
   pushPastSnapshot: (params: {
     pastNodes: Node[];
     pastEdges: Edge[];
@@ -91,256 +92,101 @@ export const WorkflowSnapshotContext = createContext<WorkflowSnapshotContextValu
   }
 });
 
-// 配置
-const maxSnapshots = 100;
-const snapshotDebounceTime = 1000;
-
 export const WorkflowSnapshotProvider = ({ children }: { children: React.ReactNode }) => {
   const { t } = useTranslation();
 
-  // 获取 WorkflowBufferDataContext 的数据
-  const {
-    setEdges,
-    setNodes,
-    forbiddenSaveSnapshot: forbiddenSaveSnapshotRef
-  } = useContextSelector(WorkflowBufferDataContext, (v) => v);
-  // 获取 AppContext 的 setAppDetail
-  const setAppDetail = useContextSelector(AppContext, (v) => v.setAppDetail);
-
-  // 快照历史
-  const [past, setPast] = useState<WorkflowSnapshotsType[]>([]);
-  const [future, setFuture] = useState<WorkflowSnapshotsType[]>([]);
-
-  const pushPastSnapshotRef = useRef<WorkflowSnapshotContextValue['pushPastSnapshot'] | undefined>(
-    undefined
+  const runtime = useContextSelector(WorkflowRuntimeHostContext, (v) => v.runtime);
+  const runtimeTick = useContextSelector(WorkflowRuntimeHostContext, (v) => v.runtimeTick);
+  const versions = useContextSelector(WorkflowRuntimeHostContext, (v) => v.versions);
+  const setVersions = useContextSelector(WorkflowRuntimeHostContext, (v) => v.setVersions);
+  const markSavedPending = useContextSelector(
+    WorkflowRuntimeHostContext,
+    (v) => v.markSavedPending
   );
+  const switchVersion = useContextSelector(WorkflowRuntimeHostContext, (v) => v.switchVersion);
 
-  // 待保存快照队列机制 - 解决竞态条件，确保数据不丢失
-  const pendingSnapshotRef = useRef<{
-    data: {
-      pastNodes: Node[];
-      pastEdges: Edge[];
-      chatConfig: AppChatConfigType;
-      customTitle?: string;
-      isSaved?: boolean;
-    } | null;
-    timeoutId?: NodeJS.Timeout;
-  }>({ data: null });
+  const undo = useMemoizedFn(() => {
+    runtime?.undo();
+  });
+  const redo = useMemoizedFn(() => {
+    runtime?.redo();
+  });
 
-  // 重置快照状态
-  const resetSnapshot = useCallback(
-    (state: WorkflowStateType) => {
-      setNodes(state.nodes);
-      setEdges(state.edges);
-      setAppDetail((detail) => ({
-        ...detail,
-        chatConfig: state.chatConfig
-      }));
-    },
-    [setNodes, setEdges, setAppDetail]
-  );
+  const history = runtime && !runtime.isDisposed() ? runtime.getHistory() : undefined;
+  // runtimeTick 参与渲染读取，保证 undo/redo/命令提交后可用性即时刷新。
+  void runtimeTick;
 
-  // 增强的快照保存函数 - 优先保证数据保存
-  const pushPastSnapshot = useCallback(
-    (data: Parameters<WorkflowSnapshotContextValue['pushPastSnapshot']>[0]) => {
-      const { pastNodes, pastEdges, chatConfig, customTitle, isSaved } = data;
-      // 1. 基础数据验证 - 仅确保基本结构存在
-      if (!pastNodes || !pastEdges || !chatConfig) {
-        console.warn('[Snapshot] Invalid snapshot data:', {
-          hasPastNodes: !!pastNodes,
-          hasPastEdges: !!pastEdges,
-          hasChatConfig: !!chatConfig
-        });
-        return false;
-      }
-
-      // 2. 节点数量验证 - 允许空节点数组但记录日志
-      if (pastNodes.length === 0) {
-        console.debug('[Snapshot] Empty nodes array, still saving snapshot');
-      }
-
-      // 3. 处理被阻塞的快照
-      if (forbiddenSaveSnapshotRef.current) {
-        forbiddenSaveSnapshotRef.current = false;
-        console.warn('[Snapshot] Snapshot creation blocked, adding to pending queue');
-
-        // 将快照加入待处理队列
-        pendingSnapshotRef.current = { data };
-
-        // 500ms后尝试处理待保存的快照
-        if (pendingSnapshotRef.current.timeoutId) {
-          clearTimeout(pendingSnapshotRef.current.timeoutId);
-        }
-
-        pendingSnapshotRef.current.timeoutId = setTimeout(() => {
-          if (pendingSnapshotRef.current?.data) {
-            console.log('[Snapshot] Processing pending snapshot from queue');
-            pushPastSnapshotRef.current?.(pendingSnapshotRef.current.data);
-            pendingSnapshotRef.current = { data: null };
-          } else {
-            console.log('[Snapshot] No pending snapshot to process');
-          }
-        }, snapshotDebounceTime);
-
-        return false;
-      }
-
-      // 4. 检查快照是否与之前相同
-      const isPastEqual = compareSnapshot(
-        {
-          nodes: pastNodes,
-          edges: pastEdges,
-          chatConfig: chatConfig
-        },
-        {
-          nodes: past[0]?.nodes,
-          edges: past[0]?.edges,
-          chatConfig: past[0]?.chatConfig
-        }
-      );
-
-      if (isPastEqual) {
-        console.log('[Snapshot] Snapshot is identical to previous, skipping');
-        return false;
-      }
-
-      try {
-        // 5. 更新快照历史
-        const newSnapshot = {
-          nodes: pastNodes,
-          edges: pastEdges,
-          title: customTitle || formatTime2YMDHMS(new Date()),
-          chatConfig,
-          isSaved
-        };
-
-        setFuture([]);
-        setPast((past) => {
-          if (past.length === 0) {
-            return [newSnapshot];
-          }
-          const initialSnapshot = past[past.length - 1];
-
-          // 如果还没达到上限，正常添加（不重复保存 initialSnapshot）
-          if (past.length < maxSnapshots) {
-            return [newSnapshot, ...past];
-          }
-
-          return [newSnapshot, ...past.slice(0, -1).slice(0, maxSnapshots - 2), initialSnapshot];
-        });
-
-        console.log('[Snapshot] Snapshot saved successfully:', {
-          title: newSnapshot.title,
-          nodeCount: newSnapshot.nodes.length,
-          edgeCount: newSnapshot.edges.length,
-          isSaved
-        });
-
-        return true;
-      } catch (error) {
-        console.error('[Snapshot] Failed to save snapshot:', error);
-        return false;
-      }
-    },
-    [past, forbiddenSaveSnapshotRef]
-  );
-
-  useEffect(() => {
-    pushPastSnapshotRef.current = pushPastSnapshot;
-  }, [pushPastSnapshot]);
-
-  const undo = useCallback(() => {
-    if (past.length > 1) {
-      forbiddenSaveSnapshotRef.current = true;
-      // Current version is the first one, so we need to reset the second one
-      const firstPast = past[1];
-      resetSnapshot(firstPast);
-
-      setFuture((future) => [past[0], ...future]);
-      setPast((past) => past.slice(1));
+  /**
+   * Header 保存成功后用 setPast 给 index 0 标 isSaved；这里拦截为 Savepoint 回填
+   * （按发起保存请求前捕获的内容版本，请求期间的新编辑仍算未保存）。
+   */
+  const setPast = useMemoizedFn((action: React.SetStateAction<WorkflowSnapshotsType[]>) => {
+    const next =
+      typeof action === 'function'
+        ? (action as (prev: WorkflowSnapshotsType[]) => WorkflowSnapshotsType[])(versions)
+        : action;
+    if (next[0]?.isSaved) {
+      markSavedPending();
     }
-  }, [past, resetSnapshot, forbiddenSaveSnapshotRef]);
+    setVersions(next as WorkflowVersionEntry[]);
+  });
 
-  const redo = useCallback(() => {
-    if (!future[0]) return;
-
-    const futureState = future[0];
-
-    if (futureState) {
-      forbiddenSaveSnapshotRef.current = true;
-      setPast((past) => [futureState, ...past]);
-      setFuture((future) => future.slice(1));
-
-      resetSnapshot(futureState);
+  const pushPastSnapshot = useMemoizedFn(
+    (_params: Parameters<WorkflowSnapshotContextValue['pushPastSnapshot']>[0]) => {
+      // 历史由 Runtime 在每笔事务内维护，旧防抖快照不再需要。
+      return false;
     }
-  }, [future, resetSnapshot, forbiddenSaveSnapshotRef]);
-
-  const onSwitchTmpVersion = useCallback(
-    (params: WorkflowSnapshotsType, customTitle: string) => {
-      // Remove multiple "copy-"
-      const copyText = t('app:version_copy');
-      const regex = new RegExp(`(${copyText}-)\\1+`, 'g');
-      const title = customTitle.replace(regex, `$1`);
-
-      resetSnapshot(params);
-
-      return pushPastSnapshot({
-        pastNodes: params.nodes,
-        pastEdges: params.edges,
-        chatConfig: params.chatConfig,
-        customTitle: title
-      });
-    },
-    [t, resetSnapshot, pushPastSnapshot]
   );
 
-  const onSwitchCloudVersion = useCallback(
-    (appVersion: AppVersionSchemaType) => {
-      const edges = appVersion.edges.map((item) => storeEdge2RenderEdge({ edge: item }));
-      const toolNodeIds = new Set(
-        appVersion.edges
-          .filter((edge) => edge.targetHandle === NodeOutputKeyEnum.selectedTools)
-          .map((edge) => edge.target)
-      );
-      const nodes = appVersion.nodes.map((item) =>
-        storeNode2FlowNode({
-          item,
-          t,
-          isTool: toolNodeIds.has(item.nodeId)
-        })
-      );
-
-      resetSnapshot({
-        nodes,
-        edges,
-        chatConfig: appVersion.chatConfig
-      });
-
-      return pushPastSnapshot({
-        pastNodes: nodes,
-        pastEdges: edges,
-        chatConfig: appVersion.chatConfig,
-        customTitle: `${t('app:version_copy')}-${appVersion.versionName}`
-      });
-    },
-    [t, resetSnapshot, pushPastSnapshot]
+  const onSwitchTmpVersion = useMemoizedFn((params: WorkflowSnapshotsType, customTitle: string) =>
+    switchVersion(params as WorkflowVersionEntry, customTitle)
   );
 
-  const contextValue = useMemoEnhance(() => {
-    console.log('WorkflowSnapshotContextValue 更新了');
-    return {
-      past,
+  const onSwitchCloudVersion = useMemoizedFn((appVersion: AppVersionSchemaType) => {
+    if (!runtime || runtime.isDisposed()) return false;
+    // 云端版本是存量 store 数据，必须走与打开工作流相同的入站边界（migration + 物化）。
+    const content = materializeWorkflow({
+      input: { nodes: appVersion.nodes, edges: appVersion.edges },
+      chatConfig: appVersion.chatConfig,
+      t
+    });
+    return switchVersion(
+      {
+        title: `${t('app:version_copy')}-${appVersion.versionName}`,
+        content,
+        nodes: [],
+        edges: [],
+        chatConfig: content.chatConfig
+      },
+      `${t('app:version_copy')}-${appVersion.versionName}`
+    );
+  });
+
+  const contextValue = useMemoEnhance(
+    () => ({
+      past: versions as WorkflowSnapshotsType[],
       setPast,
-      future,
+      future: [] as WorkflowSnapshotsType[],
       undo,
       redo,
-      canUndo: past.length > 1,
-      canRedo: future.length > 0,
+      canUndo: history?.canUndo ?? false,
+      canRedo: history?.canRedo ?? false,
       pushPastSnapshot,
       onSwitchTmpVersion,
       onSwitchCloudVersion
-    };
-  }, [past, future, undo, redo, pushPastSnapshot, onSwitchTmpVersion, onSwitchCloudVersion]);
+    }),
+    [
+      versions,
+      setPast,
+      undo,
+      redo,
+      history?.canUndo,
+      history?.canRedo,
+      pushPastSnapshot,
+      onSwitchTmpVersion,
+      onSwitchCloudVersion
+    ]
+  );
 
   return (
     <WorkflowSnapshotContext.Provider value={contextValue}>

@@ -1,8 +1,12 @@
+// [workflow-runtime-cutover] 临时兼容桥：初始化与序列化入口改走边界 codec。
+// initData 物化后创建/替换 Runtime；flowData2StoreData 读 Runtime 完整导出并捕获
+// 保存点回填用的内容版本。迁移结束后薄壳随调用点改造删除。
 import React from 'react';
 // 工作流工具函数层
 import { useSystemStore } from '@/web/common/system/useSystemStore';
 import { getWorkflowModelDetails } from '@/web/core/workflow/modelData';
-import { storeEdge2RenderEdge, storeNode2FlowNode } from '@/web/core/workflow/utils';
+import { materializeWorkflow, serializeRuntime } from '@/web/core/workflow/editor/codec';
+import { WorkflowRuntimeHostContext } from '@/web/core/workflow/editor/cutover/runtimeHost';
 import {
   checkWorkflowBeforeRunOrPublish,
   checkWorkflowNodeIssues
@@ -13,7 +17,7 @@ import {
   normalizeFlowNodeInputType
 } from '@fastgpt/global/core/app/formEdit/utils';
 import type { AppChatConfigType } from '@fastgpt/global/core/app/type';
-import { NodeInputKeyEnum, NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
+import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import {
   FlowNodeOutputTypeEnum,
   FlowNodeTypeEnum
@@ -30,10 +34,8 @@ import { type ReactNode, useCallback, useEffect, useMemo } from 'react';
 import { useReactFlow } from 'reactflow';
 import { createContext, useContextSelector } from 'use-context-selector';
 import { AppContext } from '../../context';
-import { uiWorkflow2StoreWorkflow } from '../utils';
 import { WorkflowActionsContext } from './workflowActionsContext';
 import { WorkflowBufferDataContext } from './workflowInitContext';
-import { WorkflowSnapshotContext } from './workflowSnapshotContext';
 
 // 创建 Context
 type WorkflowUtilsContextValue = {
@@ -134,14 +136,17 @@ export const WorkflowUtilsProvider = ({ children }: { children: ReactNode }) => 
   const enableSandbox = !teamPlanStatus?.standard || !!teamPlanStatus?.standard?.enableSandbox;
 
   const { appDetail, setAppDetail } = useContextSelector(AppContext, (v) => v);
-  const { edges, setEdges, setNodes, getNodes, toolNodesMap } = useContextSelector(
-    WorkflowBufferDataContext,
-    (v) => v
-  );
-  const { past, setPast } = useContextSelector(WorkflowSnapshotContext, (v) => v);
+  const { edges, getNodes, toolNodesMap } = useContextSelector(WorkflowBufferDataContext, (v) => v);
   const { onRemoveError, onUpdateNodeError, onSyncWorkflowCheckIssues } = useContextSelector(
     WorkflowActionsContext,
     (v) => v
+  );
+  const runtime = useContextSelector(WorkflowRuntimeHostContext, (v) => v.runtime);
+  const initRuntime = useContextSelector(WorkflowRuntimeHostContext, (v) => v.initRuntime);
+  const loadDocument = useContextSelector(WorkflowRuntimeHostContext, (v) => v.loadDocument);
+  const pendingSaveRevisionRef = useContextSelector(
+    WorkflowRuntimeHostContext,
+    (v) => v.pendingSaveRevision
   );
 
   // 优化为单次遍历,分类输出项
@@ -159,7 +164,7 @@ export const WorkflowUtilsProvider = ({ children }: { children: ReactNode }) => 
         successOutputs.push(item);
       } else if (item.type === FlowNodeOutputTypeEnum.hidden) {
         hiddenOutputs.push(item);
-      } else if (item.type === FlowNodeOutputTypeEnum.error) {
+      } else {
         errorOutputs.push(item);
       }
     });
@@ -185,11 +190,15 @@ export const WorkflowUtilsProvider = ({ children }: { children: ReactNode }) => 
     [toolNodesMap]
   );
 
-  // 将 UI 流程数据转换为存储格式
+  /**
+   * 出站边界：读 Runtime 完整导出并经 Workflow Normalization（保存、发布、草稿、调试共用）。
+   * 同时捕获当前内容版本，保存成功后由 Snapshot 桥回填 Savepoint；失败不回填。
+   */
   const flowData2StoreData = useCallback(() => {
-    const nodes = getNodes();
-    return uiWorkflow2StoreWorkflow({ nodes, edges, chatConfig: appDetail.chatConfig });
-  }, [getNodes, edges, appDetail.chatConfig]);
+    if (!runtime || runtime.isDisposed()) return undefined;
+    pendingSaveRevisionRef.current = runtime.getSavepoint().contentRevision;
+    return serializeRuntime(runtime);
+  }, [runtime, pendingSaveRevisionRef]);
 
   // 转换并验证工作流数据
   const flowData2StoreDataAndCheck = useCallback(
@@ -245,13 +254,8 @@ export const WorkflowUtilsProvider = ({ children }: { children: ReactNode }) => 
 
       if (!hasError) {
         onRemoveError();
-        const storeWorkflow = uiWorkflow2StoreWorkflow({
-          nodes,
-          edges,
-          chatConfig: appDetail.chatConfig
-        });
-
-        return storeWorkflow;
+        // Environment Issue 校验通过后，序列化与保存发布走同一个 codec。
+        return flowData2StoreData();
       }
 
       if (!hideTip) {
@@ -290,11 +294,12 @@ export const WorkflowUtilsProvider = ({ children }: { children: ReactNode }) => 
       showSandbox,
       enableSandbox,
       appDetail.chatConfig,
-      toast
+      toast,
+      flowData2StoreData
     ]
   );
 
-  /** 编辑页定时全量扫描，主动发现新增/已修复的节点错误。 */
+  /** 编辑页定时全量扫描，主动发现新增/已修复的节点错误（Environment Issue 留在 host）。 */
   useEffect(() => {
     let active = true;
     const runScheduledCheck = async () => {
@@ -325,7 +330,11 @@ export const WorkflowUtilsProvider = ({ children }: { children: ReactNode }) => 
     };
   }, [edges, getNodes, onSyncWorkflowCheckIssues, t]);
 
-  // 4. initData - 初始化工作流数据
+  /**
+   * 初始化工作流数据：入站边界（migration + Template Materialization）后创建 Runtime。
+   * isInit 且 Runtime 已存在说明是 tab 切换等重挂载，Runtime 就是当前状态，直接跳过；
+   * 非 isInit（导入 JSON）走整文档替换，保留可撤销的历史。
+   */
   const initData = useCallback(
     async (
       e: {
@@ -335,59 +344,25 @@ export const WorkflowUtilsProvider = ({ children }: { children: ReactNode }) => 
       },
       isInit?: boolean
     ) => {
-      const workflow = {
-        nodes: e.nodes,
-        edges: e.edges,
-        chatConfig: e.chatConfig ?? appDetail.chatConfig
-      };
-      const storeNodes = workflow.nodes;
+      if (isInit && runtime && !runtime.isDisposed()) return;
 
-      const toolNodeIds = new Set(
-        workflow.edges
-          .filter((edge) => edge.targetHandle === NodeOutputKeyEnum.selectedTools)
-          .map((edge) => edge.target)
-      );
-      const nodes =
-        storeNodes?.map((item) =>
-          storeNode2FlowNode({
-            item,
-            t,
-            isTool: toolNodeIds.has(item.nodeId)
-          })
-        ) || [];
-      const edges = workflow.edges.map((item) => storeEdge2RenderEdge({ edge: item }));
+      const content = materializeWorkflow({
+        input: { nodes: e.nodes, edges: e.edges },
+        chatConfig: e.chatConfig ?? appDetail.chatConfig,
+        t
+      });
 
-      // 有历史记录，直接用历史记录覆盖
-      if (isInit && past.length > 0) {
-        const firstPast = past[0];
-        setNodes(firstPast.nodes);
-        setEdges(firstPast.edges);
-        setAppDetail((state) => ({ ...state, chatConfig: firstPast.chatConfig }));
-        return;
+      if (runtime && !runtime.isDisposed()) {
+        loadDocument(content);
+      } else {
+        initRuntime(content);
       }
-      // 初始化一个历史记录
-      if (isInit && past.length === 0) {
-        setPast([
-          {
-            nodes: nodes,
-            edges: edges,
-            title: t('app:app.version_initial'),
-            isSaved: true,
-            chatConfig: workflow.chatConfig
-          }
-        ]);
-      }
-
-      // Init memory data
-      setNodes(nodes);
-      setEdges(edges);
-      setAppDetail((state) => ({ ...state, chatConfig: workflow.chatConfig }));
+      setAppDetail((state) => ({ ...state, chatConfig: content.chatConfig }));
     },
-    [appDetail.chatConfig, past, setAppDetail, setEdges, setNodes, setPast, t]
+    [appDetail.chatConfig, initRuntime, loadDocument, runtime, setAppDetail, t]
   );
 
   const contextValue = useMemo(() => {
-    console.log('WorkflowUtilsContextValue 更新了');
     return {
       initData,
       flowData2StoreData,

@@ -1,6 +1,8 @@
 import type { FlowNodeTemplateType } from '@fastgpt/global/core/workflow/type/node';
 import React from 'react';
 import { ReactFlowProvider } from 'reactflow';
+// [workflow-runtime-cutover] 临时兼容桥：host 拥有 Workflow Runtime 生命周期。
+import { WorkflowRuntimeHostProvider } from '@/web/core/workflow/editor/cutover/runtimeHost';
 import WorkflowInitContextProvider from './workflowInitContext';
 import { WorkflowSnapshotProvider } from './workflowSnapshotContext';
 import { WorkflowUtilsProvider } from './workflowUtilsContext';
@@ -13,7 +15,8 @@ import { WorkflowComputeProvider } from './workflowComputeContext';
 
 /* 
   ReactFlowProvider
-  └── WorkflowInitContextProvider          // Layer 1: 基础数据
+  └── WorkflowRuntimeHostProvider          // [workflow-runtime-cutover] Layer 0: Runtime host（临时）
+      └── WorkflowInitContextProvider          // Layer 1: 基础数据
       └── WorkflowBufferDataContext              // Layer 2: 节点边数据
           └── WorkflowSnapshotProvider     // Layer 3: 快照管理
               └── WorkflowActionsProvider  // Layer 4: 节点边操作
@@ -33,23 +36,25 @@ export const ReactFlowCustomProvider = ({
 }) => {
   return (
     <ReactFlowProvider>
-      <WorkflowInitContextProvider basicNodeTemplates={templates}>
-        <WorkflowSnapshotProvider>
-          <WorkflowActionsProvider>
-            <WorkflowUtilsProvider>
-              <WorkflowDebugProvider>
-                <WorkflowUIProvider>
-                  <WorkflowModalProvider>
-                    <WorkflowPersistenceProvider>
-                      <WorkflowComputeProvider>{children}</WorkflowComputeProvider>
-                    </WorkflowPersistenceProvider>
-                  </WorkflowModalProvider>
-                </WorkflowUIProvider>
-              </WorkflowDebugProvider>
-            </WorkflowUtilsProvider>
-          </WorkflowActionsProvider>
-        </WorkflowSnapshotProvider>
-      </WorkflowInitContextProvider>
+      <WorkflowRuntimeHostProvider>
+        <WorkflowInitContextProvider basicNodeTemplates={templates}>
+          <WorkflowSnapshotProvider>
+            <WorkflowActionsProvider>
+              <WorkflowUtilsProvider>
+                <WorkflowDebugProvider>
+                  <WorkflowUIProvider>
+                    <WorkflowModalProvider>
+                      <WorkflowPersistenceProvider>
+                        <WorkflowComputeProvider>{children}</WorkflowComputeProvider>
+                      </WorkflowPersistenceProvider>
+                    </WorkflowModalProvider>
+                  </WorkflowUIProvider>
+                </WorkflowDebugProvider>
+              </WorkflowUtilsProvider>
+            </WorkflowActionsProvider>
+          </WorkflowSnapshotProvider>
+        </WorkflowInitContextProvider>
+      </WorkflowRuntimeHostProvider>
     </ReactFlowProvider>
   );
 };

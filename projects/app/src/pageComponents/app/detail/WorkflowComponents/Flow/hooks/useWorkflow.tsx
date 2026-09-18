@@ -27,17 +27,13 @@ import { useKeyboard } from './useKeyboard';
 import { useContextSelector } from 'use-context-selector';
 import { type THelperLine } from '@/web/core/workflow/type';
 import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
-import { collectWorkflowStartInputAutoFillPatches } from '@/web/core/workflow/workflowStartAutoFill';
-import { useDebounceEffect, useMemoizedFn } from 'ahooks';
+import { useMemoizedFn } from 'ahooks';
 import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import {
   WorkflowBufferDataContext,
   WorkflowInitContext,
   WorkflowNodeDataContext
 } from '../../context/workflowInitContext';
-import { formatTime2YMDHMS } from '@fastgpt/global/common/string/time';
-import { AppContext } from '../../../context';
-import { WorkflowSnapshotContext } from '../../context/workflowSnapshotContext';
 import { WorkflowActionsContext } from '../../context/workflowActionsContext';
 import { WorkflowUIContext } from '../../context/workflowUIContext';
 import { WorkflowModalContext } from '../../context/workflowModalContext';
@@ -436,26 +432,15 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
   const { toast } = useToast();
   const { t } = useTranslation();
 
-  const appDetail = useContextSelector(AppContext, (e) => e.appDetail);
-
   const { nodes, getRawNodeById } = useContextSelector(WorkflowInitContext, (state) => state);
-  const {
-    onNodesChange,
-    setNodes,
-    workflowStartNode,
-    getNodeById,
-    edges,
-    setEdges,
-    onEdgesChange
-  } = useContextSelector(WorkflowBufferDataContext, (state) => state);
+  const { onNodesChange, setNodes, getNodeById, edges, setEdges, onEdgesChange } =
+    useContextSelector(WorkflowBufferDataContext, (state) => state);
   const selectedNodesMap = useContextSelector(WorkflowNodeDataContext, (v) => v.selectedNodesMap);
 
   const { setConnectingEdge, onChangeNode, onUpdateNodeError } = useContextSelector(
     WorkflowActionsContext,
     (v) => v
   );
-  const pushPastSnapshot = useContextSelector(WorkflowSnapshotContext, (v) => v.pushPastSnapshot);
-
   const { setHoverEdgeId, setMenu } = useContextSelector(WorkflowUIContext, (v) => v);
   const setHandleParams = useContextSelector(WorkflowModalContext, (v) => v.setHandleParams);
 
@@ -897,14 +882,8 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
   }, [setConnectingEdge]);
   const onConnect = useCallback(
     ({ connect }: { connect: Connection }) => {
-      const nextEdges = addEdge(
-        {
-          ...connect,
-          type: EDGE_TYPE
-        },
-        edges
-      );
-
+      // [workflow-runtime-cutover] 连线翻译为 connectEdge 命令；工作流开始输入的
+      // 自动填充由 Runtime 在同一事务内完成，旧的手动 patch 已删除。
       setEdges((state) =>
         addEdge(
           {
@@ -914,20 +893,8 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
           state
         )
       );
-
-      if (!workflowStartNode) return;
-
-      const patches = collectWorkflowStartInputAutoFillPatches({
-        nodes,
-        edges: nextEdges,
-        workflowStartNode
-      });
-
-      if (patches.length > 0) {
-        onChangeNode(patches.map((patch) => ({ ...patch, type: 'updateInput' as const })));
-      }
     },
-    [edges, nodes, onChangeNode, setEdges, workflowStartNode]
+    [setEdges]
   );
   const customOnConnect = useCallback(
     (connect: Connection) => {
@@ -1013,22 +980,7 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
     setMenu(null);
   }, [setMenu]);
 
-  // Watch
-  // Auto save snapshot
-  useDebounceEffect(
-    () => {
-      if (nodes.length === 0 || !appDetail.chatConfig) return;
-
-      pushPastSnapshot({
-        pastNodes: nodes,
-        pastEdges: edges,
-        customTitle: formatTime2YMDHMS(new Date()),
-        chatConfig: appDetail.chatConfig
-      });
-    },
-    [nodes, edges, appDetail.chatConfig],
-    { wait: 500 }
-  );
+  // [workflow-runtime-cutover] 旧的防抖全量快照推送已删除：历史由 Runtime 在每笔事务内维护。
 
   return {
     handleNodesChange,

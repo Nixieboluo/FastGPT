@@ -1,69 +1,32 @@
+// [workflow-runtime-cutover] 临时兼容桥：节点/边操作层。
+// 旧 onChangeNode 各变体经 cutover/changeProps 翻译成 Runtime 命令；
+// 错误标记、校验问题、调试结果等视图数据写进 host overlay，不再进节点数组。
+// 迁移结束后薄壳随调用点改造删除。
 // 工作流 Node/Edge 操作层
 import { getWorkflowModelDetails } from '@/web/core/workflow/modelData';
 import { checkWorkflowNodeIssues } from '@/web/core/workflow/workflowCheck';
 import { collectWorkflowStartAutoFillRevertPatches } from '@/web/core/workflow/workflowStartAutoFill';
-import { migrateToolInputConfig } from '@fastgpt/global/core/app/formEdit/utils';
-import type {
-  FlowNodeInputItemType,
-  FlowNodeOutputItemType
-} from '@fastgpt/global/core/workflow/type/io';
 import type {
   FlowNodeTemplateType,
+  WorkflowCheckIssue,
   WorkflowCheckNodeIssueMap
 } from '@fastgpt/global/core/workflow/type/node';
-import { getHandleId } from '@fastgpt/global/core/workflow/utils';
 import { useToast } from '@fastgpt/web/hooks/useToast';
 import { useTranslation } from 'next-i18next';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { OnConnectStartParams } from 'reactflow';
 import { createContext, useContextSelector } from 'use-context-selector';
+import { useMemoizedFn } from 'ahooks';
+import { WorkflowRuntimeHostContext } from '@/web/core/workflow/editor/cutover/runtimeHost';
+import {
+  buildDelEdgeCommands,
+  buildResetNodeCommand,
+  collectPostAttachDisconnects,
+  translateChangeProps,
+  type FlowNodeChangeProps
+} from '@/web/core/workflow/editor/cutover/changeProps';
+import type { ViewOverlayPatch } from '@/web/core/workflow/editor/cutover/translate';
 import { WorkflowBufferDataContext } from './workflowInitContext';
-
-type FlowNodeChangeProps = { nodeId: string } & (
-  | {
-      type: 'attr'; // key: attr, value: new value
-      key: string;
-      value: any;
-    }
-  | {
-      type: 'updateInput'; // key: update input key, value: new input value
-      key: string;
-      value: FlowNodeInputItemType;
-    }
-  | {
-      type: 'replaceInput'; // key: old input key, value: new input value
-      key: string;
-      value: FlowNodeInputItemType;
-    }
-  | {
-      type: 'addInput'; // key: null, value: new input value
-      value: FlowNodeInputItemType;
-      index?: number;
-    }
-  | {
-      type: 'delInput'; // key: delete input key, value: null
-      key: string;
-    }
-  | {
-      type: 'updateOutput'; // key: update output key, value: new output value
-      key: string;
-      value: FlowNodeOutputItemType;
-    }
-  | {
-      type: 'replaceOutput'; // key: old output key, value: new output value
-      key: string;
-      value: FlowNodeOutputItemType;
-    }
-  | {
-      type: 'addOutput'; // key: null, value: new output value
-      value: FlowNodeOutputItemType;
-      index?: number;
-    }
-  | {
-      type: 'delOutput'; // key: delete output key, value: null
-      key: string;
-    }
-);
 
 // 创建 Context
 type WorkflowActionsContextValue = {
@@ -130,6 +93,16 @@ export const WorkflowActionsContext = createContext<WorkflowActionsContextValue>
   }
 });
 
+/** 边值相等（投影边 id 会随删除重排，比较必须按端点值）。 */
+const edgeValueEqual = (
+  a: { source: string; target: string; sourceHandle?: string | null; targetHandle?: string | null },
+  b: { source: string; target: string; sourceHandle?: string | null; targetHandle?: string | null }
+) =>
+  a.source === b.source &&
+  a.target === b.target &&
+  (a.sourceHandle || '') === (b.sourceHandle || '') &&
+  (a.targetHandle || '') === (b.targetHandle || '');
+
 /**
  * WorkflowActionsProvider - 操作提供者
  */
@@ -137,13 +110,16 @@ export const WorkflowActionsProvider = ({ children }: { children: React.ReactNod
   const { t } = useTranslation();
   const { toast } = useToast();
 
+  const runtime = useContextSelector(WorkflowRuntimeHostContext, (v) => v.runtime);
+  const overlaysRef = useContextSelector(WorkflowRuntimeHostContext, (v) => v.overlaysRef);
+  const patchViewData = useContextSelector(WorkflowRuntimeHostContext, (v) => v.patchViewData);
+
   // 获取 WorkflowBufferDataContext 的数据
   const {
     forbiddenSaveSnapshot: forbiddenSaveSnapshotRef,
-    setEdges,
-    setNodes,
     edges,
-    getNodes
+    getNodes,
+    setNodes
   } = useContextSelector(WorkflowBufferDataContext, (v) => v);
 
   const singleNodeCheckTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -154,130 +130,99 @@ export const WorkflowActionsProvider = ({ children }: { children: React.ReactNod
   // 连接状态
   const [connectingEdge, setConnectingEdge] = useState<OnConnectStartParams>();
 
-  // 删除边
-  const onDelEdge = useCallback(
+  const isRuntimeActive = useMemoizedFn(() => !!runtime && !runtime.isDisposed());
+
+  const writeIssueOverlay = useMemoizedFn(
+    (nodeId: string, issues: WorkflowCheckIssue[] | undefined) => {
+      const nextIssues = issues?.length ? issues : undefined;
+      const current = overlaysRef.current[nodeId]?.workflowCheckIssues;
+      if (JSON.stringify(current ?? undefined) === JSON.stringify(nextIssues)) return;
+      const patch: ViewOverlayPatch = { nodeId, values: { workflowCheckIssues: nextIssues } };
+      patchViewData([patch]);
+    }
+  );
+
+  // 删除边：翻译成断连命令（按 handle 值匹配当前文档边）。
+  const onDelEdge = useMemoizedFn(
     ({
       nodeId,
       sourceHandle,
       targetHandle
-    }: Parameters<WorkflowActionsContextValue['onDelEdge']>[0]) => {
+    }: {
+      nodeId: string;
+      sourceHandle?: string;
+      targetHandle?: string;
+    }) => {
       if (!sourceHandle && !targetHandle) return;
-
-      setEdges((state) =>
-        state.filter((edge) => {
-          if (edge.source === nodeId && edge.sourceHandle === sourceHandle) return false;
-          if (edge.target === nodeId && edge.targetHandle === targetHandle) return false;
-
-          return true;
-        })
-      );
-    },
-    [setEdges]
+      if (!isRuntimeActive()) return;
+      const commands = buildDelEdgeCommands({
+        runtime: runtime!,
+        nodeId,
+        sourceHandle,
+        targetHandle
+      });
+      if (commands.length === 0) return;
+      const res = runtime!.dispatch(commands);
+      if (!res.ok) console.warn('[workflow-runtime-cutover] onDelEdge rejected:', res.error);
+    }
   );
 
-  // 更新节点错误状态；标红时仅保留一个节点的 isError，避免多个节点同时进入选中错误态。
-  const onUpdateNodeError = useCallback(
-    (nodeId: string, isError: boolean) => {
-      setNodes((state) =>
-        state.map((item) => {
-          if (item.data?.nodeId === nodeId) {
-            return {
-              ...item,
-              selected: isError ? true : item.selected,
-              data: {
-                ...item.data,
-                isError
-              }
-            };
-          }
-
-          if (isError && item.data.isError) {
-            return {
-              ...item,
-              data: {
-                ...item.data,
-                isError: false
-              }
-            };
-          }
-
-          return item;
-        })
-      );
-    },
-    [setNodes]
-  );
+  // 更新节点错误状态；标红时仅保留一个节点的 isError（旧行为），选中态属于交互层写本地。
+  const onUpdateNodeError = useMemoizedFn((nodeId: string, isError: boolean) => {
+    if (!isError) {
+      patchViewData([{ nodeId, values: { isError: false } }]);
+      return;
+    }
+    const patches: ViewOverlayPatch[] = [{ nodeId, values: { isError: true } }];
+    Object.entries(overlaysRef.current).forEach(([id, values]) => {
+      if (id !== nodeId && values?.isError)
+        patches.push({ nodeId: id, values: { isError: false } });
+    });
+    patchViewData(patches);
+    setNodes((state) =>
+      state.map((item) => (item.data?.nodeId === nodeId ? { ...item, selected: true } : item))
+    );
+  });
 
   /** 同步节点下方问题文案；不改动 isError，标红仅由 onUpdateNodeError 控制。 */
-  const onSyncWorkflowCheckIssues = useCallback(
-    (nodeIssueMap: WorkflowCheckNodeIssueMap) => {
-      setNodes((state) =>
-        state.map((item) => {
-          const nodeId = item.data.nodeId;
-          const issues = nodeIssueMap[nodeId];
-          const nextIssues = issues?.length ? issues : undefined;
-
-          if (JSON.stringify(item.data.workflowCheckIssues) === JSON.stringify(nextIssues)) {
-            return item;
-          }
-
-          return {
-            ...item,
-            data: {
-              ...item.data,
-              workflowCheckIssues: nextIssues
-            }
-          };
-        })
-      );
-    },
-    [setNodes]
-  );
+  const onSyncWorkflowCheckIssues = useMemoizedFn((nodeIssueMap: WorkflowCheckNodeIssueMap) => {
+    const patches: ViewOverlayPatch[] = [];
+    const nodeIds = new Set([
+      ...Object.keys(nodeIssueMap),
+      ...Object.keys(overlaysRef.current).filter(
+        (id) => overlaysRef.current[id]?.workflowCheckIssues !== undefined
+      )
+    ]);
+    nodeIds.forEach((nodeId) => {
+      const nextIssues = nodeIssueMap[nodeId]?.length ? nodeIssueMap[nodeId] : undefined;
+      const current = overlaysRef.current[nodeId]?.workflowCheckIssues;
+      if (JSON.stringify(current ?? undefined) === JSON.stringify(nextIssues)) return;
+      patches.push({ nodeId, values: { workflowCheckIssues: nextIssues } });
+    });
+    patchViewData(patches);
+  });
 
   /** 单节点配置变更后防抖重校验，仅同步问题文案，不自动标红。 */
-  const onRefreshSingleNodeWorkflowCheckIssues = useCallback(
-    async (nodeId: string) => {
-      const nodes = getNodes();
-      const models = await getWorkflowModelDetails(
-        nodes.filter((node) => node.id === nodeId)
-      ).catch(() => undefined);
-      if (
-        !models ||
-        getNodes().find((node) => node.id === nodeId)?.data.inputs !==
-          nodes.find((node) => node.id === nodeId)?.data.inputs
-      )
-        return;
-      const issueMap = checkWorkflowNodeIssues({
-        nodes,
-        edges,
-        models,
-        nodeId,
-        t
-      });
-
-      setNodes((state) =>
-        state.map((item) => {
-          if (item.data.nodeId !== nodeId) return item;
-
-          const issues = issueMap[nodeId];
-          const nextIssues = issues?.length ? issues : undefined;
-
-          if (JSON.stringify(item.data.workflowCheckIssues) === JSON.stringify(nextIssues)) {
-            return item;
-          }
-
-          return {
-            ...item,
-            data: {
-              ...item.data,
-              workflowCheckIssues: nextIssues
-            }
-          };
-        })
-      );
-    },
-    [edges, getNodes, setNodes, t]
-  );
+  const onRefreshSingleNodeWorkflowCheckIssues = useMemoizedFn(async (nodeId: string) => {
+    const nodes = getNodes();
+    const models = await getWorkflowModelDetails(nodes.filter((node) => node.id === nodeId)).catch(
+      () => undefined
+    );
+    if (
+      !models ||
+      getNodes().find((node) => node.id === nodeId)?.data.inputs !==
+        nodes.find((node) => node.id === nodeId)?.data.inputs
+    )
+      return;
+    const issueMap = checkWorkflowNodeIssues({
+      nodes,
+      edges,
+      models,
+      nodeId,
+      t
+    });
+    writeIssueOverlay(nodeId, issueMap[nodeId]);
+  });
 
   /** 节点配置变更后防抖触发单节点重新校验，避免每次输入都同步扫描。 */
   const scheduleSingleNodeWorkflowCheck = useCallback(
@@ -323,6 +268,80 @@ export const WorkflowActionsProvider = ({ children }: { children: React.ReactNod
     }, 400);
   }, [edges, getNodes, onSyncWorkflowCheckIssues, t]);
 
+  // 旧节点修改回调：翻译成 Runtime 命令；记录级变更在 host 侧改完整份数组后走 updateNode。
+  const onChangeNode = useMemoizedFn((props: FlowNodeChangeProps | FlowNodeChangeProps[]) => {
+    const updateData = Array.isArray(props) ? props : [props];
+    const nodeIdsToRecheck = new Set(updateData.map((item) => item.nodeId));
+
+    if (isRuntimeActive()) {
+      const { commands, viewPatches, duplicateKeyNodeIds, attachRequests } = translateChangeProps({
+        props: updateData,
+        runtime: runtime!
+      });
+      if (duplicateKeyNodeIds.length > 0) {
+        toast({
+          status: 'warning',
+          title: t('common:key_repetition')
+        });
+      }
+      patchViewData(viewPatches);
+      if (commands.length > 0) {
+        const res = runtime!.dispatch(commands);
+        if (!res.ok) {
+          console.warn('[workflow-runtime-cutover] onChangeNode rejected:', res.error);
+        } else if (attachRequests.length > 0) {
+          // attach 会由 Runtime 清理非法边；旧行为是落入容器时删除该节点全部连线，
+          // 因此 attach 提交后按最新快照补一轮断连（逐节点提交，避免下标互相失效）。
+          attachRequests.forEach(({ nodeId }) => {
+            runtime!.dispatch(collectPostAttachDisconnects({ runtime: runtime!, nodeId }));
+          });
+        }
+      }
+    }
+
+    if (updateData.length > 1) {
+      scheduleWorkflowCheckOnEdgeChange();
+    } else {
+      nodeIdsToRecheck.forEach((nodeId) => scheduleSingleNodeWorkflowCheck(nodeId));
+    }
+  });
+
+  // 移除所有节点的错误状态（overlay 清理 + 取消对应节点选中）。
+  const onRemoveError = useMemoizedFn(() => {
+    const patches: ViewOverlayPatch[] = [];
+    const affectedNodeIds = new Set<string>();
+    Object.entries(overlaysRef.current).forEach(([nodeId, values]) => {
+      if (
+        !values?.isError &&
+        !(values?.workflowCheckIssues as WorkflowCheckIssue[] | undefined)?.length
+      )
+        return;
+      affectedNodeIds.add(nodeId);
+      patches.push({ nodeId, values: { isError: false, workflowCheckIssues: undefined } });
+    });
+    patchViewData(patches);
+    if (affectedNodeIds.size > 0) {
+      setNodes((state) =>
+        state.map((item) =>
+          affectedNodeIds.has(item.data.nodeId) ? { ...item, selected: false } : item
+        )
+      );
+    }
+  });
+
+  // 重置节点：整节点替换命令（保留位置与折叠，合并已配置的工具输入）。
+  const onResetNode = useMemoizedFn(({ id, node }: { id: string; node: FlowNodeTemplateType }) => {
+    // 确保重置时不阻塞快照保存
+    forbiddenSaveSnapshotRef.current = false;
+    if (!isRuntimeActive()) return;
+    const command = buildResetNodeCommand({ runtime: runtime!, nodeId: id, template: node });
+    if (!command) return;
+    const res = runtime!.dispatch([command]);
+    if (!res.ok) console.warn('[workflow-runtime-cutover] onResetNode rejected:', res.error);
+  });
+
+  // 断连后回退工作流开始自动填充（Runtime 只在连线时自动填充，不回退，旧行为由桥保留）。
+  // 投影边 id 会随删除整体重排，因此按端点值而不是 id 找被删的边。
   useEffect(() => {
     if (isFirstEdgesEffectRef.current) {
       isFirstEdgesEffectRef.current = false;
@@ -332,11 +351,11 @@ export const WorkflowActionsProvider = ({ children }: { children: React.ReactNod
 
     const prevEdges = prevEdgesRef.current;
     const removedEdges = prevEdges.filter(
-      (prevEdge) => !edges.some((edge) => edge.id === prevEdge.id)
+      (prevEdge) => !edges.some((edge) => edgeValueEqual(edge, prevEdge))
     );
     prevEdgesRef.current = edges;
 
-    if (removedEdges.length > 0) {
+    if (removedEdges.length > 0 && isRuntimeActive()) {
       const getNodeDataById = (nodeId: string) =>
         getNodes().find((node) => node.data.nodeId === nodeId)?.data;
 
@@ -347,28 +366,16 @@ export const WorkflowActionsProvider = ({ children }: { children: React.ReactNod
       });
 
       if (patches.length > 0) {
-        setNodes((nodes) =>
-          nodes.map((node) => {
-            const nodePatches = patches.filter((patch) => patch.nodeId === node.data.nodeId);
-            if (nodePatches.length === 0) return node;
-
-            return {
-              ...node,
-              data: {
-                ...node.data,
-                inputs: node.data.inputs.map((input) => {
-                  const patch = nodePatches.find((item) => item.key === input.key);
-                  return patch ? patch.value : input;
-                })
-              }
-            };
-          })
-        );
+        const { commands } = translateChangeProps({
+          props: patches.map((patch) => ({ ...patch, type: 'updateInput' as const })),
+          runtime: runtime!
+        });
+        if (commands.length > 0) runtime!.dispatch(commands);
       }
     }
 
     scheduleWorkflowCheckOnEdgeChange();
-  }, [edges, scheduleWorkflowCheckOnEdgeChange, getNodes, setNodes]);
+  }, [edges, scheduleWorkflowCheckOnEdgeChange, getNodes, runtime, isRuntimeActive]);
 
   useEffect(() => {
     const timers = singleNodeCheckTimerRef.current;
@@ -381,208 +388,7 @@ export const WorkflowActionsProvider = ({ children }: { children: React.ReactNod
     };
   }, []);
 
-  // 移除所有节点的错误状态
-  const onRemoveError = useCallback(() => {
-    setNodes((state) =>
-      state.map((item) => {
-        if (!item.data.isError && !item.data.workflowCheckIssues?.length) {
-          return item;
-        }
-        return {
-          ...item,
-          selected: false,
-          data: {
-            ...item.data,
-            isError: false,
-            workflowCheckIssues: undefined
-          }
-        };
-      })
-    );
-  }, [setNodes]);
-
-  // Reset a node data. delete edge and replace it
-  const onResetNode = useCallback(
-    ({ id, node }: Parameters<WorkflowActionsContextValue['onResetNode']>[0]) => {
-      // 确保重置时不阻塞快照保存
-      forbiddenSaveSnapshotRef.current = false;
-
-      setNodes((state) =>
-        state.map((item) => {
-          if (item.id === id) {
-            const sourceInputMap = new Map(item.data.inputs.map((input) => [input.key, input]));
-            return {
-              ...item,
-              data: {
-                ...item.data,
-                ...node,
-                inputs: node.inputs.map((input) =>
-                  migrateToolInputConfig({
-                    input,
-                    sourceInput: sourceInputMap.get(input.key)
-                  })
-                )
-              }
-            };
-          }
-          return item;
-        })
-      );
-    },
-    [forbiddenSaveSnapshotRef, setNodes]
-  );
-
-  // 使用结构共享优化的节点更改
-  const onChangeNode = useCallback(
-    (props: FlowNodeChangeProps | FlowNodeChangeProps[]) => {
-      const updateData = Array.isArray(props) ? props : [props];
-      const nodeIdsToRecheck = new Set(updateData.map((item) => item.nodeId));
-      const updatesByNodeId = updateData.reduce((map, item) => {
-        map.set(item.nodeId, [...(map.get(item.nodeId) ?? []), item]);
-        return map;
-      }, new Map<string, FlowNodeChangeProps[]>());
-
-      setNodes((nodes) => {
-        return nodes.map((node) => {
-          const updateItems = updatesByNodeId.get(node.data.nodeId);
-          if (!updateItems?.length) return node;
-
-          // ✅ 使用结构共享，只拷贝变化的部分
-          let updateObj = node.data;
-
-          updateItems.forEach((updateItem) => {
-            const { nodeId, type } = updateItem;
-
-            if (type === 'attr') {
-              // 浅拷贝 + 更新单个属性
-              updateObj = {
-                ...updateObj,
-                [updateItem.key]: updateItem.value
-              };
-            } else if (type === 'updateInput') {
-              // 批量自动填充会同时更新同一节点的多个 input，需基于上一次变更继续叠加。
-              updateObj = {
-                ...updateObj,
-                inputs: updateObj.inputs.map((item) =>
-                  item.key === updateItem.key ? updateItem.value : item
-                )
-              };
-            } else if (type === 'replaceInput') {
-              const existingIndex = updateObj.inputs.findIndex(
-                (item) => item.key === updateItem.key
-              );
-              const hasInput = updateObj.inputs.some(
-                (item) => item.key === updateItem.value.key && item.key !== updateItem.key
-              );
-
-              if (hasInput) {
-                toast({
-                  status: 'warning',
-                  title: t('common:key_repetition')
-                });
-                return;
-              }
-
-              updateObj = {
-                ...updateObj,
-                inputs:
-                  existingIndex === -1
-                    ? [...updateObj.inputs, updateItem.value]
-                    : updateObj.inputs.map((item) =>
-                        item.key === updateItem.key ? updateItem.value : item
-                      )
-              };
-            } else if (type === 'addInput') {
-              const hasInput = updateObj.inputs.some((input) => input.key === updateItem.value.key);
-              if (hasInput) {
-                toast({
-                  status: 'warning',
-                  title: t('common:key_repetition')
-                });
-              } else {
-                updateObj = {
-                  ...updateObj,
-                  inputs: [...updateObj.inputs, updateItem.value]
-                };
-              }
-            } else if (type === 'delInput') {
-              updateObj = {
-                ...updateObj,
-                inputs: updateObj.inputs.filter((item) => item.key !== updateItem.key)
-              };
-            } else if (type === 'updateOutput') {
-              updateObj = {
-                ...updateObj,
-                outputs: updateObj.outputs.map((item) =>
-                  item.key === updateItem.key ? updateItem.value : item
-                )
-              };
-            } else if (type === 'replaceOutput') {
-              onDelEdge({ nodeId, sourceHandle: getHandleId(nodeId, 'source', updateItem.key) });
-              updateObj = {
-                ...updateObj,
-                outputs: updateObj.outputs.map((item) =>
-                  item.key === updateItem.key ? updateItem.value : item
-                )
-              };
-            } else if (type === 'addOutput') {
-              const hasOutput = updateObj.outputs.some(
-                (output) => output.key === updateItem.value.key
-              );
-              if (hasOutput) {
-                toast({
-                  status: 'warning',
-                  title: t('common:key_repetition')
-                });
-              } else {
-                if (updateItem.index !== undefined) {
-                  const outputs = [...updateObj.outputs];
-                  outputs.splice(updateItem.index, 0, updateItem.value);
-                  updateObj = {
-                    ...updateObj,
-                    outputs
-                  };
-                } else {
-                  updateObj = {
-                    ...updateObj,
-                    outputs: [...updateObj.outputs, updateItem.value]
-                  };
-                }
-              }
-            } else if (type === 'delOutput') {
-              onDelEdge({ nodeId, sourceHandle: getHandleId(nodeId, 'source', updateItem.key) });
-              updateObj = {
-                ...updateObj,
-                outputs: updateObj.outputs.filter((item) => item.key !== updateItem.key)
-              };
-            }
-          });
-
-          return {
-            ...node,
-            data: updateObj
-          };
-        });
-      });
-
-      if (updateData.length > 1) {
-        scheduleWorkflowCheckOnEdgeChange();
-      } else {
-        nodeIdsToRecheck.forEach((nodeId) => scheduleSingleNodeWorkflowCheck(nodeId));
-      }
-    },
-    [
-      setNodes,
-      toast,
-      t,
-      onDelEdge,
-      scheduleSingleNodeWorkflowCheck,
-      scheduleWorkflowCheckOnEdgeChange
-    ]
-  );
-
   const contextValue = useMemo(() => {
-    console.log('WorkflowActionsContextValue 更新了');
     return {
       onUpdateNodeError,
       onSyncWorkflowCheckIssues,
