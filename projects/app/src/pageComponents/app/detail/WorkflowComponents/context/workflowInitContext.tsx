@@ -1,7 +1,8 @@
-// [workflow-runtime-cutover] 临时兼容桥：本 Context 从数据源退化为投影 + 翻译层。
-// Runtime 拥有唯一的 Workflow Document / Node View；这里只保留 reactflow 交互状态
-// （选中、拖拽帧、测量尺寸、层级），把旧调用点的 setNodes/setEdges/onNodesChange/
-// onEdgesChange 翻译成 Runtime 命令。迁移结束后薄壳随调用点改造删除。
+// [workflow-runtime-cutover] 临时兼容桥：本 Context 只剩「投影供数 + 写路径翻译」。
+// Runtime 拥有唯一的 Workflow Document / Node View；派生索引直接读 Runtime 结构快照与
+// 节点视图，画布数组只承载 reactflow 交互状态（拖拽帧、测量尺寸、层级）。
+// 旧调用点的 setNodes/setEdges/onNodesChange/onEdgesChange 仍在这里翻译成 Runtime 命令，
+// 迁移结束后薄壳随调用点改造删除。
 import type {
   FlowNodeItemType,
   FlowNodeTemplateType
@@ -10,7 +11,11 @@ import { createContext, useContextSelector } from 'use-context-selector';
 
 import { NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
-import type { WorkflowCommand } from '@fastgpt/global/core/workflow/editor/types';
+import type {
+  WorkflowCommand,
+  WorkflowRuntimePort,
+  WorkflowSnapshot
+} from '@fastgpt/global/core/workflow/editor/types';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
 import { useMemoizedFn } from 'ahooks';
 import { useTranslation } from 'next-i18next';
@@ -63,13 +68,6 @@ export const WorkflowInitContext = createContext<WorkflowNodeContextType>({
   ): Node<FlowNodeItemType, string | undefined> | undefined {
     throw new Error('Function not implemented.');
   }
-});
-
-export type WorkflowNodeDataType = {
-  selectedNodesMap: Record<string, boolean>;
-};
-export const WorkflowNodeDataContext = createContext<WorkflowNodeDataType>({
-  selectedNodesMap: {}
 });
 
 export type WorkflowDataContextType = {
@@ -136,6 +134,124 @@ export const WorkflowBufferDataContext = createContext<WorkflowDataContextType>(
   childrenNodeIdListMap: {}
 });
 
+/** 只依赖节点身份/类型与连线的结构索引；不读节点视图，也不物化 FlowNodeItemType。 */
+type StructureIndexes = {
+  nodeIds: string[];
+  nodeAmount: number;
+  childrenNodeIdListMap: Record<string, string[]>;
+  toolNodesMap: Record<string, boolean>;
+  workflowStartNodeId: string | undefined;
+  hasToolNode: boolean;
+  hasLoopRunNode: boolean;
+};
+
+const EMPTY_STRUCTURE_INDEXES: StructureIndexes = {
+  nodeIds: [],
+  nodeAmount: 0,
+  childrenNodeIdListMap: {},
+  toolNodesMap: {},
+  workflowStartNodeId: undefined,
+  hasToolNode: false,
+  hasLoopRunNode: false
+};
+
+/**
+ * 从 Runtime 结构快照单遍派生结构索引。
+ * 语义版本不变时快照身份稳定，调用方按快照身份缓存即可跳过重算：
+ * 本地交互（拖拽帧、选中、测量）只改画布数组，不会走到这里。
+ * 工具节点判定与旧实现一致：被 selectedTools 出边指向且仍在文档中的节点。
+ * 导出供单测直接校验派生语义。
+ */
+export const deriveStructureIndexes = (workflow?: WorkflowSnapshot): StructureIndexes => {
+  if (!workflow) return EMPTY_STRUCTURE_INDEXES;
+
+  const nodeIds: string[] = [];
+  const childrenNodeIdListMap: Record<string, string[]> = {};
+  const toolNodesMap: Record<string, boolean> = {};
+  let workflowStartNodeId: string | undefined = undefined;
+  let hasToolNode = false;
+  let hasLoopRunNode = false;
+
+  workflow.nodes.forEach((node) => {
+    nodeIds.push(node.nodeId);
+    if (node.parentNodeId) {
+      const siblings = childrenNodeIdListMap[node.parentNodeId];
+      if (siblings) siblings.push(node.nodeId);
+      else childrenNodeIdListMap[node.parentNodeId] = [node.nodeId];
+    }
+
+    if (node.flowNodeType === FlowNodeTypeEnum.workflowStart) workflowStartNodeId = node.nodeId;
+    if (node.flowNodeType === FlowNodeTypeEnum.toolCall) hasToolNode = true;
+    if (node.flowNodeType === FlowNodeTypeEnum.loopRun) hasLoopRunNode = true;
+  });
+
+  const nodeIdSet = new Set(nodeIds);
+  workflow.edges.forEach((edge) => {
+    if (edge.targetHandle === NodeOutputKeyEnum.selectedTools && nodeIdSet.has(edge.target)) {
+      toolNodesMap[edge.target] = true;
+    }
+  });
+
+  return {
+    nodeIds,
+    nodeAmount: nodeIds.length,
+    childrenNodeIdListMap,
+    toolNodesMap,
+    workflowStartNodeId,
+    hasToolNode,
+    hasLoopRunNode
+  };
+};
+
+type FoldIndexes = {
+  foldedNodesMap: Record<string, boolean>;
+  allNodeFolded: boolean;
+};
+
+const EMPTY_FOLD_INDEXES: FoldIndexes = { foldedNodesMap: {}, allNodeFolded: true };
+
+/**
+ * 折叠索引只读 Node View：isFolded 不在语义快照里，纯几何事务也不 bump 语义版本，
+ * 因此调用方必须把 runtime 事件计数一并作为缓存 key，否则折叠后索引不刷新。
+ * comment 节点不参与「全部折叠」判定，空文档沿用 allNodeFolded = true，与旧实现一致。
+ * 导出供单测直接校验派生语义。
+ */
+export const deriveFoldIndexes = (
+  workflow: WorkflowSnapshot | undefined,
+  runtime: WorkflowRuntimePort | null
+): FoldIndexes => {
+  if (!workflow || !runtime) return EMPTY_FOLD_INDEXES;
+
+  const foldedNodesMap: Record<string, boolean> = {};
+  let allNodeFolded = true;
+  workflow.nodes.forEach((node) => {
+    if (runtime.getNodeView(node.nodeId)?.isFolded) foldedNodesMap[node.nodeId] = true;
+    else if (node.flowNodeType !== FlowNodeTypeEnum.comment) allNodeFolded = false;
+  });
+  return { foldedNodesMap, allNodeFolded };
+};
+
+type NodeDataIndexes = {
+  nodeList: FlowNodeItemType[];
+  nodesMap: Record<string, FlowNodeItemType>;
+};
+
+const EMPTY_NODE_DATA_INDEXES: NodeDataIndexes = { nodeList: [], nodesMap: {} };
+
+/**
+ * 从投影结果收集按 id 的节点数据：与画布节点共享同一份 data 对象身份，
+ * 所以只能在重投影时更新，不能另行物化（会出现第二份 data，还要重复付模板展开开销）。
+ */
+const collectNodeDataIndexes = (nodes: CanvasNode[]): NodeDataIndexes => {
+  const nodeList: FlowNodeItemType[] = [];
+  const nodesMap: Record<string, FlowNodeItemType> = {};
+  nodes.forEach((node) => {
+    nodeList.push(node.data);
+    nodesMap[node.data.nodeId] = node.data;
+  });
+  return { nodeList, nodesMap };
+};
+
 const WorkflowInitContextProvider = ({
   children,
   basicNodeTemplates
@@ -148,10 +264,15 @@ const WorkflowInitContextProvider = ({
   const runtimeTick = useContextSelector(WorkflowHostContext, (v) => v.runtimeTick);
   const overlaysRef = useContextSelector(WorkflowHostContext, (v) => v.overlaysRef);
   const patchViewData = useContextSelector(WorkflowHostContext, (v) => v.patchViewData);
+  // 问题状态归 host：投影时合并问题文案与标红焦点，画布数组不再是问题状态的写入方。
+  const issuesRef = useContextSelector(WorkflowHostContext, (v) => v.issuesRef);
+  const issueFocusRef = useContextSelector(WorkflowHostContext, (v) => v.issueFocusRef);
 
   // 交互状态层：reactflow 本地数组，语义值以 Runtime 投影为准。
   const [nodes, setNodesRaw] = useState<CanvasNode[]>([]);
   const [edges, setEdgesRaw] = useState<Edge<any>[]>([]);
+  // 按 id 的节点数据索引：只能在重投影时更新，与画布节点共享同一份 data 对象身份。
+  const [nodeDataIndexes, setNodeDataIndexes] = useState<NodeDataIndexes>(EMPTY_NODE_DATA_INDEXES);
   // ref 与本地数组同步更新，保证同一 tick 内连续写入（先删节点再删边等）读到最新值。
   const nodesRef = useRef<CanvasNode[]>(nodes);
   const edgesRef = useRef<Edge<any>[]>(edges);
@@ -165,6 +286,8 @@ const WorkflowInitContextProvider = ({
     const projected = projectRuntimeCanvas({
       runtime: runtime!,
       overlays: overlaysRef.current,
+      issues: issuesRef.current,
+      errorNodeId: issueFocusRef.current,
       t,
       localNodes: nodesRef.current,
       localEdges: edgesRef.current,
@@ -174,6 +297,7 @@ const WorkflowInitContextProvider = ({
     edgesRef.current = projected.edges;
     setNodesRaw(projected.nodes);
     setEdgesRaw(projected.edges);
+    setNodeDataIndexes(collectNodeDataIndexes(projected.nodes));
   });
 
   // 语言切换会让模板物化结果失效，投影缓存按节点 key 无法感知 t，直接整体作废。
@@ -290,91 +414,41 @@ const WorkflowInitContextProvider = ({
 
   const getNodes = useMemoizedFn(() => nodesRef.current);
 
-  const nodeFormat = useMemo(() => {
-    const nodeIds: string[] = [];
-    const nodeList: FlowNodeItemType[] = [];
-    const nodesMap: Record<string, FlowNodeItemType> = {};
-    const childrenNodeIdListMap: Record<string, string[]> = {};
-    const selectedNodesMap: Record<string, boolean> = {};
-    const foldedNodesMap: Record<string, boolean> = {};
-    let workflowStartNode: FlowNodeItemType | undefined = undefined;
-    let allNodeFolded = true;
-    let hasToolNode = false;
-    let hasLoopRunNode = false;
-
-    nodes.forEach((node) => {
-      const flowNodeType = node.data.flowNodeType;
-
-      nodeIds.push(node.data.nodeId);
-      nodeList.push(node.data);
-      nodesMap[node.data.nodeId] = node.data;
-
-      if (node.data.parentNodeId) {
-        childrenNodeIdListMap[node.data.parentNodeId] = [
-          ...(childrenNodeIdListMap[node.data.parentNodeId] || []),
-          node.data.nodeId
-        ];
-      }
-
-      if (node.selected) {
-        selectedNodesMap[node.data.nodeId] = true;
-      }
-      if (node.data.isFolded) {
-        foldedNodesMap[node.data.nodeId] = true;
-      }
-
-      if (flowNodeType === FlowNodeTypeEnum.workflowStart) {
-        workflowStartNode = node.data;
-      }
-      if (!node.data.isFolded && flowNodeType !== FlowNodeTypeEnum.comment) {
-        allNodeFolded = false;
-      }
-
-      if (flowNodeType === FlowNodeTypeEnum.toolCall) {
-        hasToolNode = true;
-      }
-      if (flowNodeType === FlowNodeTypeEnum.loopRun) {
-        hasLoopRunNode = true;
-      }
-    });
-
-    return {
-      nodeIds,
-      nodeList,
-      nodesMap,
-      childrenNodeIdListMap,
-      selectedNodesMap,
-      workflowStartNode,
-      allNodeFolded,
-      hasToolNode,
-      hasLoopRunNode,
-      foldedNodesMap
-    };
-  }, [nodes]);
-
-  // 拆解出常用的数据，避免重复计算
-  const nodeIds = useMemoEnhance(() => nodeFormat.nodeIds, [nodeFormat.nodeIds]);
-  const nodeList = useMemoEnhance(() => nodeFormat.nodeList, [nodeFormat.nodeList]);
-  const nodesMap = useMemoEnhance(() => nodeFormat.nodesMap, [nodeFormat.nodesMap]);
-  const selectedNodesMap = useMemoEnhance(
-    () => nodeFormat.selectedNodesMap,
-    [nodeFormat.selectedNodesMap]
+  // 文档结构快照：Runtime 语义版本不变时身份稳定（getWorkflow 有版本缓存），作为结构派生的缓存 key。
+  const workflowSnapshot = isRuntimeActive() ? runtime!.getWorkflow() : undefined;
+  // ponytail: 缓存粒度是语义版本，纯字段编辑也会重算一遍 O(n) 结构索引（输出身份仍由
+  // useMemoEnhance 稳住，消费者不会多渲染）。要精确到「结构真变」需 adapter 暴露 null-safe
+  // 的结构 handle：薄壳在 runtime hydrate 前就要渲染，直接用 useWorkflow() 会抛错。
+  const structureIndexes = useMemo(
+    () => deriveStructureIndexes(workflowSnapshot),
+    [workflowSnapshot]
   );
+  // 小体积索引用 useMemoEnhance 稳定身份：语义编辑没改结构时，消费者不必重渲染。
+  const nodeIds = useMemoEnhance(() => structureIndexes.nodeIds, [structureIndexes.nodeIds]);
   const childrenNodeIdListMap = useMemoEnhance(
-    () => nodeFormat.childrenNodeIdListMap,
-    [nodeFormat.childrenNodeIdListMap]
+    () => structureIndexes.childrenNodeIdListMap,
+    [structureIndexes.childrenNodeIdListMap]
   );
-  const workflowStartNode = useMemoEnhance(
-    () => nodeFormat.workflowStartNode,
-    [nodeFormat.workflowStartNode]
+  const toolNodesMap = useMemoEnhance(
+    () => structureIndexes.toolNodesMap,
+    [structureIndexes.toolNodesMap]
+  );
+  const { nodeAmount, hasToolNode, hasLoopRunNode, workflowStartNodeId } = structureIndexes;
+
+  const foldIndexes = useMemo(
+    () => deriveFoldIndexes(workflowSnapshot, runtime),
+    // runtimeTick 是刻意的缓存 key：折叠只写 Node View，纯几何事务不 bump 语义版本。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [workflowSnapshot, runtime, runtimeTick]
   );
   const foldedNodesMap = useMemoEnhance(
-    () => nodeFormat.foldedNodesMap,
-    [nodeFormat.foldedNodesMap]
+    () => foldIndexes.foldedNodesMap,
+    [foldIndexes.foldedNodesMap]
   );
-  const allNodeFolded = nodeFormat.allNodeFolded;
-  const hasToolNode = nodeFormat.hasToolNode;
-  const hasLoopRunNode = nodeFormat.hasLoopRunNode;
+  const allNodeFolded = foldIndexes.allNodeFolded;
+
+  const { nodeList, nodesMap } = nodeDataIndexes;
+  const workflowStartNode = workflowStartNodeId ? nodesMap[workflowStartNodeId] : undefined;
 
   const getNodeList = useMemoizedFn(() => nodeList);
 
@@ -399,25 +473,6 @@ const WorkflowInitContextProvider = ({
     return nodeId ? rawNodesMap[nodeId] : undefined;
   });
 
-  const toolNodesMap = useMemoEnhance(() => {
-    const selectedToolEdgeMap: Record<string, boolean> = {};
-    edges.forEach((edge) => {
-      if (edge.targetHandle === NodeOutputKeyEnum.selectedTools) {
-        selectedToolEdgeMap[edge.target] = true;
-      }
-    });
-
-    return nodeList.reduce(
-      (acc, node) => {
-        if (selectedToolEdgeMap[node.nodeId]) {
-          acc[node.nodeId] = true;
-        }
-        return acc;
-      },
-      {} as Record<string, boolean>
-    );
-  }, [nodeList, edges]);
-
   // Snapshot blocking flag（旧快照机制的兼容占位；历史已由 Runtime 承担）
   const forbiddenSaveSnapshot = useRef(false);
 
@@ -428,13 +483,6 @@ const WorkflowInitContextProvider = ({
       getRawNodeById
     }),
     [nodes, rawNodesMap, getRawNodeById]
-  );
-
-  const nodeDataContextValue = useMemoEnhance(
-    () => ({
-      selectedNodesMap
-    }),
-    [selectedNodesMap]
   );
 
   const workflowBufferDataContextValue = useMemoEnhance(
@@ -456,7 +504,7 @@ const WorkflowInitContextProvider = ({
       setEdges,
       onEdgesChange,
       forbiddenSaveSnapshot,
-      nodeAmount: nodeList.length,
+      nodeAmount,
       childrenNodeIdListMap
     }),
     [
@@ -476,18 +524,16 @@ const WorkflowInitContextProvider = ({
       edges,
       setEdges,
       onEdgesChange,
-      nodeList.length,
+      nodeAmount,
       childrenNodeIdListMap
     ]
   );
 
   return (
     <WorkflowInitContext.Provider value={rawNodeContextValue}>
-      <WorkflowNodeDataContext.Provider value={nodeDataContextValue}>
-        <WorkflowBufferDataContext.Provider value={workflowBufferDataContextValue}>
-          {children}
-        </WorkflowBufferDataContext.Provider>
-      </WorkflowNodeDataContext.Provider>
+      <WorkflowBufferDataContext.Provider value={workflowBufferDataContextValue}>
+        {children}
+      </WorkflowBufferDataContext.Provider>
     </WorkflowInitContext.Provider>
   );
 };

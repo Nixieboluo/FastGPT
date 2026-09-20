@@ -1,7 +1,8 @@
 // [workflow-runtime-cutover] 兼容桥行为测试：写路径翻译（translate/changeProps）与投影组装。
 import { describe, expect, it } from 'vitest';
-import { NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
+import { NodeInputKeyEnum, NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { EDGE_TYPE, FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
+import { AiChatModule } from '@fastgpt/global/core/workflow/template/system/aiChat';
 import { getHandleId } from '@fastgpt/global/core/workflow/utils';
 import { hydrateRuntime } from '@/web/core/workflow/editor/codec';
 import {
@@ -24,6 +25,7 @@ import {
   projectRuntimeCanvas
 } from '@/web/core/workflow/editor/cutover/projection';
 import type { WorkflowCommand } from '@fastgpt/global/core/workflow/editor/types';
+import type { WorkflowCheckNodeIssueMap } from '@fastgpt/global/core/workflow/type/node';
 
 const t = ((key: string) => key) as never;
 
@@ -101,7 +103,7 @@ describe('cutover translate: diffCanvasNodes', () => {
     const next = [
       canvasNode(
         'a',
-        { name: 'B', isFolded: true, isError: true, debugResult: { status: 'success' } },
+        { name: 'B', isFolded: true, searchedText: 'kw', debugResult: { status: 'success' } },
         { x: 10, y: 0 }
       )
     ];
@@ -123,18 +125,18 @@ describe('cutover translate: diffCanvasNodes', () => {
         string,
         unknown
       >
-    ).not.toHaveProperty('isError');
+    ).not.toHaveProperty('searchedText');
     expect(viewPatches).toEqual([
       {
         nodeId: 'a',
-        values: { isError: true, debugResult: { status: 'success' } }
+        values: { searchedText: 'kw', debugResult: { status: 'success' } }
       }
     ]);
   });
 
   it('translates removals into removeNodes and additions into stripped addNode', () => {
     const prev = [canvasNode('a'), canvasNode('b')];
-    const next = [canvasNode('a'), canvasNode('c', { isError: true }, { x: 5, y: 5 })];
+    const next = [canvasNode('a'), canvasNode('c', { searchedText: 'kw' }, { x: 5, y: 5 })];
 
     const { commands } = diffCanvasNodes({ prev, next });
 
@@ -147,7 +149,7 @@ describe('cutover translate: diffCanvasNodes', () => {
     >;
     expect(add.node.nodeId).toBe('c');
     expect(add.node.position).toEqual({ x: 5, y: 5 });
-    expect(add.node as Record<string, unknown>).not.toHaveProperty('isError');
+    expect(add.node as Record<string, unknown>).not.toHaveProperty('searchedText');
   });
 
   it('routes parentNodeId changes through attachToContainer only', () => {
@@ -273,13 +275,15 @@ describe('cutover changeProps', () => {
         key: targetKey,
         value: { ...(inputs[0] as object), value: 'hello' } as never
       },
+      { nodeId: 'answer', type: 'attr', key: 'searchedText', value: 'kw' },
+      // 问题状态已迁出视图字段：旧调用点若仍写 isError，只会作为未知字段被 store schema 剥离。
       { nodeId: 'answer', type: 'attr', key: 'isError', value: true },
       { nodeId: 'answer', type: 'attr', key: 'isFolded', value: true }
     ];
     const { commands, viewPatches, duplicateKeyNodeIds } = translateChangeProps({ props, runtime });
 
     expect(duplicateKeyNodeIds).toEqual([]);
-    expect(viewPatches).toEqual([{ nodeId: 'answer', values: { isError: true } }]);
+    expect(viewPatches).toEqual([{ nodeId: 'answer', values: { searchedText: 'kw' } }]);
     expect(commandsOfType(commands, 'commitGeometry')).toEqual([
       { type: 'commitGeometry', nodeId: 'answer', isFolded: true }
     ]);
@@ -294,6 +298,9 @@ describe('cutover changeProps', () => {
       (node.inputs as { key: string; value?: unknown }[]).find((i) => i.key === targetKey)?.value
     ).toBe('hello');
     expect(runtime.getNodeView('answer')?.isFolded).toBe(true);
+    const docNode = runtime.getNode('answer') as Record<string, unknown>;
+    expect(docNode).not.toHaveProperty('isError');
+    expect(docNode).not.toHaveProperty('searchedText');
     runtime.dispose();
   });
 
@@ -383,6 +390,7 @@ describe('cutover projection', () => {
     const first = projectRuntimeCanvas({
       runtime,
       overlays: {},
+      issues: {},
       t,
       localNodes: [],
       localEdges: [],
@@ -405,6 +413,7 @@ describe('cutover projection', () => {
     const second = projectRuntimeCanvas({
       runtime,
       overlays: {},
+      issues: {},
       t,
       localNodes: first.nodes,
       localEdges: first.edges,
@@ -419,35 +428,72 @@ describe('cutover projection', () => {
     const withOverlay = projectRuntimeCanvas({
       runtime,
       overlays: {
-        answer: { isError: true, searchedText: 'kw', workflowCheckIssues: undefined }
+        answer: { searchedText: 'kw' }
       },
+      issues: {},
       t,
       localNodes: second.nodes,
       localEdges: second.edges,
       cache
     });
-    const answer = withOverlay.nodes.find((node) => node.id === 'answer')!;
-    expect(answer.data.isError).toBe(true);
-    expect(answer.data.searchedText).toBe('kw');
-    expect(runtime.getNode('answer') as Record<string, unknown>).not.toHaveProperty('isError');
+    const searched = withOverlay.nodes.find((node) => node.id === 'answer')!;
+    expect(searched.data.searchedText).toBe('kw');
+    expect(runtime.getNode('answer') as Record<string, unknown>).not.toHaveProperty('searchedText');
 
-    // 交互状态从本地保留；拖拽中的位置以本地为准
+    // 问题存储供问题文案、标红与选中；焦点只标红一个节点，问题未变的节点复用缓存对象
+    const issues: WorkflowCheckNodeIssueMap = {
+      answer: [
+        {
+          nodeId: 'answer',
+          nodeType: FlowNodeTypeEnum.answerNode,
+          level: 'error',
+          code: 'required_input_empty',
+          message: 'required_input_empty'
+        }
+      ]
+    };
+    const withIssues = projectRuntimeCanvas({
+      runtime,
+      overlays: { answer: { searchedText: 'kw' } },
+      issues,
+      errorNodeId: 'answer',
+      t,
+      localNodes: withOverlay.nodes,
+      localEdges: withOverlay.edges,
+      cache
+    });
+    const answer = withIssues.nodes.find((node) => node.id === 'answer')!;
+    expect(answer.data.workflowCheckIssues).toEqual(issues.answer);
+    expect(answer.data.isError).toBe(true);
+    expect(answer.selected).toBe(true);
+    const start = withIssues.nodes.find((node) => node.id === 'start')!;
+    expect(start.data.isError).toBeUndefined();
+    expect(start).toBe(withOverlay.nodes.find((node) => node.id === 'start'));
+    // 问题状态只存在于投影结果，文档里没有 isError / workflowCheckIssues
+    const docAnswer = runtime.getNode('answer') as Record<string, unknown>;
+    expect(docAnswer).not.toHaveProperty('isError');
+    expect(docAnswer).not.toHaveProperty('workflowCheckIssues');
+
+    // 交互状态从本地保留；拖拽中的位置以本地为准。焦点清除后选中态回到本地数组的值。
     const withInteraction = projectRuntimeCanvas({
       runtime,
       overlays: {},
+      issues,
       t,
-      localNodes: withOverlay.nodes.map((node) =>
+      localNodes: withIssues.nodes.map((node) =>
         node.id === 'answer'
           ? { ...node, selected: true, width: 200, dragging: true, position: { x: 99, y: 99 } }
           : node
       ),
-      localEdges: withOverlay.edges,
+      localEdges: withIssues.edges,
       cache
     });
     const dragged = withInteraction.nodes.find((node) => node.id === 'answer')!;
     expect(dragged.selected).toBe(true);
     expect(dragged.width).toBe(200);
     expect(dragged.position).toEqual({ x: 99, y: 99 });
+    expect(dragged.data.isError).toBeUndefined();
+    expect(dragged.data.workflowCheckIssues).toEqual(issues.answer);
 
     // 折叠状态来自 Node View：commitGeometry 后投影需合并 isFolded
     const foldRes = runtime.dispatch([
@@ -457,6 +503,7 @@ describe('cutover projection', () => {
     const folded = projectRuntimeCanvas({
       runtime,
       overlays: {},
+      issues: {},
       t,
       localNodes: withInteraction.nodes,
       localEdges: withInteraction.edges,
@@ -464,6 +511,88 @@ describe('cutover projection', () => {
     });
     expect(folded.nodes.find((node) => node.id === 'answer')!.data.isFolded).toBe(true);
     expect(folded.nodes.find((node) => node.id === 'start')!.data.isFolded).toBeFalsy();
+    // 问题清空后，问题文案随之从节点 data 消失
+    expect(
+      folded.nodes.find((node) => node.id === 'answer')!.data.workflowCheckIssues
+    ).toBeUndefined();
+
+    runtime.dispose();
+  });
+});
+
+describe('cutover projection: 输出可用性写回收敛', () => {
+  const reasoningModel = { modelId: 'reasoning-model', config: { reasoning: true } };
+
+  const createAiChatWorkflow = () => ({
+    nodes: [
+      {
+        ...AiChatModule,
+        nodeId: 'chat',
+        position: { x: 0, y: 0 },
+        inputs: AiChatModule.inputs.map((input) =>
+          input.key === NodeInputKeyEnum.aiModelId ? { ...input, value: 'reasoning-model' } : input
+        )
+      }
+    ],
+    edges: [],
+    chatConfig: {}
+  });
+
+  /** 复刻 useNodeOutputValidity 的写回：按模型能力重算 invalid，产出新的画布数组。 */
+  const applyOutputValidity = (nodes: CanvasNode[]) =>
+    nodes.map((node) => ({
+      ...node,
+      data: {
+        ...node.data,
+        outputs: node.data.outputs.map((output) =>
+          output.invalidCondition
+            ? {
+                ...output,
+                invalid: output.invalidCondition({
+                  inputs: node.data.inputs,
+                  llmModelMap: { 'reasoning-model': reasoningModel }
+                } as never)
+              }
+            : output
+        )
+      }
+    }));
+
+  it('首次修正后不再产生新的历史条目', () => {
+    const runtime = hydrateRuntime({ input: createAiChatWorkflow(), t });
+    const cache = createProjectionCache();
+    const project = (localNodes: CanvasNode[] = []) =>
+      projectRuntimeCanvas({
+        runtime,
+        overlays: {},
+        issues: {},
+        t,
+        localNodes,
+        localEdges: [],
+        cache
+      });
+
+    const first = project();
+    const firstDiff = diffCanvasNodes({
+      prev: first.nodes,
+      next: applyOutputValidity(first.nodes)
+    });
+    // 模型支持思考时，模板默认的 invalid: true 需要被修正一次
+    expect(commandsOfType(firstDiff.commands, 'updateNode')).toHaveLength(1);
+    expect(runtime.dispatch(firstDiff.commands).ok).toBe(true);
+
+    // 重投影后同一份写回必须已经收敛：否则每轮投影都会再写一条历史（打开工作流即无限循环）
+    const second = project(first.nodes);
+    const secondDiff = diffCanvasNodes({
+      prev: second.nodes,
+      next: applyOutputValidity(second.nodes)
+    });
+    expect(secondDiff.commands).toEqual([]);
+
+    const outputs = runtime.getNode('chat')!.outputs as { key: string; invalid?: boolean }[];
+    expect(outputs.find((output) => output.key === NodeOutputKeyEnum.reasoningText)?.invalid).toBe(
+      false
+    );
 
     runtime.dispose();
   });

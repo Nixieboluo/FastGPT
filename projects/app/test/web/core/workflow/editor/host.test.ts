@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useContextSelector } from 'use-context-selector';
+import { ReactFlowProvider } from 'reactflow';
 import { AppContext } from '@/pageComponents/app/detail/context';
 import { materializeWorkflow } from '@/web/core/workflow/editor/codec';
 import {
@@ -79,7 +80,12 @@ describe('WorkflowHostProvider version history', () => {
               setAppDetail: vi.fn()
             } as never
           },
-          React.createElement(WorkflowHostProvider, null, React.createElement(Observer))
+          // host 在 ReactFlowProvider 内（问题焦点要 fitView），测试同样需要这层 Provider。
+          React.createElement(
+            ReactFlowProvider,
+            null,
+            React.createElement(WorkflowHostProvider, null, React.createElement(Observer))
+          )
         )
       );
     });

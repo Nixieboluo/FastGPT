@@ -2,7 +2,7 @@
  * 工作流编辑器 host 层：编辑器唯一的数据与生命周期边界。
  *
  * 拥有 Runtime 生命周期与 adapter 挂载、版本列表与整文档替换切换、Savepoint 与出站序列化入口、
- * Environment Issue 定时扫描与按节点问题存储、本地草稿与离开保护。
+ * Environment Issue 定时扫描与按节点问题存储（含标红焦点与定位）、本地草稿与离开保护。
  * overlay/patchViewData 与投影供数是迁移期兼容面，随调用点迁移票逐步迁出。
  */
 import React, {
@@ -16,6 +16,7 @@ import React, {
 import { useMemoizedFn } from 'ahooks';
 import { isEqual } from 'lodash-es';
 import { useTranslation } from 'next-i18next';
+import { useReactFlow } from 'reactflow';
 import { createContext, useContextSelector } from 'use-context-selector';
 import { formatTime2YMDHMS } from '@fastgpt/global/common/string/time';
 import type { AppChatConfigType } from '@fastgpt/global/core/app/type';
@@ -26,10 +27,7 @@ import {
 } from '@fastgpt/global/core/workflow/editor/protocol';
 import type { WorkflowRuntimePort } from '@fastgpt/global/core/workflow/editor/types';
 import type { CanonicalWorkflowData } from '@fastgpt/global/core/workflow/migration';
-import type {
-  WorkflowCheckIssue,
-  WorkflowCheckNodeIssueMap
-} from '@fastgpt/global/core/workflow/type/node';
+import type { WorkflowCheckNodeIssueMap } from '@fastgpt/global/core/workflow/type/node';
 import { useWorkflowDraftLifecycle } from '@/web/core/workflow/localDraft/useWorkflowDraftLifecycle';
 import { getWorkflowModelDetails } from '@/web/core/workflow/modelData';
 import { checkWorkflowNodeIssues } from '@/web/core/workflow/workflowCheck';
@@ -45,11 +43,15 @@ import { WorkflowEditorProvider } from './react';
 
 /** Environment Issue 定时扫描间隔。 */
 const ENVIRONMENT_SCAN_INTERVAL = 10_000;
+/** 定位问题节点时的视口留白，与画布其它 fitView 调用一致。 */
+const ISSUE_FOCUS_FIT_PADDING = 0.3;
 /** Runtime 最多保留 100 笔 history；版本列表包含当前状态，因此最多 101 项。 */
 const MAX_VERSION_ENTRIES = 101;
 
 /** 扫描用空 overlay：问题检查只读文档投影，不受视图数据影响。 */
 const EMPTY_OVERLAYS: ViewDataOverlayMap = {};
+/** 扫描用空问题存储：扫描自身就是问题来源，不能把上一轮结果再合并回节点。 */
+const EMPTY_ISSUES: WorkflowCheckNodeIssueMap = {};
 
 /**
  * 版本列表条目。每笔 Runtime command 记录一份冻结文档，live 标记当前版本。
@@ -87,14 +89,18 @@ export type WorkflowHostValue = {
   /** 保存成功后回填 Savepoint；失败不调用即不回填，请求期间的新编辑仍算未保存。 */
   markSaved: () => void;
 
-  /** 按节点问题存储：定时扫描与保存/发布 gate 写同一份。 */
+  /** 按节点问题存储：定时扫描、保存/发布 gate、单节点复查写同一份，投影据此渲染问题文案。 */
   issuesRef: MutableRefObject<WorkflowCheckNodeIssueMap>;
-  /** 全量覆盖问题存储，map 外的旧问题一并清除。 */
+  /** 问题焦点节点 id：投影据此标红并选中该节点；undefined 表示无焦点。 */
+  issueFocusRef: MutableRefObject<string | undefined>;
+  /** 全量覆盖问题存储，map 外的旧问题一并清除；内容未变的节点沿用旧数组身份。 */
   syncIssues: (issueMap: WorkflowCheckNodeIssueMap) => void;
-  /** 局部改写单节点问题（节点配置编辑后的防抖复查）。 */
-  setNodeIssues: (nodeId: string, issues: WorkflowCheckIssue[] | undefined) => void;
-  /** 清空问题存储与问题文案；isError 与选中态属于渲染层，由调用方处理。 */
+  /** 单节点问题复查：模板新增节点后立即取问题文案，不等定时扫描。 */
+  refreshNodeIssues: (nodeId: string) => void;
+  /** 清空问题存储与焦点标红（保存/发布/调试 gate 校验通过时调用）。 */
   clearIssues: () => void;
+  /** 标红并定位到指定节点；传 undefined 只清除标红（节点被点击或取消选中）。 */
+  focusIssueNode: (nodeId?: string) => void;
 
   initRuntime: (content: CanonicalWorkflowData) => void;
   loadDocument: (content: CanonicalWorkflowData) => void;
@@ -121,9 +127,11 @@ export const WorkflowHostContext = createContext<WorkflowHostValue>({
   serializeWorkflow: notImplemented,
   markSaved: notImplemented,
   issuesRef: { current: {} },
+  issueFocusRef: { current: undefined },
   syncIssues: notImplemented,
-  setNodeIssues: notImplemented,
   clearIssues: notImplemented,
+  refreshNodeIssues: notImplemented,
+  focusIssueNode: notImplemented,
   initRuntime: notImplemented,
   loadDocument: notImplemented
 });
@@ -134,6 +142,8 @@ export const WorkflowHostContext = createContext<WorkflowHostValue>({
  */
 export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
   const { t } = useTranslation();
+  // host 在 ReactFlowProvider 内，问题焦点定位直接用画布视口 API。
+  const { fitView } = useReactFlow();
   const setAppDetail = useContextSelector(AppContext, (v) => v.setAppDetail);
   const appDetailChatConfig = useContextSelector(AppContext, (v) => v.appDetail.chatConfig);
 
@@ -148,6 +158,7 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
   const unsubscribeRef = useRef<(() => void) | undefined>(undefined);
   const leaveSaveSign = useRef(true);
   const issuesRef = useRef<WorkflowCheckNodeIssueMap>({});
+  const issueFocusRef = useRef<string | undefined>(undefined);
   // 扫描用的独立投影缓存：与画布投影的 overlay/交互状态不同，不能共用。
   const scanProjectionCache = useRef(createProjectionCache());
   // 订阅回调里回写 appDetail，用 ref 避免 chatConfig 变化导致重新订阅。
@@ -255,11 +266,17 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
     bump();
   });
 
+  /** 文档整体替换（初始化、导入、版本切换）后，上一份文档的问题与标红焦点一律作废。 */
+  const resetIssueState = useMemoizedFn(() => {
+    issuesRef.current = {};
+    issueFocusRef.current = undefined;
+  });
+
   const initRuntime = useMemoizedFn((content: CanonicalWorkflowData) => {
     const nextRuntime = hydrateWorkflowEditor(content);
     attachRuntime(nextRuntime);
     overlaysRef.current = {};
-    issuesRef.current = {};
+    resetIssueState();
     pendingSaveRevision.current = undefined;
     const initialTitle = t('app:app.version_initial');
     setVersions([
@@ -283,7 +300,7 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
     const res = current.dispatch({ type: 'replaceDocument', document: content });
     if (!res.ok) return;
     overlaysRef.current = {};
-    issuesRef.current = {};
+    resetIssueState();
     pendingSaveRevision.current = undefined;
     bump();
   });
@@ -317,7 +334,7 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
       }
 
       overlaysRef.current = {};
-      issuesRef.current = {};
+      resetIssueState();
       pendingSaveRevision.current = undefined;
       setVersions(
         versionsRef.current.map((item) => ({
@@ -362,97 +379,119 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
     bump();
   });
 
-  // 存储是无渲染依赖的读取面，overlay 是渲染权威；按 overlay 现值 diff，无变化时不触发重投影。
-  const setNodeIssues = useMemoizedFn(
-    (nodeId: string, issues: WorkflowCheckIssue[] | undefined) => {
-      const nextIssues = issues?.length ? issues : undefined;
-      if (nextIssues) issuesRef.current[nodeId] = nextIssues;
-      else delete issuesRef.current[nodeId];
-
-      const current = overlaysRef.current[nodeId]?.workflowCheckIssues;
-      if (JSON.stringify(current ?? undefined) === JSON.stringify(nextIssues)) return;
-      patchViewData([{ nodeId, values: { workflowCheckIssues: nextIssues } }]);
-    }
-  );
-
-  /** 全量覆盖：新 map 外的旧问题一并清除（定时扫描与保存/发布 gate 共用）。 */
+  /**
+   * 全量覆盖问题存储：新 map 外的旧问题一并清除（定时扫描与保存/发布 gate 共用）。
+   * 内容未变的节点沿用旧数组身份，投影的按节点缓存才不会每轮扫描整表失效。
+   */
   const syncIssues = useMemoizedFn((issueMap: WorkflowCheckNodeIssueMap) => {
+    const prevStore = issuesRef.current;
     const nextStore: WorkflowCheckNodeIssueMap = {};
-    const patches: ViewOverlayPatch[] = [];
-    const nodeIds = new Set([
-      ...Object.keys(issueMap),
-      ...Object.keys(issuesRef.current),
-      ...Object.keys(overlaysRef.current).filter(
-        (nodeId) => overlaysRef.current[nodeId]?.workflowCheckIssues !== undefined
-      )
-    ]);
-    nodeIds.forEach((nodeId) => {
-      const nextIssues = issueMap[nodeId]?.length ? issueMap[nodeId] : undefined;
-      if (nextIssues) nextStore[nodeId] = nextIssues;
+    let changed = Object.keys(prevStore).some((nodeId) => !issueMap[nodeId]?.length);
 
-      const current = overlaysRef.current[nodeId]?.workflowCheckIssues;
-      if (JSON.stringify(current ?? undefined) === JSON.stringify(nextIssues)) return;
-      patches.push({ nodeId, values: { workflowCheckIssues: nextIssues } });
+    Object.entries(issueMap).forEach(([nodeId, issues]) => {
+      if (!issues?.length) return;
+      const prevIssues = prevStore[nodeId];
+      const reused =
+        prevIssues && JSON.stringify(prevIssues) === JSON.stringify(issues) ? prevIssues : issues;
+      if (reused !== prevIssues) changed = true;
+      nextStore[nodeId] = reused;
     });
+
     issuesRef.current = nextStore;
-    patchViewData(patches);
+    if (changed) bump();
   });
 
+  /** 清空问题存储与焦点标红；选中态随焦点标记一起由投影还原成本地交互值。 */
   const clearIssues = useMemoizedFn(() => {
+    const hadIssues = Object.keys(issuesRef.current).length > 0;
+    const hadFocus = issueFocusRef.current !== undefined;
     issuesRef.current = {};
-    const patches = Object.entries(overlaysRef.current)
-      .filter(([, values]) => values?.workflowCheckIssues !== undefined)
-      .map<ViewOverlayPatch>(([nodeId]) => ({
-        nodeId,
-        values: { workflowCheckIssues: undefined }
-      }));
-    patchViewData(patches);
+    issueFocusRef.current = undefined;
+    if (hadIssues || hadFocus) bump();
   });
 
-  // 语言切换会让模板物化结果失效，扫描侧投影缓存整体作废。
-  useEffect(() => {
-    scanProjectionCache.current = createProjectionCache();
-  }, [t]);
+  /**
+   * 问题焦点：标红哪个节点由 host 单点持有（旧行为同一时刻只标红一个），投影合并进节点 data。
+   * 传入 nodeId 时同时 fitView 定位，保存/发布 gate 与调试入口共用；传 undefined 只清除标红，
+   * 用于节点被点击或取消选中的场景，此时不应移动视口。
+   */
+  const focusIssueNode = useMemoizedFn((nodeId?: string) => {
+    if (issueFocusRef.current !== nodeId) {
+      issueFocusRef.current = nodeId;
+      bump();
+    }
+    if (nodeId) fitView({ nodes: [{ id: nodeId }], padding: ISSUE_FOCUS_FIT_PADDING });
+  });
+
+  /**
+   * 扫描文档投影并写入问题存储：定时全量扫描与单节点复查共用同一条写入路径。
+   * 节点与边读文档投影（不带 overlay、问题与交互状态），与画布校验用的是同一份节点形状；
+   * 指定 nodeId 时只复查该节点，模型目录也只取该节点所需。
+   * 目录失败保留原校验结果；等待期间文档已变更则丢弃本轮，避免回写过期结论。
+   */
+  const scanIssues = useMemoizedFn(async (nodeId?: string) => {
+    const current = runtimeRef.current;
+    if (!current || current.isDisposed()) return;
+    const { nodes, edges } = projectRuntimeCanvas({
+      runtime: current,
+      overlays: EMPTY_OVERLAYS,
+      issues: EMPTY_ISSUES,
+      t,
+      localNodes: [],
+      localEdges: [],
+      cache: scanProjectionCache.current
+    });
+    if (nodes.length === 0) return;
+
+    const targetNodes = nodeId ? nodes.filter((node) => node.id === nodeId) : nodes;
+    const revision = current.getSavepoint().contentRevision;
+    const models = await getWorkflowModelDetails(targetNodes).catch(() => undefined);
+    if (!models || current.isDisposed()) return;
+    if (current.getSavepoint().contentRevision !== revision) return;
+
+    const issueMap = checkWorkflowNodeIssues({ nodes, edges, models, nodeId, t });
+    if (!nodeId) {
+      syncIssues(issueMap);
+      return;
+    }
+
+    // 单节点复查：问题存储是投影的唯一读取源，写入后必须 bump 才会重投影；
+    // 内容一致时不 bump，避免节点组件每轮复查都重渲染。
+    const nextIssues = issueMap[nodeId]?.length ? issueMap[nodeId] : undefined;
+    const prevIssues = issuesRef.current[nodeId];
+    if (nextIssues === undefined && prevIssues === undefined) return;
+    if (nextIssues && prevIssues && JSON.stringify(nextIssues) === JSON.stringify(prevIssues)) {
+      return;
+    }
+    const nextStore = { ...issuesRef.current };
+    if (nextIssues) nextStore[nodeId] = nextIssues;
+    else delete nextStore[nodeId];
+    issuesRef.current = nextStore;
+    bump();
+  });
+
+  /** 单节点问题复查入口：模板新增节点后立即取问题文案，不等定时扫描。 */
+  const refreshNodeIssues = useMemoizedFn((nodeId: string) => {
+    if (!nodeId) return;
+    void scanIssues(nodeId);
+  });
 
   /**
    * 编辑页定时全量扫描，主动发现新增/已修复的节点问题。
-   * 节点与边读文档投影（不带 overlay 与交互状态），与画布校验用的是同一份节点形状；
-   * 连线与单节点编辑的即时复查由渲染层防抖路径负责，这里只保底。
+   * 节点配置编辑后的即时复查已随旧 Actions 防抖路径删除，问题文案最迟在一轮扫描内刷新。
+   * t 是刻意的依赖：语言切换会让模板物化结果与问题文案一起失效，
+   * 因此扫描侧投影缓存整体作废并立即重扫一轮，不等下一个定时周期。
    */
   useEffect(() => {
     if (!runtime) return;
-    let active = true;
-
-    const runScheduledCheck = async () => {
-      const current = runtimeRef.current;
-      if (!current || current.isDisposed()) return;
-      const { nodes, edges } = projectRuntimeCanvas({
-        runtime: current,
-        overlays: EMPTY_OVERLAYS,
-        t,
-        localNodes: [],
-        localEdges: [],
-        cache: scanProjectionCache.current
-      });
-      if (nodes.length === 0) return;
-
-      const revision = current.getSavepoint().contentRevision;
-      const models = await getWorkflowModelDetails(nodes).catch(() => undefined);
-      // 目录失败保留原校验结果；等待期间用户继续编辑则丢弃本轮，避免回写过期结论。
-      if (!active || !models || current.isDisposed()) return;
-      if (current.getSavepoint().contentRevision !== revision) return;
-
-      syncIssues(checkWorkflowNodeIssues({ nodes, edges, models, t }));
-    };
-
-    runScheduledCheck();
-    const timer = window.setInterval(runScheduledCheck, ENVIRONMENT_SCAN_INTERVAL);
+    scanProjectionCache.current = createProjectionCache();
+    void scanIssues();
+    const timer = window.setInterval(() => void scanIssues(), ENVIRONMENT_SCAN_INTERVAL);
 
     return () => {
-      active = false;
       window.clearInterval(timer);
     };
-  }, [runtime, syncIssues, t]);
+  }, [runtime, scanIssues, t]);
 
   // 本地草稿、beforeunload 与卸载自动保存、鉴权过期草稿。
   const { authExpiredModal } = useWorkflowDraftLifecycle({
@@ -487,9 +526,11 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
       serializeWorkflow,
       markSaved,
       issuesRef,
+      issueFocusRef,
       syncIssues,
-      setNodeIssues,
       clearIssues,
+      refreshNodeIssues,
+      focusIssueNode,
       initRuntime,
       loadDocument
     }),
@@ -508,8 +549,9 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
       serializeWorkflow,
       markSaved,
       syncIssues,
-      setNodeIssues,
       clearIssues,
+      refreshNodeIssues,
+      focusIssueNode,
       initRuntime,
       loadDocument
     ]

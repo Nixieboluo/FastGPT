@@ -13,15 +13,9 @@ export type CanvasNode = Node<FlowNodeItemType, string | undefined>;
  * 只属于画布视图的数据字段：不进文档，由 host overlay 持有并在投影时合并。
  * courseUrl/userGuide 是旧路径也从不持久化的展示元信息（保存白名单会剥离），
  * 归入视图字段避免 updateNode 时被 store schema 丢弃。
+ * isError/workflowCheckIssues 不在此列：问题状态由 host 问题存储持有，投影时直接合并。
  */
-export const VIEW_DATA_KEYS = [
-  'isError',
-  'workflowCheckIssues',
-  'debugResult',
-  'searchedText',
-  'courseUrl',
-  'userGuide'
-] as const;
+export const VIEW_DATA_KEYS = ['debugResult', 'searchedText', 'courseUrl', 'userGuide'] as const;
 export type ViewDataKey = (typeof VIEW_DATA_KEYS)[number];
 
 /** 单个节点的视图 overlay 变更。 */

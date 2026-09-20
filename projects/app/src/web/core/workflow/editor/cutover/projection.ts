@@ -1,6 +1,7 @@
 // [workflow-runtime-cutover] 临时兼容桥：Runtime snapshot -> reactflow 画布数组投影。
 // 画布节点 = Node Data（storeNode2FlowNode 物化）+ Node View State（位置/折叠）
-// + host 视图 overlay（isError/issues/debugResult/searchedText/教程元信息）
+// + host 问题存储（按节点问题文案 + 标红焦点）
+// + host 视图 overlay（debugResult/searchedText/教程元信息）
 // + renderer 交互状态（选中、拖拽、测量尺寸、层级，从本地数组保留）。
 // 迁移结束后本文件随 cutover 目录整体删除。
 import { pick } from 'lodash-es';
@@ -8,7 +9,10 @@ import type { Edge } from 'reactflow';
 import type { TFunction } from 'next-i18next';
 import { EDGE_TYPE } from '@fastgpt/global/core/workflow/node/constant';
 import { NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
-import type { StoreNodeItemType } from '@fastgpt/global/core/workflow/type/node';
+import type {
+  StoreNodeItemType,
+  WorkflowCheckNodeIssueMap
+} from '@fastgpt/global/core/workflow/type/node';
 import type {
   WorkflowNodeSnapshot,
   WorkflowNodeViewSnapshot,
@@ -29,6 +33,8 @@ type NodeCacheEntry = {
   snapshot: WorkflowNodeSnapshot;
   view: WorkflowNodeViewSnapshot | undefined;
   overlay: Partial<Record<ViewDataKey, unknown>> | undefined;
+  issues: WorkflowCheckNodeIssueMap[string] | undefined;
+  isError: boolean;
   isTool: boolean;
   selected: boolean | undefined;
   dragging: boolean | undefined;
@@ -65,7 +71,7 @@ const INTERACTION_FIELDS = ['selected', 'dragging', 'width', 'height', 'measured
 
 /**
  * 把 Runtime 当前状态投影成画布数组。
- * 带按节点缓存：runtime snapshot / view / overlay / 交互值都没变的节点复用同一对象，
+ * 带按节点缓存：runtime snapshot / view / 问题 / overlay / 交互值都没变的节点复用同一对象，
  * 保证 reactflow 与节点组件不因重投影而无谓重渲染。
  * 注意：只能使用 getWorkflow/getNode/getNodeView（有版本缓存），
  * 不能用 getWorkflowData()（每次全量深拷贝）。
@@ -73,6 +79,8 @@ const INTERACTION_FIELDS = ['selected', 'dragging', 'width', 'height', 'measured
 export const projectRuntimeCanvas = ({
   runtime,
   overlays,
+  issues,
+  errorNodeId,
   t,
   localNodes,
   localEdges,
@@ -80,6 +88,10 @@ export const projectRuntimeCanvas = ({
 }: {
   runtime: WorkflowRuntimePort;
   overlays: ViewDataOverlayMap;
+  /** host 问题存储：按 nodeId 的问题文案，投影合并进节点 data 供节点组件渲染。 */
+  issues: WorkflowCheckNodeIssueMap;
+  /** host 问题焦点节点：该节点标红并强制选中，其余节点还原本地选中态。 */
+  errorNodeId?: string;
   t: TFunction;
   localNodes: CanvasNode[];
   localEdges: Edge<any>[];
@@ -97,6 +109,8 @@ export const projectRuntimeCanvas = ({
     const nodeId = snapshot.nodeId;
     const view = runtime.getNodeView(nodeId);
     const overlay = overlays[nodeId];
+    const nodeIssues = issues[nodeId];
+    const isError = errorNodeId === nodeId;
     const local = localNodeById.get(nodeId);
     const isTool = toolNodeIds.has(nodeId);
     const selected = local?.selected;
@@ -113,6 +127,8 @@ export const projectRuntimeCanvas = ({
       cached.snapshot === snapshot &&
       cached.view === view &&
       cached.overlay === overlay &&
+      cached.issues === nodeIssues &&
+      cached.isError === isError &&
       cached.isTool === isTool &&
       cached.selected === selected &&
       cached.dragging === dragging &&
@@ -125,7 +141,7 @@ export const projectRuntimeCanvas = ({
       return cached.node;
     }
 
-    // snapshot 上的 issues 是 Runtime Issue View 结果；切换期展示以 host 扫描 overlay 为准
+    // snapshot 上的 issues 是 Runtime Issue View 结果；切换期展示以 host 问题存储为准
     // （Issue View 文案未 i18n，合并会出现英文重复条目），投影时剥离。
     const { issues: _issues, ...docNode } = snapshot;
     const flowNode = storeNode2FlowNode({
@@ -137,7 +153,9 @@ export const projectRuntimeCanvas = ({
     const data = {
       ...flowNode.data,
       isFolded: view?.isFolded,
-      ...overlay
+      ...overlay,
+      ...(nodeIssues ? { workflowCheckIssues: nodeIssues } : {}),
+      ...(isError ? { isError: true } : {})
     } as typeof flowNode.data;
     const node: CanvasNode = {
       ...flowNode,
@@ -145,13 +163,17 @@ export const projectRuntimeCanvas = ({
       position,
       selected,
       zIndex,
-      ...(local ? pick(local, INTERACTION_FIELDS as unknown as string[]) : {})
+      ...(local ? pick(local, INTERACTION_FIELDS as unknown as string[]) : {}),
+      // 标红焦点节点保持选中：与旧 onUpdateNodeError 一致，定位后无需再点一次即可操作该节点。
+      ...(isError ? { selected: true } : {})
     };
 
     cache.nodes.set(nodeId, {
       snapshot,
       view,
       overlay,
+      issues: nodeIssues,
+      isError,
       isTool,
       selected,
       dragging,

@@ -28,10 +28,8 @@ import type { StoreNodeItemType } from '@fastgpt/global/core/workflow/type/node'
 import { useToast } from '@fastgpt/web/hooks/useToast';
 import { useTranslation } from 'next-i18next';
 import { type ReactNode, useCallback, useMemo } from 'react';
-import { useReactFlow } from 'reactflow';
 import { createContext, useContextSelector } from 'use-context-selector';
 import { AppContext } from '../../context';
-import { WorkflowActionsContext } from './workflowActionsContext';
 import { WorkflowBufferDataContext } from './workflowInitContext';
 
 // 创建 Context
@@ -126,7 +124,6 @@ export const WorkflowUtilsContext = createContext<WorkflowUtilsContextValue>({
 export const WorkflowUtilsProvider = ({ children }: { children: ReactNode }) => {
   const { t } = useTranslation();
   const { toast } = useToast();
-  const { fitView } = useReactFlow();
   const { feConfigs } = useSystemStore();
   const { teamPlanStatus } = useUserStore();
   const showSandbox = feConfigs?.show_agent_sandbox;
@@ -134,13 +131,13 @@ export const WorkflowUtilsProvider = ({ children }: { children: ReactNode }) => 
 
   const { appDetail, setAppDetail } = useContextSelector(AppContext, (v) => v);
   const { edges, getNodes, toolNodesMap } = useContextSelector(WorkflowBufferDataContext, (v) => v);
-  const { onRemoveError, onUpdateNodeError, onSyncWorkflowCheckIssues } = useContextSelector(
-    WorkflowActionsContext,
-    (v) => v
-  );
   const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
   const initRuntime = useContextSelector(WorkflowHostContext, (v) => v.initRuntime);
   const loadDocument = useContextSelector(WorkflowHostContext, (v) => v.loadDocument);
+  /** 问题状态归 host：gate 校验结果写 host 问题存储，标红与定位由 host 焦点 API 承担。 */
+  const syncIssues = useContextSelector(WorkflowHostContext, (v) => v.syncIssues);
+  const clearIssues = useContextSelector(WorkflowHostContext, (v) => v.clearIssues);
+  const focusIssueNode = useContextSelector(WorkflowHostContext, (v) => v.focusIssueNode);
   /** 出站序列化统一走 host：保存、发布、草稿、调试读同一份内容并共用保存点捕获。 */
   const flowData2StoreData = useContextSelector(WorkflowHostContext, (v) => v.serializeWorkflow);
 
@@ -206,11 +203,7 @@ export const WorkflowUtilsProvider = ({ children }: { children: ReactNode }) => 
 
       if (sandboxUnavailableNode) {
         if (!hideTip) {
-          onUpdateNodeError(sandboxUnavailableNode.data.nodeId, true);
-          fitView({
-            nodes: [sandboxUnavailableNode],
-            padding: 0.3
-          });
+          focusIssueNode(sandboxUnavailableNode.data.nodeId);
           toast({
             status: 'warning',
             title: !showSandbox
@@ -238,24 +231,14 @@ export const WorkflowUtilsProvider = ({ children }: { children: ReactNode }) => 
         });
 
       if (!hasError) {
-        onRemoveError();
+        clearIssues();
         // Environment Issue 校验通过后，序列化与保存发布走同一个 codec。
         return flowData2StoreData();
       }
 
       if (!hideTip) {
-        onSyncWorkflowCheckIssues(issueMap);
-
-        if (firstErrorNodeId) {
-          onUpdateNodeError(firstErrorNodeId, true);
-          const firstErrorNode = nodes.find((node) => node.data.nodeId === firstErrorNodeId);
-          if (firstErrorNode) {
-            fitView({
-              nodes: [firstErrorNode],
-              padding: 0.3
-            });
-          }
-        }
+        syncIssues(issueMap);
+        if (firstErrorNodeId) focusIssueNode(firstErrorNodeId);
 
         toast({
           status: 'warning',
@@ -271,16 +254,15 @@ export const WorkflowUtilsProvider = ({ children }: { children: ReactNode }) => 
     [
       getNodes,
       edges,
-      onRemoveError,
-      onSyncWorkflowCheckIssues,
-      fitView,
       t,
-      onUpdateNodeError,
       showSandbox,
       enableSandbox,
       appDetail.chatConfig,
       toast,
-      flowData2StoreData
+      flowData2StoreData,
+      syncIssues,
+      clearIssues,
+      focusIssueNode
     ]
   );
 

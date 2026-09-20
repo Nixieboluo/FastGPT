@@ -11,7 +11,6 @@ import {
 import { type StoreNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import { useToast } from '@fastgpt/web/hooks/useToast';
 import { useCallback, useMemo, useState } from 'react';
-import { useReactFlow } from 'reactflow';
 
 import LabelAndFormRender from '@/components/core/app/formRender/LabelAndForm';
 import {
@@ -28,8 +27,8 @@ import { useTranslation } from 'next-i18next';
 import dynamic from 'next/dynamic';
 import { type FieldErrors, useForm } from 'react-hook-form';
 import { useContextSelector } from 'use-context-selector';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { AppContext } from '../../../context';
-import { WorkflowActionsContext } from '../../context/workflowActionsContext';
 import { WorkflowDebugContext } from '../../context/workflowDebugContext';
 import { WorkflowUtilsContext } from '../../context/workflowUtilsContext';
 import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
@@ -66,11 +65,10 @@ export const useDebug = () => {
     WorkflowBufferDataContext,
     (v) => v.childrenNodeIdListMap
   );
-  const { fitView } = useReactFlow();
-  const { onUpdateNodeError, onRemoveError, onSyncWorkflowCheckIssues } = useContextSelector(
-    WorkflowActionsContext,
-    (v) => v
-  );
+  /** 调试入口 gate 与保存/发布 gate 写同一份 host 问题存储，提示、标红与定位保持一致。 */
+  const syncIssues = useContextSelector(WorkflowHostContext, (v) => v.syncIssues);
+  const clearIssues = useContextSelector(WorkflowHostContext, (v) => v.clearIssues);
+  const focusIssueNode = useContextSelector(WorkflowHostContext, (v) => v.focusIssueNode);
   const onStartNodeDebug = useContextSelector(WorkflowDebugContext, (v) => v.onStartNodeDebug);
   const setDebugChatId = useContextSelector(WorkflowDebugContext, (v) => v.setDebugChatId);
   // [workflow-runtime-cutover] 调试输入改读 host 出站边界（与保存发布同一个 codec）。
@@ -119,22 +117,12 @@ export const useDebug = () => {
       });
 
     if (!hasError) {
-      onRemoveError();
+      clearIssues();
       return JSON.stringify(flowData2StoreData());
     }
 
-    onSyncWorkflowCheckIssues(issueMap);
-
-    if (firstErrorNodeId) {
-      onUpdateNodeError(firstErrorNodeId, true);
-      const firstErrorNode = nodes.find((node) => node.data.nodeId === firstErrorNodeId);
-      if (firstErrorNode) {
-        fitView({
-          nodes: [firstErrorNode],
-          padding: 0.3
-        });
-      }
-    }
+    syncIssues(issueMap);
+    if (firstErrorNodeId) focusIssueNode(firstErrorNodeId);
 
     toast({
       status: 'warning',
@@ -149,15 +137,14 @@ export const useDebug = () => {
   }, [
     appDetail.chatConfig,
     edges,
-    fitView,
     getNodes,
-    onRemoveError,
-    onSyncWorkflowCheckIssues,
-    onUpdateNodeError,
     t,
     toast,
     workflowT,
-    flowData2StoreData
+    flowData2StoreData,
+    syncIssues,
+    clearIssues,
+    focusIssueNode
   ]);
 
   const openDebugNode = useCallback(
