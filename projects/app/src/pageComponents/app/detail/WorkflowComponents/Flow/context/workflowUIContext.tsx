@@ -1,10 +1,10 @@
-// 工作流 UI 交互层
+// renderer 层：画布交互状态（hover、右键菜单、控制模式、演示模式、鼠标位置）
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
 import { useLocalStorageState } from 'ahooks';
 import React, { type PropsWithChildren, useCallback, useEffect, useRef, useState } from 'react';
 import { createContext, useContextSelector } from 'use-context-selector';
 import { AppContext } from '@/pageComponents/app/detail/context';
-import { WorkflowBufferDataContext } from './workflowInitContext';
+import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
 import { useWorkflowDemoTrack } from '@/web/common/middle/tracks/workflowDemoTrack';
 
 type MousePosition = { x: number; y: number };
@@ -76,6 +76,11 @@ export const WorkflowUIContext = createContext<WorkflowUIContextValue>({
   }
 });
 
+/**
+ * 画布交互状态 Provider：只承载 renderer 层的瞬时交互状态，不持有工作流文档数据。
+ * 因为要读上层数据 Context 的 nodeAmount（演示模式埋点），必须挂在 ReactFlowCustomProvider 之内；
+ * 又因为 Header 与画布都要读写弹窗/交互状态，挂载点取两者的共同祖先（Workflow / Plugin 页面的 WorkflowEdit）。
+ */
 export const WorkflowUIProvider: React.FC<PropsWithChildren> = ({ children }) => {
   // 悬停状态 (高频更新)
   const [hoverNodeId, setHoverNodeId] = useState<string>();

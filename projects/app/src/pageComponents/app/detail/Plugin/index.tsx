@@ -12,6 +12,8 @@ import { cloneDeep } from 'lodash-es';
 
 import Flow from '../WorkflowComponents/Flow';
 import { WorkflowUtilsContext } from '../WorkflowComponents/context/workflowUtilsContext';
+import { WorkflowUIProvider } from '../WorkflowComponents/Flow/context/workflowUIContext';
+import { WorkflowModalProvider } from '../WorkflowComponents/Flow/context/workflowModalContext';
 
 const Logs = dynamic(() => import('../Logs/index'));
 const PublishChannel = dynamic(() => import('../Publish'));
@@ -31,29 +33,34 @@ const WorkflowEdit = () => {
     );
   });
 
+  // renderer 层交互状态：Header 与画布都要读写弹窗/交互 Context，挂在两者共同祖先。
   return (
-    <Flex {...workflowBoxStyles}>
-      <Header />
+    <WorkflowUIProvider>
+      <WorkflowModalProvider>
+        <Flex {...workflowBoxStyles}>
+          <Header />
 
-      {currentTab === TabEnum.appEdit ? (
-        <Flow />
-      ) : (
-        <Flex
-          flexDirection={'column'}
-          flex={1}
-          minH={0}
-          mt={'72px'}
-          px={4}
-          pb={4}
-          bg={'white'}
-          overflowY={'auto'}
-          overflowX={'hidden'}
-        >
-          {currentTab === TabEnum.publish && <PublishChannel />}
-          {currentTab === TabEnum.logs && <Logs />}
+          {currentTab === TabEnum.appEdit ? (
+            <Flow />
+          ) : (
+            <Flex
+              flexDirection={'column'}
+              flex={1}
+              minH={0}
+              mt={'72px'}
+              px={4}
+              pb={4}
+              bg={'white'}
+              overflowY={'auto'}
+              overflowX={'hidden'}
+            >
+              {currentTab === TabEnum.publish && <PublishChannel />}
+              {currentTab === TabEnum.logs && <Logs />}
+            </Flex>
+          )}
         </Flex>
-      )}
-    </Flex>
+      </WorkflowModalProvider>
+    </WorkflowUIProvider>
   );
 };
 

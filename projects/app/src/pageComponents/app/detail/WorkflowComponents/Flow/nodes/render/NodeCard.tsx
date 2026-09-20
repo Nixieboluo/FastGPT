@@ -4,6 +4,7 @@ import { getAppPermission } from '@/web/core/app/api';
 import { getClientToolPreviewNode } from '@/web/core/app/api/tool';
 import { getAppVersionList } from '@/web/core/app/api/version';
 import { getTeamToolVersions } from '@/web/core/plugin/team/api';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { storeNode2FlowNode } from '@/web/core/workflow/utils';
 import { getWorkflowCheckIssueUIStatus } from '@/web/core/workflow/workflowCheck';
 import { Box, Button, Flex, type FlexProps } from '@chakra-ui/react';
@@ -63,7 +64,7 @@ import { useContextSelector } from 'use-context-selector';
 
 import { WorkflowActionsContext } from '../../../context/workflowActionsContext';
 import { WorkflowBufferDataContext } from '../../../context/workflowInitContext';
-import { WorkflowUIContext } from '../../../context/workflowUIContext';
+import { WorkflowUIContext } from '../../context/workflowUIContext';
 import { useDebug } from '../../hooks/useDebug';
 import { useNodeOutputValidity } from '../../hooks/useNodeOutputValidity';
 import { useWorkflowUtils } from '../../hooks/useUtils';
@@ -146,7 +147,8 @@ const NodeCard = (props: Props) => {
     WorkflowBufferDataContext,
     (v) => v
   );
-  const onUpdateNodeError = useContextSelector(WorkflowActionsContext, (v) => v.onUpdateNodeError);
+  // 标红焦点归 host：点击标红节点即清除焦点（旧 onUpdateNodeError(nodeId, false) 行为）。
+  const focusIssueNode = useContextSelector(WorkflowHostContext, (v) => v.focusIssueNode);
   const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
   const setHoverNodeId = useContextSelector(WorkflowUIContext, (v) => v.setHoverNodeId);
   const presentationMode = useContextSelector(WorkflowUIContext, (v) => v.presentationMode);
@@ -408,7 +410,7 @@ const NodeCard = (props: Props) => {
         }}
         onMouseEnter={() => setHoverNodeId(nodeId)}
         onMouseLeave={() => setHoverNodeId(undefined)}
-        {...(isError ? { onMouseDownCapture: () => onUpdateNodeError(nodeId, false) } : {})}
+        {...(isError ? { onMouseDownCapture: () => focusIssueNode(undefined) } : {})}
       >
         {debugResult && <NodeDebugResponse nodeId={nodeId} debugResult={debugResult} />}
 

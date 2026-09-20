@@ -15,9 +15,8 @@ import { isValidArrayReferenceValue } from '@fastgpt/global/core/workflow/utils'
 import { type ReferenceArrayValueType } from '@fastgpt/global/core/workflow/type/io';
 import { type FlowNodeInputItemType } from '@fastgpt/global/core/workflow/type/io';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
-import { WorkflowBufferDataContext, WorkflowInitContext } from '../../context/workflowInitContext';
+import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
 import { WorkflowActionsContext } from '../../context/workflowActionsContext';
-import { WorkflowLayoutContext } from '../../context/workflowComputeContext';
 import { getWorkflowGlobalVariables } from '@/web/core/workflow/utils';
 import { AppContext } from '../../../context';
 
@@ -35,6 +34,7 @@ type UseNestedNodeResult = {
 };
 
 // Shared hook for nested-container nodes (Loop / ParallelRun / LoopRun).
+// [TODO] Move node size population to offscreen.
 export const useNestedNode = ({
   nodeId,
   inputs,
@@ -51,23 +51,8 @@ export const useNestedNode = ({
       };
     }
   );
-  // 订阅子节点尺寸变化：ReactFlow 完成测量后会更新 node.width / node.height,
-  // 把它们压成字符串当 signal,有变化就重算 bounds,避免 50ms 定时器抢跑在测量前。
-  const childDimensionsSignal = useContextSelector(WorkflowInitContext, (v) => {
-    let signal = '';
-    for (const node of v.nodes) {
-      if (node.data.parentNodeId === nodeId) {
-        signal += `${node.id}:${node.width ?? 0}x${node.height ?? 0}|`;
-      }
-    }
-    return signal;
-  });
   const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
-  const resetParentNodeSizeAndPosition = useContextSelector(
-    WorkflowLayoutContext,
-    (v) => v.resetParentNodeSizeAndPosition
-  );
 
   // ── 1. Read sizing & array input from inputs ────────────────────────────────
   const computedResult = useMemoEnhance(() => {
@@ -135,7 +120,7 @@ export const useNestedNode = ({
     });
   }, [nestedInputArray, newValueType, nodeId, onChangeNode, arrayInputKey]);
 
-  // ── 3a. Maintain childrenNodeIdList ─────────────────────────────────────────
+  // ── 3. Maintain childrenNodeIdList ─────────────────────────────────────────
   useEffect(() => {
     onChangeNode({
       nodeId,
@@ -148,15 +133,9 @@ export const useNestedNode = ({
     });
   }, [childNodeIds, nodeId, onChangeNode]);
 
-  // ── 3b. Trigger layout reset on child id / dimension change ─────────────────
-  // 依赖 childDimensionsSignal,子节点被 ReactFlow 测量出新的 w/h 后会再触发一次,
-  // 确保 bounds 计算基于真实尺寸,而不是赶在 50ms 定时器到期时还是 0 的状态。
-  useEffect(() => {
-    const timer = setTimeout(() => resetParentNodeSizeAndPosition(nodeId), 50);
-    return () => clearTimeout(timer);
-  }, [childNodeIds, childDimensionsSignal, nodeId, resetParentNodeSizeAndPosition]);
-
-  // ── 4 & 5. Measure input-box height, sync and re-layout ────────────────────
+  // ── 4. Measure input-box height and sync to document ───────────────────────
+  // 容器外框尺寸不再回写文档（已接受的过渡回归，见 Flow/utils/layout.ts 说明），
+  // 这里只把头部输入区实测高度同步给容器节点。
   const inputBoxRef = useRef<HTMLDivElement>(null);
   const size = useSize(inputBoxRef);
   useEffect(() => {
@@ -171,9 +150,6 @@ export const useNestedNode = ({
         value: size.height
       }
     });
-
-    const timer = setTimeout(() => resetParentNodeSizeAndPosition(nodeId), 50);
-    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size?.height]);
 

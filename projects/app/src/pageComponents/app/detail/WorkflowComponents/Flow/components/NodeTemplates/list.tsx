@@ -57,7 +57,7 @@ import type { Node } from 'reactflow';
 import { useReactFlow } from 'reactflow';
 import { useContextSelector } from 'use-context-selector';
 import { WorkflowBufferDataContext } from '../../../context/workflowInitContext';
-import { WorkflowModalContext } from '../../../context/workflowModalContext';
+import { WorkflowModalContext } from '../../context/workflowModalContext';
 import { useWorkflowUtils } from '../../hooks/useUtils';
 import { sliderWidth } from '../../NodeTemplatesModal';
 import { TemplateTypeEnum } from './header';

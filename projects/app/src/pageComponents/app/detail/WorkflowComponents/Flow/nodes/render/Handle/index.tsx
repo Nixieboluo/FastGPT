@@ -3,15 +3,13 @@ import { Handle, Position } from 'reactflow';
 import { NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { useContextSelector } from 'use-context-selector';
 import MyIcon from '@fastgpt/web/components/common/Icon';
-import {
-  WorkflowBufferDataContext,
-  WorkflowNodeDataContext
-} from '../../../../context/workflowInitContext';
+import { WorkflowBufferDataContext } from '../../../../context/workflowInitContext';
 import MyTooltip from '@fastgpt/web/components/common/MyTooltip';
 import { useTranslation } from 'next-i18next';
 import { Box, Flex } from '@chakra-ui/react';
 import { WorkflowActionsContext } from '../../../../context/workflowActionsContext';
-import { WorkflowUIContext } from '../../../../context/workflowUIContext';
+import { WorkflowUIContext } from '../../../context/workflowUIContext';
+import { WorkflowSelectionContext } from '../../../context/workflowSelectionContext';
 
 const handleSizeConnected = 24;
 const handleSizeConnecting = 32;
@@ -59,7 +57,7 @@ export const MySourceHandle = React.memo(function MySourceHandle({
   const { t } = useTranslation();
 
   const node = useContextSelector(WorkflowBufferDataContext, (v) => v.getNodeById(nodeId));
-  const selected = useContextSelector(WorkflowNodeDataContext, (v) => v.selectedNodesMap[nodeId]);
+  const selected = useContextSelector(WorkflowSelectionContext, (v) => v.selectedNodesMap[nodeId]);
   const connectingEdge = useContextSelector(WorkflowActionsContext, (ctx) => ctx.connectingEdge);
   const hoverNodeId = useContextSelector(WorkflowUIContext, (v) => v.hoverNodeId);
 

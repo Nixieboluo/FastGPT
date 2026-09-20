@@ -12,21 +12,50 @@ import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import { cloneDeep } from 'lodash-es';
 import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
-import { WorkflowUIContext } from '../../context/workflowUIContext';
-import { WorkflowLayoutContext } from '../../context/workflowComputeContext';
+import { WorkflowUIContext } from '../context/workflowUIContext';
 import { getHandleIndex } from '../utils/edge';
+import { getParentNodeSizeAndPosition } from '../utils/layout';
+
+/** 右键菜单单项：执行动作后关闭菜单。不依赖父组件状态，放模块级避免每次渲染重建组件。 */
+const ContextMenuItem = ({
+  icon,
+  label,
+  onClick,
+  ...props
+}: {
+  icon: string;
+  label: string;
+  onClick: () => any;
+} & StackProps) => {
+  const setMenu = useContextSelector(WorkflowUIContext, (ctx) => ctx.setMenu);
+
+  return (
+    <HStack
+      px={2}
+      py={1}
+      cursor={'pointer'}
+      borderRadius={'sm'}
+      _hover={{ bg: 'myGray.50', color: 'primary.500' }}
+      onClick={() => {
+        onClick();
+        setMenu(null);
+      }}
+      {...props}
+    >
+      <MyIcon name={icon as any} w={'1rem'} ml={1} />
+      <Box fontSize={'sm'} fontWeight={'500'}>
+        {label}
+      </Box>
+    </HStack>
+  );
+};
 
 const ContextMenu = () => {
   const { t } = useTranslation();
   const menu = useContextSelector(WorkflowUIContext, (v) => v.menu!);
-  const setMenu = useContextSelector(WorkflowUIContext, (ctx) => ctx.setMenu);
   const { setNodes, setEdges, allNodeFolded } = useContextSelector(
     WorkflowBufferDataContext,
     (v) => v
-  );
-  const getParentNodeSizeAndPosition = useContextSelector(
-    WorkflowLayoutContext,
-    (v) => v.getParentNodeSizeAndPosition
   );
 
   const { fitView, screenToFlowPosition, getNodes } = useReactFlow();
@@ -263,7 +292,7 @@ const ContextMenu = () => {
     };
 
     setNodes((nodes) => {
-      let newNodes = cloneDeep(nodes);
+      const newNodes = cloneDeep(nodes);
 
       setEdges((edges) => {
         const childNodesIdSet = new Set();
@@ -323,10 +352,9 @@ const ContextMenu = () => {
         updateParentNodesPosition({
           startNode:
             newNodes.find((node) =>
-              [
-                FlowNodeTypeEnum.workflowStart,
-                FlowNodeTypeEnum.pluginInput
-              ].includes(node.data.flowNodeType)
+              [FlowNodeTypeEnum.workflowStart, FlowNodeTypeEnum.pluginInput].includes(
+                node.data.flowNodeType
+              )
             ) || newNodes[0],
           nodes: newNodes,
           edges
@@ -341,7 +369,7 @@ const ContextMenu = () => {
       const validNodes = getNodes().filter((node) => node.width && node.height);
       fitView({ nodes: validNodes, padding: 0.3 });
     });
-  }, [fitView, getNodes, getParentNodeSizeAndPosition, setEdges, setNodes]);
+  }, [fitView, getNodes, setEdges, setNodes]);
 
   const onAddComment = useCallback(() => {
     // Compensate for menu position offset (set in onPaneContextMenu)
@@ -365,7 +393,7 @@ const ContextMenu = () => {
         .concat(newNode);
       return newState;
     });
-  }, [menu?.left, menu?.top, screenToFlowPosition, setNodes, t]);
+  }, [menu, screenToFlowPosition, setNodes, t]);
 
   const onFold = useCallback(() => {
     setNodes((state) => {
@@ -384,40 +412,6 @@ const ContextMenu = () => {
       });
     });
   }, [allNodeFolded, setNodes]);
-
-  const ContextMenuItem = useCallback(
-    ({
-      icon,
-      label,
-      onClick,
-      ...props
-    }: {
-      icon: string;
-      label: string;
-      onClick: () => any;
-    } & StackProps) => {
-      return (
-        <HStack
-          px={2}
-          py={1}
-          cursor={'pointer'}
-          borderRadius={'sm'}
-          _hover={{ bg: 'myGray.50', color: 'primary.500' }}
-          onClick={() => {
-            onClick();
-            setMenu(null);
-          }}
-          {...props}
-        >
-          <MyIcon name={icon as any} w={'1rem'} ml={1} />
-          <Box fontSize={'sm'} fontWeight={'500'}>
-            {label}
-          </Box>
-        </HStack>
-      );
-    },
-    [setMenu]
-  );
 
   return (
     <Box>

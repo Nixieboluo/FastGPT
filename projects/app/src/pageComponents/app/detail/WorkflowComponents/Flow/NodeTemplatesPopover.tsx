@@ -13,9 +13,9 @@ import { useMemoizedFn } from 'ahooks';
 import React from 'react';
 import { type Node } from 'reactflow';
 import { useContextSelector } from 'use-context-selector';
-import { WorkflowActionsContext } from '../context/workflowActionsContext';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { WorkflowBufferDataContext } from '../context/workflowInitContext';
-import { WorkflowModalContext } from '../context/workflowModalContext';
+import { WorkflowModalContext } from './context/workflowModalContext';
 import NodeTemplateListHeader from './components/NodeTemplates/header';
 import NodeTemplateList from './components/NodeTemplates/list';
 import { useNodeTemplates } from './components/NodeTemplates/useNodeTemplates';
@@ -26,10 +26,8 @@ const NodeTemplatesPopover = () => {
 
   const { edges, setNodes, setEdges, getNodeById, hasToolNode, hasLoopRunNode } =
     useContextSelector(WorkflowBufferDataContext, (v) => v);
-  const onRefreshSingleNodeWorkflowCheckIssues = useContextSelector(
-    WorkflowActionsContext,
-    (v) => v.onRefreshSingleNodeWorkflowCheckIssues
-  );
+  /** 新增节点后立即复查问题文案，不等 host 的 10s 定时扫描。 */
+  const refreshNodeIssues = useContextSelector(WorkflowHostContext, (v) => v.refreshNodeIssues);
 
   const nodeTemplateContext = React.useMemo(
     () =>
@@ -109,7 +107,7 @@ const NodeTemplatesPopover = () => {
 
     setTimeout(() => {
       validNewNodes.forEach((node) => {
-        onRefreshSingleNodeWorkflowCheckIssues(node.data.nodeId);
+        refreshNodeIssues(node.data.nodeId);
       });
     }, 0);
   });

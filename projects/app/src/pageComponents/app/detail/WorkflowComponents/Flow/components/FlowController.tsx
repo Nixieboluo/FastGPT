@@ -16,7 +16,7 @@ import { useTranslation } from 'next-i18next';
 import styles from './index.module.scss';
 import { useKeyPress } from 'ahooks';
 import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
-import { WorkflowUIContext } from '../../context/workflowUIContext';
+import { WorkflowUIContext } from '../context/workflowUIContext';
 
 const buttonStyle = {
   border: 'none',

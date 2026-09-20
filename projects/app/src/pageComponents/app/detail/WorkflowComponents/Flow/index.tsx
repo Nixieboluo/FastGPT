@@ -20,7 +20,8 @@ import type { NodeProps } from 'reactflow';
 import ReactFlow, { SelectionMode, useReactFlow } from 'reactflow';
 import { Box, IconButton, useDisclosure } from '@chakra-ui/react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { WorkflowUIContext } from '../context/workflowUIContext';
+import { WorkflowUIContext } from './context/workflowUIContext';
+import { WorkflowSelectionProvider } from './context/workflowSelectionContext';
 import MyTooltip from '@fastgpt/web/components/common/MyTooltip';
 import { useTranslation } from 'next-i18next';
 
@@ -226,4 +227,14 @@ const Workflow = () => {
   );
 };
 
-export default React.memo(Workflow);
+/**
+ * 画布入口：选中态属于 renderer 交互层，Provider 挂在画布组件之上，
+ * 覆盖 useWorkflow 与节点/边渲染器（Handle、ButtonEdge）等全部消费者。
+ */
+const Flow = () => (
+  <WorkflowSelectionProvider>
+    <Workflow />
+  </WorkflowSelectionProvider>
+);
+
+export default React.memo(Flow);

@@ -10,12 +10,10 @@ import MyIcon from '@fastgpt/web/components/common/Icon';
 import { NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { useContextSelector } from 'use-context-selector';
 import { useThrottleEffect } from 'ahooks';
-import {
-  WorkflowBufferDataContext,
-  WorkflowNodeDataContext
-} from '../../context/workflowInitContext';
+import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
 import { WorkflowDebugContext } from '../../context/workflowDebugContext';
-import { WorkflowUIContext } from '../../context/workflowUIContext';
+import { WorkflowUIContext } from '../context/workflowUIContext';
+import { WorkflowSelectionContext } from '../context/workflowSelectionContext';
 import { getCustomStepPath } from '../utils/edge';
 
 export const CustomConnectionLine = ({
@@ -44,7 +42,7 @@ export const CustomConnectionLine = ({
 };
 
 const ButtonEdge = (props: EdgeProps) => {
-  const selectedNodesMap = useContextSelector(WorkflowNodeDataContext, (v) => v.selectedNodesMap);
+  const selectedNodesMap = useContextSelector(WorkflowSelectionContext, (v) => v.selectedNodesMap);
   const { onEdgesChange, getNodeById, foldedNodesMap, edges, getNodes } = useContextSelector(
     WorkflowBufferDataContext,
     (v) => v

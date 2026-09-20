@@ -1,8 +1,8 @@
-// 工作流功能性弹窗管理层
+// renderer 层：功能性弹窗状态（历史版本 / 运行预览 / 添加节点 Popover）
 import React, { useCallback, useState } from 'react';
 import type { OnConnectStartParams } from 'reactflow';
 import { createContext } from 'use-context-selector';
-import ChatTest from '../Flow/ChatTest';
+import ChatTest from '../ChatTest';
 import type { StoreNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import type { StoreEdgeItemType } from '@fastgpt/global/core/workflow/type/edge';
 import { useChatStore } from '@/web/core/chat/context/useChatStore';
@@ -51,6 +51,10 @@ export const WorkflowModalContext = createContext<WorkflowModalContextValue>({
   }
 });
 
+/**
+ * 弹窗状态 Provider：管理右侧面板互斥状态、添加节点 Popover 参数与运行预览数据，并渲染 ChatTest 面板。
+ * Header 需要读写 activePanel，因此与 WorkflowUIProvider 一起挂在 Header 与画布的共同祖先上。
+ */
 export const WorkflowModalProvider = ({ children }: { children: React.ReactNode }) => {
   const [activePanel, setActivePanel] = useState<WorkflowActivePanel>(null);
   const [handleParams, setHandleParams] = useState<handleParamsType | null>(null);

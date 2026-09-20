@@ -7,7 +7,7 @@ import { useCallback, useMemo } from 'react';
 import { useContextSelector } from 'use-context-selector';
 import { WorkflowBufferDataContext } from '../../../../context/workflowInitContext';
 import { WorkflowActionsContext } from '../../../../context/workflowActionsContext';
-import { WorkflowUIContext } from '../../../../context/workflowUIContext';
+import { WorkflowUIContext } from '../../../context/workflowUIContext';
 import { moduleTemplatesFlat } from '@fastgpt/global/core/workflow/template/constants';
 import { isNodeConnectionAllowed } from '@fastgpt/global/core/workflow/template/context';
 

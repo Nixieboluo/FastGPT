@@ -27,7 +27,7 @@ import { useToast } from '@fastgpt/web/hooks/useToast';
 import PublishHistories from '../PublishHistoriesSlider';
 import SaveButton from '../Workflow/components/SaveButton';
 import AppCard from '../WorkflowComponents/AppCard';
-import { WorkflowModalContext } from '../WorkflowComponents/context/workflowModalContext';
+import { WorkflowModalContext } from '../WorkflowComponents/Flow/context/workflowModalContext';
 import { WorkflowHostContext, type WorkflowVersionEntry } from '@/web/core/workflow/editor/host';
 import { WorkflowUtilsContext } from '../WorkflowComponents/context/workflowUtilsContext';
 

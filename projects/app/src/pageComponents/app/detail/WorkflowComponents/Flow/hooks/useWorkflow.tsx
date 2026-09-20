@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useEffect, type MutableRefObject } from 'react';
+import React, { useCallback, type MutableRefObject } from 'react';
 import {
   type Connection,
   type NodeChange,
@@ -26,18 +26,15 @@ import { useTranslation } from 'next-i18next';
 import { useKeyboard } from './useKeyboard';
 import { useContextSelector } from 'use-context-selector';
 import { type THelperLine } from '@/web/core/workflow/type';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { useMemoizedFn } from 'ahooks';
 import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
-import {
-  WorkflowBufferDataContext,
-  WorkflowInitContext,
-  WorkflowNodeDataContext
-} from '../../context/workflowInitContext';
+import { WorkflowBufferDataContext, WorkflowInitContext } from '../../context/workflowInitContext';
 import { WorkflowActionsContext } from '../../context/workflowActionsContext';
-import { WorkflowUIContext } from '../../context/workflowUIContext';
-import { WorkflowModalContext } from '../../context/workflowModalContext';
-import { WorkflowLayoutContext } from '../../context/workflowComputeContext';
+import { WorkflowUIContext } from '../context/workflowUIContext';
+import { WorkflowModalContext } from '../context/workflowModalContext';
+import { WorkflowSelectionContext } from '../context/workflowSelectionContext';
 import { type HelperLinesController } from '../components/HelperLines';
 import {
   buildNodeTemplateContext,
@@ -378,49 +375,6 @@ export const computeHelperLines = ({
   return scanner.getResult();
 };
 
-export const useRAF = () => {
-  const { resetParentNodeSizeAndPosition } = useContextSelector(WorkflowLayoutContext, (v) => v);
-
-  // Loop child drag RAF 节流相关
-  const childRafIdRef = useRef<number>();
-  const pendingUpdateRef = useRef<{ parentId: string } | null>(null);
-  const scheduleParentSizeUpdate = useCallback(
-    (parentId: string) => {
-      // 记录待更新的 parentId
-      pendingUpdateRef.current = { parentId };
-
-      // 如果已有待执行的 RAF，不重复请求
-      if (childRafIdRef.current) return;
-
-      // 请求下一帧执行更新
-      childRafIdRef.current = requestAnimationFrame(() => {
-        childRafIdRef.current = undefined;
-
-        if (pendingUpdateRef.current) {
-          const { parentId } = pendingUpdateRef.current;
-          pendingUpdateRef.current = null;
-
-          // 执行实际的尺寸更新（使用批量版本）
-          resetParentNodeSizeAndPosition(parentId);
-        }
-      });
-    },
-    [resetParentNodeSizeAndPosition]
-  );
-
-  useEffect(() => {
-    return () => {
-      if (childRafIdRef.current) {
-        cancelAnimationFrame(childRafIdRef.current);
-      }
-    };
-  }, []);
-
-  return {
-    scheduleParentSizeUpdate
-  };
-};
-
 export const popoverWidth = 400;
 export const popoverHeight = 600;
 
@@ -435,19 +389,16 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
   const { nodes, getRawNodeById } = useContextSelector(WorkflowInitContext, (state) => state);
   const { onNodesChange, setNodes, getNodeById, edges, setEdges, onEdgesChange } =
     useContextSelector(WorkflowBufferDataContext, (state) => state);
-  const selectedNodesMap = useContextSelector(WorkflowNodeDataContext, (v) => v.selectedNodesMap);
+  const selectedNodesMap = useContextSelector(WorkflowSelectionContext, (v) => v.selectedNodesMap);
 
-  const { setConnectingEdge, onChangeNode, onUpdateNodeError } = useContextSelector(
-    WorkflowActionsContext,
-    (v) => v
-  );
+  const { setConnectingEdge, onChangeNode } = useContextSelector(WorkflowActionsContext, (v) => v);
+  /** 标红焦点归 host：取消选中标红节点时清除焦点，画布不再自己维护错误标记。 */
+  const focusIssueNode = useContextSelector(WorkflowHostContext, (v) => v.focusIssueNode);
   const { setHoverEdgeId, setMenu } = useContextSelector(WorkflowUIContext, (v) => v);
   const setHandleParams = useContextSelector(WorkflowModalContext, (v) => v.setHandleParams);
 
   const { getIntersectingNodes, flowToScreenPosition, getZoom } = useReactFlow();
   const { isDowningCtrl } = useKeyboard();
-
-  const { scheduleParentSizeUpdate } = useRAF();
 
   /** 同步应用吸附结果，并命令式绘制当前帧辅助线。 */
   const applyHelperLineResult = useMemoizedFn(
@@ -617,7 +568,7 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
     if (!change.selected) {
       const node = getRawNodeById(change.id);
       if (node?.data.isError) {
-        onUpdateNodeError(node.data.nodeId, false);
+        focusIssueNode(undefined);
       }
       return;
     }
@@ -656,8 +607,6 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
           helperLinesRef.current?.clear();
         }
 
-        // 使用 RAF 节流的更新
-        scheduleParentSizeUpdate(parentId);
         return [];
       }
 

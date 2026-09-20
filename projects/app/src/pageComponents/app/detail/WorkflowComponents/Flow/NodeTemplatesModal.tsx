@@ -8,7 +8,7 @@ import { useMemoizedFn } from 'ahooks';
 import React from 'react';
 import { useContextSelector } from 'use-context-selector';
 import { WorkflowBufferDataContext } from '../context/workflowInitContext';
-import { WorkflowActionsContext } from '../context/workflowActionsContext';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import AppDetailPanelModal from '../../components/AppDetailPanelModal';
 
 type ModuleTemplateListProps = {
@@ -23,10 +23,8 @@ const NodeTemplatesModal = ({ isOpen, onClose }: ModuleTemplateListProps) => {
     WorkflowBufferDataContext,
     (v) => v
   );
-  const onRefreshSingleNodeWorkflowCheckIssues = useContextSelector(
-    WorkflowActionsContext,
-    (v) => v.onRefreshSingleNodeWorkflowCheckIssues
-  );
+  /** 新增节点后立即复查问题文案，不等 host 的 10s 定时扫描。 */
+  const refreshNodeIssues = useContextSelector(WorkflowHostContext, (v) => v.refreshNodeIssues);
 
   const templateContext = React.useMemo(
     () =>
@@ -71,7 +69,7 @@ const NodeTemplatesModal = ({ isOpen, onClose }: ModuleTemplateListProps) => {
 
     // 新增节点后立即同步下方待完善提示，不依赖 10s 定时扫描或用户首次编辑。
     setTimeout(() => {
-      onRefreshSingleNodeWorkflowCheckIssues(newNodes[0]?.data.nodeId ?? '');
+      refreshNodeIssues(newNodes[0]?.data.nodeId ?? '');
     }, 0);
   });
 

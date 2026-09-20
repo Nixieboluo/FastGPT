@@ -28,7 +28,7 @@ import NodeCopilot from './Copilot';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
 import { WorkflowUtilsContext } from '../../../context/workflowUtilsContext';
 import { WorkflowActionsContext } from '../../../context/workflowActionsContext';
-import { WorkflowUIContext } from '../../../context/workflowUIContext';
+import { WorkflowUIContext } from '../../context/workflowUIContext';
 import { useRequest } from '@fastgpt/web/hooks/useRequest';
 import { getSandboxPackages } from './api';
 import MyTooltip from '@fastgpt/web/components/common/MyTooltip';

@@ -9,7 +9,7 @@ import { useCallback } from 'react';
 import { type Node, useKeyPress, useReactFlow } from 'reactflow';
 import { useContextSelector } from 'use-context-selector';
 import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
-import { WorkflowUIContext } from '../../context/workflowUIContext';
+import { WorkflowUIContext } from '../context/workflowUIContext';
 import { isWorkflowShortcutInputtingTarget } from './keyboard';
 import { useWorkflowUtils } from './useUtils';
 
