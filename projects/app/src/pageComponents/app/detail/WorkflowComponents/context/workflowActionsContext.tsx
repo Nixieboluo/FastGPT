@@ -17,7 +17,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { OnConnectStartParams } from 'reactflow';
 import { createContext, useContextSelector } from 'use-context-selector';
 import { useMemoizedFn } from 'ahooks';
-import { WorkflowRuntimeHostContext } from '@/web/core/workflow/editor/cutover/runtimeHost';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import {
   buildDelEdgeCommands,
   buildResetNodeCommand,
@@ -110,9 +110,13 @@ export const WorkflowActionsProvider = ({ children }: { children: React.ReactNod
   const { t } = useTranslation();
   const { toast } = useToast();
 
-  const runtime = useContextSelector(WorkflowRuntimeHostContext, (v) => v.runtime);
-  const overlaysRef = useContextSelector(WorkflowRuntimeHostContext, (v) => v.overlaysRef);
-  const patchViewData = useContextSelector(WorkflowRuntimeHostContext, (v) => v.patchViewData);
+  const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
+  const overlaysRef = useContextSelector(WorkflowHostContext, (v) => v.overlaysRef);
+  const patchViewData = useContextSelector(WorkflowHostContext, (v) => v.patchViewData);
+  // 问题存储归 host；这里只保留渲染层职责（isError 标红与选中态）。
+  const syncIssues = useContextSelector(WorkflowHostContext, (v) => v.syncIssues);
+  const setNodeIssues = useContextSelector(WorkflowHostContext, (v) => v.setNodeIssues);
+  const clearIssues = useContextSelector(WorkflowHostContext, (v) => v.clearIssues);
 
   // 获取 WorkflowBufferDataContext 的数据
   const {
@@ -131,16 +135,6 @@ export const WorkflowActionsProvider = ({ children }: { children: React.ReactNod
   const [connectingEdge, setConnectingEdge] = useState<OnConnectStartParams>();
 
   const isRuntimeActive = useMemoizedFn(() => !!runtime && !runtime.isDisposed());
-
-  const writeIssueOverlay = useMemoizedFn(
-    (nodeId: string, issues: WorkflowCheckIssue[] | undefined) => {
-      const nextIssues = issues?.length ? issues : undefined;
-      const current = overlaysRef.current[nodeId]?.workflowCheckIssues;
-      if (JSON.stringify(current ?? undefined) === JSON.stringify(nextIssues)) return;
-      const patch: ViewOverlayPatch = { nodeId, values: { workflowCheckIssues: nextIssues } };
-      patchViewData([patch]);
-    }
-  );
 
   // 删除边：翻译成断连命令（按 handle 值匹配当前文档边）。
   const onDelEdge = useMemoizedFn(
@@ -184,24 +178,6 @@ export const WorkflowActionsProvider = ({ children }: { children: React.ReactNod
     );
   });
 
-  /** 同步节点下方问题文案；不改动 isError，标红仅由 onUpdateNodeError 控制。 */
-  const onSyncWorkflowCheckIssues = useMemoizedFn((nodeIssueMap: WorkflowCheckNodeIssueMap) => {
-    const patches: ViewOverlayPatch[] = [];
-    const nodeIds = new Set([
-      ...Object.keys(nodeIssueMap),
-      ...Object.keys(overlaysRef.current).filter(
-        (id) => overlaysRef.current[id]?.workflowCheckIssues !== undefined
-      )
-    ]);
-    nodeIds.forEach((nodeId) => {
-      const nextIssues = nodeIssueMap[nodeId]?.length ? nodeIssueMap[nodeId] : undefined;
-      const current = overlaysRef.current[nodeId]?.workflowCheckIssues;
-      if (JSON.stringify(current ?? undefined) === JSON.stringify(nextIssues)) return;
-      patches.push({ nodeId, values: { workflowCheckIssues: nextIssues } });
-    });
-    patchViewData(patches);
-  });
-
   /** 单节点配置变更后防抖重校验，仅同步问题文案，不自动标红。 */
   const onRefreshSingleNodeWorkflowCheckIssues = useMemoizedFn(async (nodeId: string) => {
     const nodes = getNodes();
@@ -221,7 +197,7 @@ export const WorkflowActionsProvider = ({ children }: { children: React.ReactNod
       nodeId,
       t
     });
-    writeIssueOverlay(nodeId, issueMap[nodeId]);
+    setNodeIssues(nodeId, issueMap[nodeId]);
   });
 
   /** 节点配置变更后防抖触发单节点重新校验，避免每次输入都同步扫描。 */
@@ -264,9 +240,9 @@ export const WorkflowActionsProvider = ({ children }: { children: React.ReactNod
       )
         return;
       const issueMap = checkWorkflowNodeIssues({ nodes, edges, models, t });
-      onSyncWorkflowCheckIssues(issueMap);
+      syncIssues(issueMap);
     }, 400);
-  }, [edges, getNodes, onSyncWorkflowCheckIssues, t]);
+  }, [edges, getNodes, syncIssues, t]);
 
   // 旧节点修改回调：翻译成 Runtime 命令；记录级变更在 host 侧改完整份数组后走 updateNode。
   const onChangeNode = useMemoizedFn((props: FlowNodeChangeProps | FlowNodeChangeProps[]) => {
@@ -306,7 +282,7 @@ export const WorkflowActionsProvider = ({ children }: { children: React.ReactNod
     }
   });
 
-  // 移除所有节点的错误状态（overlay 清理 + 取消对应节点选中）。
+  // 移除所有节点的错误状态（问题存储交 host 清理，这里只清标红与选中态）。
   const onRemoveError = useMemoizedFn(() => {
     const patches: ViewOverlayPatch[] = [];
     const affectedNodeIds = new Set<string>();
@@ -317,8 +293,9 @@ export const WorkflowActionsProvider = ({ children }: { children: React.ReactNod
       )
         return;
       affectedNodeIds.add(nodeId);
-      patches.push({ nodeId, values: { isError: false, workflowCheckIssues: undefined } });
+      patches.push({ nodeId, values: { isError: false } });
     });
+    clearIssues();
     patchViewData(patches);
     if (affectedNodeIds.size > 0) {
       setNodes((state) =>
@@ -391,7 +368,7 @@ export const WorkflowActionsProvider = ({ children }: { children: React.ReactNod
   const contextValue = useMemo(() => {
     return {
       onUpdateNodeError,
-      onSyncWorkflowCheckIssues,
+      onSyncWorkflowCheckIssues: syncIssues,
       onRefreshSingleNodeWorkflowCheckIssues,
       onRemoveError,
       onResetNode,
@@ -402,7 +379,7 @@ export const WorkflowActionsProvider = ({ children }: { children: React.ReactNod
     };
   }, [
     onUpdateNodeError,
-    onSyncWorkflowCheckIssues,
+    syncIssues,
     onRefreshSingleNodeWorkflowCheckIssues,
     onRemoveError,
     onResetNode,

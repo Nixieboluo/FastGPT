@@ -10,7 +10,7 @@ import { Box, Button, CloseButton, Flex, Input } from '@chakra-ui/react';
 import { useContextSelector } from 'use-context-selector';
 import { AppContext } from './context';
 import LightRowTabs from '@fastgpt/web/components/common/Tabs/LightRowTabs';
-import type { WorkflowSnapshotsType } from './WorkflowComponents/context/workflowSnapshotContext';
+import type { WorkflowVersionEntry } from '@/web/core/workflow/editor/host';
 import { formatTime2YMDHMS } from '@fastgpt/global/common/string/time';
 import Tag from '@fastgpt/web/components/common/Tag';
 import MyIcon from '@fastgpt/web/components/common/Icon';
@@ -28,7 +28,7 @@ import AppDetailPanelModal, {
   type AppDetailPanelModalProps
 } from './components/AppDetailPanelModal';
 
-const PublishHistoriesSlider = <T extends SimpleAppSnapshotType | WorkflowSnapshotsType>({
+const PublishHistoriesSlider = <T extends SimpleAppSnapshotType | WorkflowVersionEntry>({
   isOpen,
   onClose,
   past,
@@ -92,7 +92,7 @@ const PublishHistoriesSlider = <T extends SimpleAppSnapshotType | WorkflowSnapsh
 
 export default PublishHistoriesSlider;
 
-const MyEdit = <T extends SimpleAppSnapshotType | WorkflowSnapshotsType>({
+const MyEdit = <T extends SimpleAppSnapshotType | WorkflowVersionEntry>({
   past,
   onSwitchTmpVersion
 }: {

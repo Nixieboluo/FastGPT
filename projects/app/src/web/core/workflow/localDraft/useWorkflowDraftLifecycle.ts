@@ -1,59 +1,44 @@
-/**
- * WorkflowPersistenceContext - 工作流持久化层
- * @description 提供数据持久化和自动保存功能
- * @author FastGPT Team
- * @date 2025-01-18
- */
-
-import React, { type PropsWithChildren, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, type MutableRefObject } from 'react';
 import { useTranslation } from 'next-i18next';
-import { createContext, useContextSelector } from 'use-context-selector';
 import { useUnmount } from 'ahooks';
+import type { StoreWorkflow } from '@fastgpt/global/core/workflow/editor/protocol';
 import { AppContext } from '@/pageComponents/app/detail/context';
-import { WorkflowRuntimeHostContext } from '@/web/core/workflow/editor/cutover/runtimeHost';
-import { WorkflowUtilsContext } from './workflowUtilsContext';
-import {
-  removeWorkflowLocalDraftByApp,
-  saveWorkflowLocalDraft
-} from '@/web/core/workflow/localDraft/storage';
-import { useWorkflowAuthExpiredDraft } from '@/web/core/workflow/localDraft/useWorkflowAuthExpiredDraft';
 import { postPublishApp } from '@/web/core/app/api/version';
 import { useUserStore } from '@/web/support/user/useUserStore';
+import { useContextSelector } from 'use-context-selector';
+import { removeWorkflowLocalDraftByApp, saveWorkflowLocalDraft } from './storage';
+import { useWorkflowAuthExpiredDraft } from './useWorkflowAuthExpiredDraft';
 
 const enableWorkflowLeaveConfirm = process.env.NEXT_PUBLIC_WORKFLOW_LEAVE_CONFIRM !== 'false';
 
-// 创建 Context
-type WorkflowPersistenceContextValue = {
-  /** 是否已保存 */
+type UseWorkflowDraftLifecycleProps = {
+  /** host 供给的已保存状态；已保存时不写草稿、不弹离开确认。 */
   isSaved: boolean;
-
-  /** 离开保存标志 */
-  leaveSaveSign: React.MutableRefObject<boolean>;
+  /** host 的出站序列化入口；草稿与自动保存写的是同一份内容。 */
+  serializeWorkflow: () => StoreWorkflow | undefined;
+  /** 置 false 表示主动离开，跳过离开保护与自动保存。 */
+  leaveSaveSign: MutableRefObject<boolean>;
 };
-export const WorkflowPersistenceContext = createContext<WorkflowPersistenceContextValue>({
-  isSaved: true,
-  leaveSaveSign: { current: true }
-});
 
 /**
- * WorkflowPersistenceProvider - 持久化提供者
+ * host 层的草稿与离开保护生命周期：本地草稿写入/删除、刷新与关闭前的草稿落盘和远端自动保存、
+ * 卸载自动保存、鉴权过期草稿提示。返回需要由 host 渲染的弹窗。
+ *
+ * 卸载自动保存依赖 host 的 Runtime 仍可用，调用方必须保证本 hook 的清理先于 Runtime 释放。
  */
-export const WorkflowPersistenceProvider: React.FC<PropsWithChildren> = ({ children }) => {
+export const useWorkflowDraftLifecycle = ({
+  isSaved,
+  serializeWorkflow,
+  leaveSaveSign
+}: UseWorkflowDraftLifecycleProps) => {
   const { t } = useTranslation();
-  // 获取依赖的 context
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
   const { userInfo } = useUserStore();
-  // [workflow-runtime-cutover] 临时兼容桥：isSaved 改读 Runtime Savepoint（当前内容版本是否等于已保存版本）。
-  const runtime = useContextSelector(WorkflowRuntimeHostContext, (v) => v.runtime);
-  const runtimeTick = useContextSelector(WorkflowRuntimeHostContext, (v) => v.runtimeTick);
   const loginTmbId = userInfo?.team?.tmbId;
-  // 离开保存标志
-  const leaveSaveSign = useRef(true);
-  const flowData2StoreData = useContextSelector(WorkflowUtilsContext, (v) => v.flowData2StoreData);
   const leavePageTip = t('common:core.tip.leave page');
 
   const saveLocalDraft = useCallback(() => {
-    const data = flowData2StoreData();
+    const data = serializeWorkflow();
     if (!data || !loginTmbId) return false;
 
     return saveWorkflowLocalDraft({
@@ -65,7 +50,7 @@ export const WorkflowPersistenceProvider: React.FC<PropsWithChildren> = ({ child
         chatConfig: appDetail.chatConfig
       }
     });
-  }, [appDetail._id, appDetail.chatConfig, flowData2StoreData, loginTmbId]);
+  }, [appDetail._id, appDetail.chatConfig, serializeWorkflow, loginTmbId]);
 
   const removeCurrentLocalDraft = useCallback(() => {
     removeWorkflowLocalDraftByApp({
@@ -83,16 +68,6 @@ export const WorkflowPersistenceProvider: React.FC<PropsWithChildren> = ({ child
     saveLocalDraft
   });
 
-  /**
-   * isSaved：任何已提交事务都算脏（含几何与 chatConfig），撤销回已保存内容会自然回到干净状态。
-   * runtimeTick 驱动重算；未初始化时视为已保存。
-   */
-  const isSaved = useMemo(() => {
-    void runtimeTick;
-    if (!runtime || runtime.isDisposed()) return true;
-    return !runtime.getSavepoint().isDirty;
-  }, [runtime, runtimeTick]);
-
   useEffect(() => {
     if (isSaved) {
       removeCurrentLocalDraft();
@@ -109,7 +84,7 @@ export const WorkflowPersistenceProvider: React.FC<PropsWithChildren> = ({ child
     async ({ fromBeforeUnload = false } = {}) => {
       if (isSaved || !leaveSaveSign.current) return;
       console.log('Leave auto save');
-      const data = flowData2StoreData();
+      const data = serializeWorkflow();
       if (!data || data.nodes.length === 0) return;
 
       if (fromBeforeUnload) {
@@ -139,8 +114,9 @@ export const WorkflowPersistenceProvider: React.FC<PropsWithChildren> = ({ child
       appDetail._id,
       appDetail.chatConfig,
       appDetail.permission.hasWritePer,
-      flowData2StoreData,
+      serializeWorkflow,
       isSaved,
+      leaveSaveSign,
       removeCurrentLocalDraft,
       setBeforeUnloadAutoSaving
     ]
@@ -179,7 +155,8 @@ export const WorkflowPersistenceProvider: React.FC<PropsWithChildren> = ({ child
     handleBeforeUnloadAuthExpired,
     isSaved,
     leavePageTip,
-    saveLocalDraft
+    saveLocalDraft,
+    leaveSaveSign
   ]);
 
   // 页面关闭前自动保存
@@ -189,28 +166,5 @@ export const WorkflowPersistenceProvider: React.FC<PropsWithChildren> = ({ child
     autoSaveFn();
   });
 
-  const contextValue = useMemo(() => {
-    return {
-      isSaved,
-      leaveSaveSign
-    };
-  }, [isSaved]);
-
-  return (
-    <WorkflowPersistenceContext.Provider value={contextValue}>
-      {children}
-      {authExpiredModal}
-    </WorkflowPersistenceContext.Provider>
-  );
-};
-
-/**
- * useWorkflowPersistence - 使用工作流持久化
- */
-export const useWorkflowPersistence = () => {
-  const context = useContextSelector(WorkflowPersistenceContext, (v) => v);
-  if (!context) {
-    throw new Error('useWorkflowPersistence must be used within WorkflowPersistenceProvider');
-  }
-  return context;
+  return { authExpiredModal };
 };

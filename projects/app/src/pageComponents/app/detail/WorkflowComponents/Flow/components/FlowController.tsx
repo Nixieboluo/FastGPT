@@ -15,7 +15,7 @@ import { Box } from '@chakra-ui/react';
 import { useTranslation } from 'next-i18next';
 import styles from './index.module.scss';
 import { useKeyPress } from 'ahooks';
-import { WorkflowSnapshotContext } from '../../context/workflowSnapshotContext';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { WorkflowUIContext } from '../../context/workflowUIContext';
 
 const buttonStyle = {
@@ -26,7 +26,10 @@ const buttonStyle = {
 
 const FlowController = React.memo(function FlowController() {
   const { fitView, zoomIn, zoomOut, getNodes } = useReactFlow();
-  const { undo, redo, canRedo, canUndo } = useContextSelector(WorkflowSnapshotContext, (v) => v);
+  const undo = useContextSelector(WorkflowHostContext, (v) => v.undo);
+  const redo = useContextSelector(WorkflowHostContext, (v) => v.redo);
+  const canUndo = useContextSelector(WorkflowHostContext, (v) => v.canUndo);
+  const canRedo = useContextSelector(WorkflowHostContext, (v) => v.canRedo);
   const { getNodeById } = useContextSelector(WorkflowBufferDataContext, (v) => v);
   const {
     workflowControlMode,

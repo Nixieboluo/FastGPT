@@ -32,7 +32,7 @@ import {
   applyEdgeChanges,
   applyNodeChanges
 } from 'reactflow';
-import { WorkflowRuntimeHostContext } from '@/web/core/workflow/editor/cutover/runtimeHost';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import {
   createProjectionCache,
   projectRuntimeCanvas
@@ -144,10 +144,10 @@ const WorkflowInitContextProvider = ({
   basicNodeTemplates: FlowNodeTemplateType[];
 }) => {
   const { t } = useTranslation();
-  const runtime = useContextSelector(WorkflowRuntimeHostContext, (v) => v.runtime);
-  const runtimeTick = useContextSelector(WorkflowRuntimeHostContext, (v) => v.runtimeTick);
-  const overlaysRef = useContextSelector(WorkflowRuntimeHostContext, (v) => v.overlaysRef);
-  const patchViewData = useContextSelector(WorkflowRuntimeHostContext, (v) => v.patchViewData);
+  const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
+  const runtimeTick = useContextSelector(WorkflowHostContext, (v) => v.runtimeTick);
+  const overlaysRef = useContextSelector(WorkflowHostContext, (v) => v.overlaysRef);
+  const patchViewData = useContextSelector(WorkflowHostContext, (v) => v.patchViewData);
 
   // 交互状态层：reactflow 本地数组，语义值以 Runtime 投影为准。
   const [nodes, setNodesRaw] = useState<CanvasNode[]>([]);

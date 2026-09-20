@@ -28,11 +28,7 @@ import PublishHistories from '../PublishHistoriesSlider';
 import SaveButton from '../Workflow/components/SaveButton';
 import AppCard from '../WorkflowComponents/AppCard';
 import { WorkflowModalContext } from '../WorkflowComponents/context/workflowModalContext';
-import { WorkflowPersistenceContext } from '../WorkflowComponents/context/workflowPersistenceContext';
-import {
-  WorkflowSnapshotContext,
-  type WorkflowSnapshotsType
-} from '../WorkflowComponents/context/workflowSnapshotContext';
+import { WorkflowHostContext, type WorkflowVersionEntry } from '@/web/core/workflow/editor/host';
 import { WorkflowUtilsContext } from '../WorkflowComponents/context/workflowUtilsContext';
 
 const Header = () => {
@@ -52,30 +48,29 @@ const Header = () => {
     onClose: onCloseBackConfirm
   } = useDisclosure();
 
-  const { flowData2StoreData, flowData2StoreDataAndCheck } = useContextSelector(
+  const flowData2StoreDataAndCheck = useContextSelector(
     WorkflowUtilsContext,
-    (v) => v
+    (v) => v.flowData2StoreDataAndCheck
   );
 
   const setWorkflowTestData = useContextSelector(
     WorkflowModalContext,
     (v) => v.setWorkflowTestData
   );
-  const { past, setPast, onSwitchTmpVersion, onSwitchCloudVersion } = useContextSelector(
-    WorkflowSnapshotContext,
-    (v) => v
-  );
+  // host 是历史、版本与保存状态的唯一来源；按字段选择，避免每次编辑都重渲染 Header。
+  const versions = useContextSelector(WorkflowHostContext, (v) => v.versions);
+  const switchVersion = useContextSelector(WorkflowHostContext, (v) => v.switchVersion);
+  const switchCloudVersion = useContextSelector(WorkflowHostContext, (v) => v.switchCloudVersion);
+  const serializeWorkflow = useContextSelector(WorkflowHostContext, (v) => v.serializeWorkflow);
+  const markSaved = useContextSelector(WorkflowHostContext, (v) => v.markSaved);
+  const isSaved = useContextSelector(WorkflowHostContext, (v) => v.isSaved);
+  const leaveSaveSignRef = useContextSelector(WorkflowHostContext, (v) => v.leaveSaveSign);
 
   const { activePanel, setActivePanel } = useContextSelector(WorkflowModalContext, (v) => ({
     activePanel: v.activePanel,
     setActivePanel: v.setActivePanel
   }));
   const showHistoryModal = activePanel === 'history';
-
-  const { isSaved, leaveSaveSign: leaveSaveSignRef } = useContextSelector(
-    WorkflowPersistenceContext,
-    (v) => v
-  );
 
   const { lastAppListRouteType } = useSystemStore();
 
@@ -87,7 +82,8 @@ const Header = () => {
       isPublish?: boolean;
       versionName?: string;
     }) => {
-      const data = flowData2StoreData();
+      // 序列化时捕获内容版本；只有保存成功才回填，请求期间的新编辑仍算未保存。
+      const data = serializeWorkflow();
       if (data) {
         await onSaveApp({
           ...data,
@@ -97,22 +93,12 @@ const Header = () => {
           //@ts-ignore
           version: 'v2'
         });
-        // Mark the current snapshot as saved
-        setPast((prevPast) =>
-          prevPast.map((item, index) =>
-            index === 0
-              ? {
-                  ...item,
-                  isSaved: true
-                }
-              : item
-          )
-        );
+        markSaved();
       }
     },
     {
       manual: true,
-      refreshDeps: [onSaveApp, setPast, flowData2StoreData, appDetail.chatConfig]
+      refreshDeps: [onSaveApp, markSaved, serializeWorkflow, appDetail.chatConfig]
     }
   );
 
@@ -230,14 +216,14 @@ const Header = () => {
     <>
       {Render}
       {currentTab === TabEnum.appEdit && (
-        <PublishHistories<WorkflowSnapshotsType>
+        <PublishHistories<WorkflowVersionEntry>
           isOpen={showHistoryModal}
           onClose={() => {
             setActivePanel(null);
           }}
-          past={past}
-          onSwitchCloudVersion={onSwitchCloudVersion}
-          onSwitchTmpVersion={onSwitchTmpVersion}
+          past={versions}
+          onSwitchCloudVersion={switchCloudVersion}
+          onSwitchTmpVersion={switchVersion}
         />
       )}
 

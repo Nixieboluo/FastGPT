@@ -1,16 +1,13 @@
-// [workflow-runtime-cutover] 临时兼容桥：初始化与序列化入口改走边界 codec。
-// initData 物化后创建/替换 Runtime；flowData2StoreData 读 Runtime 完整导出并捕获
-// 保存点回填用的内容版本。迁移结束后薄壳随调用点改造删除。
+// [workflow-runtime-cutover] 临时兼容桥：只剩入站初始化与保存/发布 gate。
+// initData 物化后创建/替换 Runtime；序列化入口与 Environment 定时扫描已迁入 host。
+// 迁移结束后薄壳随调用点改造删除。
 import React from 'react';
 // 工作流工具函数层
 import { useSystemStore } from '@/web/common/system/useSystemStore';
 import { getWorkflowModelDetails } from '@/web/core/workflow/modelData';
-import { materializeWorkflow, serializeRuntime } from '@/web/core/workflow/editor/codec';
-import { WorkflowRuntimeHostContext } from '@/web/core/workflow/editor/cutover/runtimeHost';
-import {
-  checkWorkflowBeforeRunOrPublish,
-  checkWorkflowNodeIssues
-} from '@/web/core/workflow/workflowCheck';
+import { materializeWorkflow } from '@/web/core/workflow/editor/codec';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
+import { checkWorkflowBeforeRunOrPublish } from '@/web/core/workflow/workflowCheck';
 import { useUserStore } from '@/web/support/user/useUserStore';
 import {
   canInputBeAgentGenerated,
@@ -30,7 +27,7 @@ import type {
 import type { StoreNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import { useToast } from '@fastgpt/web/hooks/useToast';
 import { useTranslation } from 'next-i18next';
-import { type ReactNode, useCallback, useEffect, useMemo } from 'react';
+import { type ReactNode, useCallback, useMemo } from 'react';
 import { useReactFlow } from 'reactflow';
 import { createContext, useContextSelector } from 'use-context-selector';
 import { AppContext } from '../../context';
@@ -141,13 +138,11 @@ export const WorkflowUtilsProvider = ({ children }: { children: ReactNode }) => 
     WorkflowActionsContext,
     (v) => v
   );
-  const runtime = useContextSelector(WorkflowRuntimeHostContext, (v) => v.runtime);
-  const initRuntime = useContextSelector(WorkflowRuntimeHostContext, (v) => v.initRuntime);
-  const loadDocument = useContextSelector(WorkflowRuntimeHostContext, (v) => v.loadDocument);
-  const pendingSaveRevisionRef = useContextSelector(
-    WorkflowRuntimeHostContext,
-    (v) => v.pendingSaveRevision
-  );
+  const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
+  const initRuntime = useContextSelector(WorkflowHostContext, (v) => v.initRuntime);
+  const loadDocument = useContextSelector(WorkflowHostContext, (v) => v.loadDocument);
+  /** 出站序列化统一走 host：保存、发布、草稿、调试读同一份内容并共用保存点捕获。 */
+  const flowData2StoreData = useContextSelector(WorkflowHostContext, (v) => v.serializeWorkflow);
 
   // 优化为单次遍历,分类输出项
   const splitOutput = useCallback((outputs: FlowNodeOutputItemType[]) => {
@@ -189,16 +184,6 @@ export const WorkflowUtilsProvider = ({ children }: { children: ReactNode }) => 
     },
     [toolNodesMap]
   );
-
-  /**
-   * 出站边界：读 Runtime 完整导出并经 Workflow Normalization（保存、发布、草稿、调试共用）。
-   * 同时捕获当前内容版本，保存成功后由 Snapshot 桥回填 Savepoint；失败不回填。
-   */
-  const flowData2StoreData = useCallback(() => {
-    if (!runtime || runtime.isDisposed()) return undefined;
-    pendingSaveRevisionRef.current = runtime.getSavepoint().contentRevision;
-    return serializeRuntime(runtime);
-  }, [runtime, pendingSaveRevisionRef]);
 
   // 转换并验证工作流数据
   const flowData2StoreDataAndCheck = useCallback(
@@ -298,37 +283,6 @@ export const WorkflowUtilsProvider = ({ children }: { children: ReactNode }) => 
       flowData2StoreData
     ]
   );
-
-  /** 编辑页定时全量扫描，主动发现新增/已修复的节点错误（Environment Issue 留在 host）。 */
-  useEffect(() => {
-    let active = true;
-    const runScheduledCheck = async () => {
-      const nodes = getNodes();
-      if (nodes.length === 0) return;
-
-      const models = await getWorkflowModelDetails(nodes).catch(() => undefined);
-      // 目录失败保留原校验结果；等待期间用户编辑或离开时不回写旧快照。
-      if (
-        !active ||
-        !models ||
-        nodes.some(
-          (node) =>
-            getNodes().find((current) => current.id === node.id)?.data.inputs !== node.data.inputs
-        )
-      )
-        return;
-      const issueMap = checkWorkflowNodeIssues({ nodes, edges, models, t });
-      onSyncWorkflowCheckIssues(issueMap);
-    };
-
-    runScheduledCheck();
-    const timer = window.setInterval(runScheduledCheck, 10_000);
-
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
-  }, [edges, getNodes, onSyncWorkflowCheckIssues, t]);
 
   /**
    * 初始化工作流数据：入站边界（migration + Template Materialization）后创建 Runtime。

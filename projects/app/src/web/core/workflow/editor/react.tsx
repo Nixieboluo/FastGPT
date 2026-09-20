@@ -414,15 +414,20 @@ export const createWorkflowEditorAdapter = (
 const WorkflowEditorContext = createContext<WorkflowEditorAdapter | undefined>(undefined);
 
 type WorkflowEditorProviderProps = {
-  runtime: WorkflowRuntimePort;
+  /** host 在 hydrate 出 Runtime 之前为 null；此时不挂 adapter，hooks 与未挂载时一样抛错。 */
+  runtime: WorkflowRuntimePort | null;
   children: ReactNode;
 };
 
 /** 为已经 hydrate 成功的 host runtime 提供 scoped Workflow Hooks。 */
 export const WorkflowEditorProvider = ({ runtime, children }: WorkflowEditorProviderProps) => {
-  const adapter = useMemo(() => createWorkflowEditorAdapter(runtime, false), [runtime]);
+  const adapter = useMemo(
+    () => (runtime ? createWorkflowEditorAdapter(runtime, false) : undefined),
+    [runtime]
+  );
 
   useEffect(() => {
+    if (!adapter) return;
     adapter.connect();
     return () => adapter.dispose();
   }, [adapter]);
