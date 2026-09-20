@@ -10,6 +10,7 @@ import { WorkflowActionsContext } from '../../../../context/workflowActionsConte
 import { WorkflowUIContext } from '../../../context/workflowUIContext';
 import { moduleTemplatesFlat } from '@fastgpt/global/core/workflow/template/constants';
 import { isNodeConnectionAllowed } from '@fastgpt/global/core/workflow/template/context';
+import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
 
 const handleSize = '20px';
 const activeHandleSize = '24px';
@@ -95,7 +96,8 @@ export const ToolTargetHandle = ({ show, nodeId }: ToolHandleProps) => {
 
 export const ToolSourceHandle = ({ nodeId }: { nodeId: string }) => {
   const { t } = useTranslation();
-  const setEdges = useContextSelector(WorkflowBufferDataContext, (v) => v.setEdges);
+  const edges = useContextSelector(WorkflowBufferDataContext, (v) => v.edges);
+  const workflow = useWorkflowAdapter();
   const connectingEdge = useContextSelector(
     WorkflowActionsContext,
     (ctx) => ctx.connectingEdge?.nodeId === nodeId
@@ -107,15 +109,23 @@ export const ToolSourceHandle = ({ nodeId }: { nodeId: string }) => {
   /* onConnect edge, delete tool input and switch */
   const onConnect = useCallback(
     (e: Connection) => {
-      setEdges((edges) =>
-        edges.filter((edge) => {
-          if (edge.target !== e.target) return true;
-          if (edge.targetHandle === NodeOutputKeyEnum.selectedTools) return true;
-          return false;
-        })
-      );
+      edges
+        .filter(
+          (edge) =>
+            edge.target === e.target && edge.targetHandle !== NodeOutputKeyEnum.selectedTools
+        )
+        .forEach((edge) =>
+          workflow.disconnectEdge({
+            edge: {
+              source: edge.source,
+              target: edge.target,
+              sourceHandle: edge.sourceHandle || '',
+              targetHandle: edge.targetHandle || ''
+            }
+          })
+        );
     },
-    [setEdges]
+    [edges, workflow]
   );
 
   const size = active ? activeHandleSize : handleSize;

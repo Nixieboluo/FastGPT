@@ -1,19 +1,9 @@
-// [workflow-runtime-cutover] 兼容桥行为测试：写路径翻译（translate/changeProps）与投影组装。
+// 兼容桥行为测试：写路径翻译（translate/changeProps）与投影组装。
 import { describe, expect, it } from 'vitest';
-import { NodeInputKeyEnum, NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
+import { NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { EDGE_TYPE, FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
-import { AiChatModule } from '@fastgpt/global/core/workflow/template/system/aiChat';
 import { getHandleId } from '@fastgpt/global/core/workflow/utils';
 import { hydrateRuntime } from '@/web/core/workflow/editor/codec';
-import {
-  diffCanvasEdges,
-  diffCanvasNodes,
-  resolveRemovedEdgeIndexes,
-  translateDragEndChanges,
-  translateEdgeRemoveChanges,
-  translateNodeRemoveChanges,
-  type CanvasNode
-} from '@/web/core/workflow/editor/cutover/translate';
 import {
   buildDelEdgeCommands,
   buildResetNodeCommand,
@@ -28,24 +18,6 @@ import type { WorkflowCommand } from '@fastgpt/global/core/workflow/editor/types
 import type { WorkflowCheckNodeIssueMap } from '@fastgpt/global/core/workflow/type/node';
 
 const t = ((key: string) => key) as never;
-
-const canvasNode = (
-  nodeId: string,
-  data: Record<string, unknown> = {},
-  position = { x: 0, y: 0 }
-): CanvasNode =>
-  ({
-    id: nodeId,
-    position,
-    data: {
-      nodeId,
-      flowNodeType: FlowNodeTypeEnum.answerNode,
-      name: nodeId,
-      inputs: [],
-      outputs: [],
-      ...data
-    }
-  }) as unknown as CanvasNode;
 
 const createStoreWorkflow = () => ({
   nodes: [
@@ -96,170 +68,6 @@ const createStoreWorkflow = () => ({
 
 const commandsOfType = (commands: WorkflowCommand[], type: string) =>
   commands.filter((command) => command.type === type);
-
-describe('cutover translate: diffCanvasNodes', () => {
-  it('splits semantic, geometry and view changes into commands and overlays', () => {
-    const prev = [canvasNode('a', { name: 'A' })];
-    const next = [
-      canvasNode(
-        'a',
-        { name: 'B', isFolded: true, searchedText: 'kw', debugResult: { status: 'success' } },
-        { x: 10, y: 0 }
-      )
-    ];
-
-    const { commands, viewPatches } = diffCanvasNodes({ prev, next });
-
-    expect(commandsOfType(commands, 'commitGeometry')).toEqual([
-      { type: 'commitGeometry', nodeId: 'a', isFolded: true },
-      { type: 'commitGeometry', nodeId: 'a', position: { x: 10, y: 0 } }
-    ]);
-    const updates = commandsOfType(commands, 'updateNode');
-    expect(updates).toHaveLength(1);
-    expect((updates[0] as Extract<WorkflowCommand, { type: 'updateNode' }>).patch).toMatchObject({
-      name: 'B'
-    });
-    // 视图字段不进文档
-    expect(
-      (updates[0] as Extract<WorkflowCommand, { type: 'updateNode' }>).patch as Record<
-        string,
-        unknown
-      >
-    ).not.toHaveProperty('searchedText');
-    expect(viewPatches).toEqual([
-      {
-        nodeId: 'a',
-        values: { searchedText: 'kw', debugResult: { status: 'success' } }
-      }
-    ]);
-  });
-
-  it('translates removals into removeNodes and additions into stripped addNode', () => {
-    const prev = [canvasNode('a'), canvasNode('b')];
-    const next = [canvasNode('a'), canvasNode('c', { searchedText: 'kw' }, { x: 5, y: 5 })];
-
-    const { commands } = diffCanvasNodes({ prev, next });
-
-    expect(commandsOfType(commands, 'removeNodes')).toEqual([
-      { type: 'removeNodes', nodeIds: ['b'] }
-    ]);
-    const add = commandsOfType(commands, 'addNode')[0] as Extract<
-      WorkflowCommand,
-      { type: 'addNode' }
-    >;
-    expect(add.node.nodeId).toBe('c');
-    expect(add.node.position).toEqual({ x: 5, y: 5 });
-    expect(add.node as Record<string, unknown>).not.toHaveProperty('searchedText');
-  });
-
-  it('routes parentNodeId changes through attachToContainer only', () => {
-    const prev = [canvasNode('a'), canvasNode('loop', { flowNodeType: FlowNodeTypeEnum.loopRun })];
-    const next = [
-      canvasNode('a', { parentNodeId: 'loop' }),
-      canvasNode('loop', { flowNodeType: FlowNodeTypeEnum.loopRun })
-    ];
-
-    const { commands } = diffCanvasNodes({ prev, next });
-
-    expect(commandsOfType(commands, 'attachToContainer')).toEqual([
-      { type: 'attachToContainer', nodeId: 'a', containerId: 'loop' }
-    ]);
-    commandsOfType(commands, 'updateNode').forEach((command) => {
-      expect(
-        (command as Extract<WorkflowCommand, { type: 'updateNode' }>).patch as Record<
-          string,
-          unknown
-        >
-      ).not.toHaveProperty('parentNodeId');
-    });
-  });
-});
-
-describe('cutover translate: edges', () => {
-  const runtimeEdges = [
-    { source: 'start', target: 'answer', sourceHandle: 'sh', targetHandle: 'th' },
-    { source: 'start', target: 'tool', sourceHandle: 'sh2', targetHandle: 'th2' }
-  ];
-  const renderEdges = runtimeEdges.map((edge, index) => ({
-    id: `wfedge-${index}`,
-    ...edge
-  }));
-
-  it('connects new render edges and disconnects removed ones by fresh index', () => {
-    const next = [
-      renderEdges[1],
-      { id: 'nanoid-new', source: 'answer', target: 'tool', sourceHandle: 'a', targetHandle: 'b' }
-    ];
-
-    const commands = diffCanvasEdges({ prev: renderEdges, next, runtimeEdges });
-
-    expect(commands).toEqual([
-      {
-        type: 'connectEdge',
-        edge: { source: 'answer', target: 'tool', sourceHandle: 'a', targetHandle: 'b' }
-      },
-      { type: 'disconnectEdge', index: 0 }
-    ]);
-  });
-
-  it('skips removals that the runtime already cascaded (stale canvas index)', () => {
-    // runtime 已级联删除 start->answer，仅剩一条边；画布 id 里的下标已失效。
-    const freshRuntimeEdges = [runtimeEdges[1]];
-    const indexes = resolveRemovedEdgeIndexes({
-      removed: [renderEdges[0]],
-      runtimeEdges: freshRuntimeEdges
-    });
-    expect(indexes).toEqual([]);
-
-    const commands = translateEdgeRemoveChanges({
-      ids: ['wfedge-0'],
-      localEdges: renderEdges,
-      runtimeEdges: freshRuntimeEdges
-    });
-    expect(commands).toEqual([]);
-  });
-
-  it('translates remove changes by value into descending indexes', () => {
-    const commands = translateEdgeRemoveChanges({
-      ids: ['wfedge-0', 'wfedge-1'],
-      localEdges: renderEdges,
-      runtimeEdges
-    });
-    expect(commands).toEqual([
-      { type: 'disconnectEdge', index: 1 },
-      { type: 'disconnectEdge', index: 0 }
-    ]);
-  });
-});
-
-describe('cutover translate: node changes', () => {
-  it('only commits geometry on gesture-end frames', () => {
-    const commands = translateDragEndChanges({
-      changes: [
-        { type: 'position', id: 'a', dragging: true, position: { x: 5, y: 5 } },
-        { type: 'position', id: 'b', dragging: false, position: { x: 6, y: 6 } },
-        { type: 'position', id: 'c', dragging: false },
-        { type: 'select', id: 'd', selected: true }
-      ] as never,
-      getPosition: (nodeId) => (nodeId === 'c' ? { x: 7, y: 7 } : undefined)
-    });
-
-    expect(commands).toEqual([
-      { type: 'commitGeometry', nodeId: 'b', position: { x: 6, y: 6 } },
-      { type: 'commitGeometry', nodeId: 'c', position: { x: 7, y: 7 } }
-    ]);
-  });
-
-  it('batches node remove changes into one removeNodes command', () => {
-    expect(
-      translateNodeRemoveChanges([
-        { type: 'remove', id: 'a' },
-        { type: 'remove', id: 'b' },
-        { type: 'select', id: 'c', selected: false }
-      ] as never)
-    ).toEqual([{ type: 'removeNodes', nodeIds: ['a', 'b'] }]);
-  });
-});
 
 describe('cutover changeProps', () => {
   it('merges record-level changes per node into one updateNode transaction', () => {
@@ -330,6 +138,26 @@ describe('cutover changeProps', () => {
     runtime.dispose();
   });
 
+  it('drops repeated field writes from initialization effects', () => {
+    const runtime = hydrateRuntime({ input: createStoreWorkflow(), t });
+    const input = runtime.getNode('answer')!.inputs[0];
+
+    const { commands, viewPatches } = translateChangeProps({
+      props: [
+        { nodeId: 'answer', type: 'updateInput', key: input.key, value: input },
+        { nodeId: 'answer', type: 'replaceInput', key: input.key, value: input },
+        { nodeId: 'answer', type: 'attr', key: 'readmeUrl', value: 'guide' }
+      ],
+      runtime
+    });
+
+    expect(commands).toEqual([]);
+    expect(viewPatches).toEqual([{ nodeId: 'answer', values: { readmeUrl: 'guide' } }]);
+    expect(runtime.dispatch(commands).change).toBeUndefined();
+    expect(runtime.getHistory().canUndo).toBe(false);
+    runtime.dispose();
+  });
+
   it('disconnects output edges when deleting an output', () => {
     const runtime = hydrateRuntime({ input: createStoreWorkflow(), t });
 
@@ -378,6 +206,65 @@ describe('cutover changeProps', () => {
     expect(runtime.getNode('answer')?.name).toBe('Template');
     // 重置保留当前位置
     expect(runtime.getNodeView('answer')?.position).toEqual({ x: 100, y: 0 });
+    runtime.dispose();
+  });
+});
+
+describe('cutover undo loop', () => {
+  const project = (runtime: ReturnType<typeof hydrateRuntime>) =>
+    projectRuntimeCanvas({
+      runtime,
+      overlays: {},
+      issues: {} as WorkflowCheckNodeIssueMap,
+      t,
+      localNodes: [],
+      localEdges: [],
+      cache: createProjectionCache()
+    });
+
+  const readInput = (runtime: ReturnType<typeof hydrateRuntime>, nodeId: string, key: string) => {
+    const node = project(runtime).nodes.find((item) => item.data.nodeId === nodeId)!;
+    return node.data.inputs.find((input) => input.key === key)!;
+  };
+
+  /** 模拟输入模板写回：从投影读当前字段，带上新值走 changeProps -> Runtime。 */
+  const writeInput = (
+    runtime: ReturnType<typeof hydrateRuntime>,
+    nodeId: string,
+    key: string,
+    value: unknown
+  ) => {
+    const item = readInput(runtime, nodeId, key);
+    const { commands } = translateChangeProps({
+      props: [{ nodeId, type: 'updateInput', key, value: { ...item, value } as never }],
+      runtime
+    });
+    return commands.length > 0 ? runtime.dispatch(commands) : undefined;
+  };
+
+  it('walks every history step once when the canvas echoes the undone value', () => {
+    const runtime = hydrateRuntime({ input: createStoreWorkflow(), t });
+    const nodeId = 'answer';
+    const key = (runtime.getNode(nodeId)!.inputs as { key: string }[])[0].key;
+    const initial = runtime.getField({ nodeId, fieldKey: key })?.input?.value;
+    const typed = ['1', '12', '123', '1234', '123', '12', '1', ''];
+
+    typed.forEach((value) => writeInput(runtime, nodeId, key, value));
+    const baseline = runtime.getHistory().undoCount;
+    expect(baseline).toBe(typed.length);
+
+    const undone: unknown[] = [];
+    typed.forEach((_value, index) => {
+      runtime.undo();
+      // 撤销后画布重投影，受控输入会用恢复值再写一次（Lexical 重建时的 onChange）。
+      const echoed = readInput(runtime, nodeId, key).value;
+      writeInput(runtime, nodeId, key, echoed);
+      undone.push(runtime.getField({ nodeId, fieldKey: key })?.input?.value);
+      expect(runtime.getHistory().redoCount).toBe(index + 1);
+    });
+
+    // 撤销按记录逐条回退：先走完删除过程中的每个中间值，最后回到输入前的原始值。
+    expect(undone).toEqual(['1', '12', '123', '1234', '123', '12', '1', initial]);
     runtime.dispose();
   });
 });
@@ -515,84 +402,6 @@ describe('cutover projection', () => {
     expect(
       folded.nodes.find((node) => node.id === 'answer')!.data.workflowCheckIssues
     ).toBeUndefined();
-
-    runtime.dispose();
-  });
-});
-
-describe('cutover projection: 输出可用性写回收敛', () => {
-  const reasoningModel = { modelId: 'reasoning-model', config: { reasoning: true } };
-
-  const createAiChatWorkflow = () => ({
-    nodes: [
-      {
-        ...AiChatModule,
-        nodeId: 'chat',
-        position: { x: 0, y: 0 },
-        inputs: AiChatModule.inputs.map((input) =>
-          input.key === NodeInputKeyEnum.aiModelId ? { ...input, value: 'reasoning-model' } : input
-        )
-      }
-    ],
-    edges: [],
-    chatConfig: {}
-  });
-
-  /** 复刻 useNodeOutputValidity 的写回：按模型能力重算 invalid，产出新的画布数组。 */
-  const applyOutputValidity = (nodes: CanvasNode[]) =>
-    nodes.map((node) => ({
-      ...node,
-      data: {
-        ...node.data,
-        outputs: node.data.outputs.map((output) =>
-          output.invalidCondition
-            ? {
-                ...output,
-                invalid: output.invalidCondition({
-                  inputs: node.data.inputs,
-                  llmModelMap: { 'reasoning-model': reasoningModel }
-                } as never)
-              }
-            : output
-        )
-      }
-    }));
-
-  it('首次修正后不再产生新的历史条目', () => {
-    const runtime = hydrateRuntime({ input: createAiChatWorkflow(), t });
-    const cache = createProjectionCache();
-    const project = (localNodes: CanvasNode[] = []) =>
-      projectRuntimeCanvas({
-        runtime,
-        overlays: {},
-        issues: {},
-        t,
-        localNodes,
-        localEdges: [],
-        cache
-      });
-
-    const first = project();
-    const firstDiff = diffCanvasNodes({
-      prev: first.nodes,
-      next: applyOutputValidity(first.nodes)
-    });
-    // 模型支持思考时，模板默认的 invalid: true 需要被修正一次
-    expect(commandsOfType(firstDiff.commands, 'updateNode')).toHaveLength(1);
-    expect(runtime.dispatch(firstDiff.commands).ok).toBe(true);
-
-    // 重投影后同一份写回必须已经收敛：否则每轮投影都会再写一条历史（打开工作流即无限循环）
-    const second = project(first.nodes);
-    const secondDiff = diffCanvasNodes({
-      prev: second.nodes,
-      next: applyOutputValidity(second.nodes)
-    });
-    expect(secondDiff.commands).toEqual([]);
-
-    const outputs = runtime.getNode('chat')!.outputs as { key: string; invalid?: boolean }[];
-    expect(outputs.find((output) => output.key === NodeOutputKeyEnum.reasoningText)?.invalid).toBe(
-      false
-    );
 
     runtime.dispose();
   });

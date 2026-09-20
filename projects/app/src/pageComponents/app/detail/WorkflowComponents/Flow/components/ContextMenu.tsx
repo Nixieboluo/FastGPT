@@ -10,11 +10,12 @@ import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
 import dagre from '@dagrejs/dagre';
 import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import { cloneDeep } from 'lodash-es';
-import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import { WorkflowUIContext } from '../context/workflowUIContext';
 import { getHandleIndex } from '../utils/edge';
 import { getParentNodeSizeAndPosition } from '../utils/layout';
+import { useCanvas, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/cutover/translate';
 
 /** 右键菜单单项：执行动作后关闭菜单。不依赖父组件状态，放模块级避免每次渲染重建组件。 */
 const ContextMenuItem = ({
@@ -53,12 +54,14 @@ const ContextMenuItem = ({
 const ContextMenu = () => {
   const { t } = useTranslation();
   const menu = useContextSelector(WorkflowUIContext, (v) => v.menu!);
-  const { setNodes, setEdges, allNodeFolded } = useContextSelector(
+  const { setNodes, getNodes, edges, allNodeFolded } = useContextSelector(
     WorkflowBufferDataContext,
     (v) => v
   );
+  const workflow = useWorkflowAdapter();
+  const canvas = useCanvas();
 
-  const { fitView, screenToFlowPosition, getNodes } = useReactFlow();
+  const { fitView, screenToFlowPosition } = useReactFlow();
 
   const onLayout = useCallback(() => {
     const updateChildNodesPosition = ({
@@ -291,85 +294,66 @@ const ContextMenu = () => {
       });
     };
 
-    setNodes((nodes) => {
-      const newNodes = cloneDeep(nodes);
+    const newNodes = cloneDeep(getNodes());
+    const previousPositions = new Map(
+      newNodes.map((node) => [node.id, { x: node.position.x, y: node.position.y }])
+    );
+    const childNodesIdSet = new Set<string>();
 
-      setEdges((edges) => {
-        const childNodesIdSet = new Set();
-
-        // 1. Layout child nodes
-        const childNodesMap: Record<string, Node<FlowNodeItemType>[]> = {};
-        newNodes.forEach((node) => {
-          const parentId = node.data.parentNodeId;
-          if (parentId) {
-            // Skip children without valid dimensions (not yet rendered)
-            if (!node.width || !node.height) return;
-
-            childNodesIdSet.add(parentId);
-            if (!childNodesMap[parentId]) {
-              childNodesMap[parentId] = [];
-            }
-            childNodesMap[parentId].push(node);
-          }
-        });
-        const childNodesArr = Object.values(childNodesMap);
-        if (childNodesArr.length > 0) {
-          childNodesArr.forEach((childNodes) => {
-            updateChildNodesPosition({
-              startNode: childNodes[0],
-              nodes: childNodes,
-              edges
-            });
-          });
-        }
-
-        // 2. Reset parent node size and position
-        const parentNodes = newNodes.filter((node) => childNodesIdSet.has(node.data.nodeId));
-        parentNodes.forEach((node) => {
-          const res = getParentNodeSizeAndPosition({
-            nodes: newNodes,
-            parentId: node.data.nodeId
-          });
-          if (!res) return;
-          const { parentX, parentY, nodeWidth, nodeHeight, childHeight, childWidth } = res;
-
-          node.position = {
-            x: parentX,
-            y: parentY
-          };
-          node.width = nodeWidth;
-          node.height = nodeHeight;
-          node.data.inputs.forEach((input) => {
-            if (input.key === NodeInputKeyEnum.nodeHeight) {
-              input.value = childHeight;
-            } else if (input.key === NodeInputKeyEnum.nodeWidth) {
-              input.value = childWidth;
-            }
-          });
-        });
-
-        // 3. Layout parent node
-        updateParentNodesPosition({
-          startNode:
-            newNodes.find((node) =>
-              [FlowNodeTypeEnum.workflowStart, FlowNodeTypeEnum.pluginInput].includes(
-                node.data.flowNodeType
-              )
-            ) || newNodes[0],
-          nodes: newNodes,
-          edges
-        });
-        return edges;
-      });
-
-      return newNodes;
+    // 1. Layout child nodes
+    const childNodesMap: Record<string, Node<FlowNodeItemType>[]> = {};
+    newNodes.forEach((node) => {
+      const parentId = node.data.parentNodeId;
+      if (parentId) {
+        if (!node.width || !node.height) return;
+        childNodesIdSet.add(parentId);
+        (childNodesMap[parentId] ??= []).push(node);
+      }
     });
+    Object.values(childNodesMap).forEach((childNodes) => {
+      updateChildNodesPosition({ startNode: childNodes[0], nodes: childNodes, edges });
+    });
+
+    // 2. Reset parent node size and position. Dimensions remain renderer-local;
+    // container size persistence is intentionally outside this ticket.
+    const parentNodes = newNodes.filter((node) => childNodesIdSet.has(node.data.nodeId));
+    parentNodes.forEach((node) => {
+      const res = getParentNodeSizeAndPosition({ nodes: newNodes, parentId: node.data.nodeId });
+      if (!res) return;
+      node.position = { x: res.parentX, y: res.parentY };
+      node.width = res.nodeWidth;
+      node.height = res.nodeHeight;
+    });
+
+    // 3. Layout parent node
+    const startNode = newNodes.find((node) =>
+      [FlowNodeTypeEnum.workflowStart, FlowNodeTypeEnum.pluginInput].includes(
+        node.data.flowNodeType
+      )
+    );
+    if (startNode || newNodes[0]) {
+      updateParentNodesPosition({
+        startNode: startNode || newNodes[0],
+        nodes: newNodes,
+        edges
+      });
+    }
+
+    setNodes(newNodes);
+    canvas.commitGeometry(
+      newNodes.flatMap((node) => {
+        const previous = previousPositions.get(node.id);
+        return previous && (previous.x !== node.position.x || previous.y !== node.position.y)
+          ? [{ nodeId: node.data.nodeId, position: node.position }]
+          : [];
+      })
+    );
 
     setTimeout(() => {
-      const validNodes = getNodes().filter((node) => node.width && node.height);
+      const validNodes = newNodes.filter((node) => node.width && node.height);
       fitView({ nodes: validNodes, padding: 0.3 });
     });
-  }, [fitView, getNodes, setEdges, setNodes]);
+  }, [canvas, edges, fitView, getNodes, setNodes]);
 
   const onAddComment = useCallback(() => {
     // Compensate for menu position offset (set in onPaneContextMenu)
@@ -383,35 +367,17 @@ const ContextMenu = () => {
       t
     });
 
-    setNodes((state) => {
-      const newState = state
-        .map((node) => ({
-          ...node,
-          selected: false
-        }))
-        // @ts-ignore
-        .concat(newNode);
-      return newState;
-    });
-  }, [menu, screenToFlowPosition, setNodes, t]);
+    setNodes((state) => state.map((node) => ({ ...node, selected: false })));
+    workflow.addNode(canvasNodeToStoreNode(newNode));
+  }, [menu, screenToFlowPosition, setNodes, t, workflow]);
 
   const onFold = useCallback(() => {
-    setNodes((state) => {
-      return state.map((node) => {
-        // Skip comment nodes
-        if (node.data.flowNodeType === FlowNodeTypeEnum.comment) {
-          return node;
-        }
-        return {
-          ...node,
-          data: {
-            ...node.data,
-            isFolded: !allNodeFolded
-          }
-        };
-      });
-    });
-  }, [allNodeFolded, setNodes]);
+    canvas.commitGeometry(
+      getNodes()
+        .filter((node) => node.data.flowNodeType !== FlowNodeTypeEnum.comment)
+        .map((node) => ({ nodeId: node.data.nodeId, isFolded: !allNodeFolded }))
+    );
+  }, [allNodeFolded, canvas, getNodes]);
 
   return (
     <Box>

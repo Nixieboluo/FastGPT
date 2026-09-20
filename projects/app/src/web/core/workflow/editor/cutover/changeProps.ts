@@ -15,6 +15,7 @@ import type {
 import type { WorkflowCommand } from '@fastgpt/global/core/workflow/editor/types';
 import type { WorkflowRuntimePort } from '@fastgpt/global/core/workflow/editor/types';
 import { VIEW_DATA_KEYS, type ViewOverlayPatch, type ViewDataKey } from './translate';
+import isEqual from 'lodash-es/isEqual';
 
 /** 与旧 workflowActionsContext 的 FlowNodeChangeProps 保持同形。 */
 export type FlowNodeChangeProps = { nodeId: string } & (
@@ -46,6 +47,8 @@ const isViewKey = (key: string): key is ViewDataKey =>
 type WorkingNode = {
   inputs: FlowNodeInputItemType[];
   outputs: FlowNodeOutputItemType[];
+  originalInputs: FlowNodeInputItemType[];
+  originalOutputs: FlowNodeOutputItemType[];
   patch: Record<string, unknown>;
 };
 
@@ -55,6 +58,8 @@ const readWorkingNode = (runtime: WorkflowRuntimePort, nodeId: string): WorkingN
   return {
     inputs: [...(snapshot.inputs as FlowNodeInputItemType[])],
     outputs: [...(snapshot.outputs as FlowNodeOutputItemType[])],
+    originalInputs: [...(snapshot.inputs as FlowNodeInputItemType[])],
+    originalOutputs: [...(snapshot.outputs as FlowNodeOutputItemType[])],
     patch: {}
   };
 };
@@ -125,6 +130,10 @@ export const translateChangeProps = ({
       }
       const node = getWorking(nodeId);
       if (!node) return;
+      const currentValue = Object.prototype.hasOwnProperty.call(node.patch, item.key)
+        ? node.patch[item.key]
+        : (runtime.getNode(nodeId) as Record<string, unknown> | undefined)?.[item.key];
+      if (isEqual(currentValue, item.value)) return;
       node.patch[item.key] = item.value;
       return;
     }
@@ -133,7 +142,9 @@ export const translateChangeProps = ({
     if (!node) return;
 
     if (type === 'updateInput') {
-      node.inputs = node.inputs.map((input) => (input.key === item.key ? item.value : input));
+      const index = node.inputs.findIndex((input) => input.key === item.key);
+      if (index < 0 || isEqual(node.inputs[index], item.value)) return;
+      node.inputs[index] = item.value;
     } else if (type === 'replaceInput') {
       const existingIndex = node.inputs.findIndex((input) => input.key === item.key);
       const hasInput = node.inputs.some(
@@ -143,6 +154,7 @@ export const translateChangeProps = ({
         duplicateKeyNodeIds.push(nodeId);
         return;
       }
+      if (existingIndex >= 0 && isEqual(node.inputs[existingIndex], item.value)) return;
       node.inputs =
         existingIndex === -1
           ? [...node.inputs, item.value]
@@ -154,12 +166,17 @@ export const translateChangeProps = ({
       }
       node.inputs = [...node.inputs, item.value];
     } else if (type === 'delInput') {
+      if (!node.inputs.some((input) => input.key === item.key)) return;
       node.inputs = node.inputs.filter((input) => input.key !== item.key);
     } else if (type === 'updateOutput') {
-      node.outputs = node.outputs.map((output) => (output.key === item.key ? item.value : output));
+      const index = node.outputs.findIndex((output) => output.key === item.key);
+      if (index < 0 || isEqual(node.outputs[index], item.value)) return;
+      node.outputs[index] = item.value;
     } else if (type === 'replaceOutput') {
+      const index = node.outputs.findIndex((output) => output.key === item.key);
+      if (index < 0 || isEqual(node.outputs[index], item.value)) return;
       disconnectOutputEdges(nodeId, item.key);
-      node.outputs = node.outputs.map((output) => (output.key === item.key ? item.value : output));
+      node.outputs[index] = item.value;
     } else if (type === 'addOutput') {
       if (node.outputs.some((output) => output.key === item.value.key)) {
         duplicateKeyNodeIds.push(nodeId);
@@ -173,17 +190,17 @@ export const translateChangeProps = ({
         node.outputs = [...node.outputs, item.value];
       }
     } else if (type === 'delOutput') {
+      if (!node.outputs.some((output) => output.key === item.key)) return;
       disconnectOutputEdges(nodeId, item.key);
       node.outputs = node.outputs.filter((output) => output.key !== item.key);
     }
   });
 
   working.forEach((node, nodeId) => {
-    const patch: Record<string, unknown> = {
-      ...node.patch,
-      inputs: node.inputs,
-      outputs: node.outputs
-    };
+    const patch: Record<string, unknown> = { ...node.patch };
+    if (!isEqual(node.inputs, node.originalInputs)) patch.inputs = node.inputs;
+    if (!isEqual(node.outputs, node.originalOutputs)) patch.outputs = node.outputs;
+    if (Object.keys(patch).length === 0) return;
     commands.push({
       type: 'updateNode',
       nodeId,

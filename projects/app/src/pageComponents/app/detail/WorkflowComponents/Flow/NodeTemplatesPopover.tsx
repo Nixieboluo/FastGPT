@@ -14,6 +14,8 @@ import React from 'react';
 import { type Node } from 'reactflow';
 import { useContextSelector } from 'use-context-selector';
 import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
+import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/cutover/translate';
 import { WorkflowBufferDataContext } from '../context/workflowInitContext';
 import { WorkflowModalContext } from './context/workflowModalContext';
 import NodeTemplateListHeader from './components/NodeTemplates/header';
@@ -24,10 +26,13 @@ import { popoverHeight, popoverWidth } from './hooks/useWorkflow';
 const NodeTemplatesPopover = () => {
   const { handleParams, setHandleParams } = useContextSelector(WorkflowModalContext, (v) => v);
 
-  const { edges, setNodes, setEdges, getNodeById, hasToolNode, hasLoopRunNode } =
-    useContextSelector(WorkflowBufferDataContext, (v) => v);
+  const { setNodes, edges, getNodeById, hasToolNode, hasLoopRunNode } = useContextSelector(
+    WorkflowBufferDataContext,
+    (v) => v
+  );
   /** 新增节点后立即复查问题文案，不等 host 的 10s 定时扫描。 */
   const refreshNodeIssues = useContextSelector(WorkflowHostContext, (v) => v.refreshNodeIssues);
+  const workflow = useWorkflowAdapter();
 
   const nodeTemplateContext = React.useMemo(
     () =>
@@ -74,16 +79,9 @@ const NodeTemplatesPopover = () => {
       return;
     }
 
-    setNodes((state) => {
-      const newState = state
-        .map((node) => ({
-          ...node,
-          selected: false
-        }))
-        // @ts-ignore
-        .concat(validNewNodes);
-      return newState;
-    });
+    const storeNodes = validNewNodes.map(canvasNodeToStoreNode);
+    setNodes((state) => state.map((node) => ({ ...node, selected: false })));
+    workflow.addNodes(storeNodes);
 
     if (!handleParams) return;
 
@@ -98,10 +96,14 @@ const NodeTemplatesPopover = () => {
         type: EDGE_TYPE
       }));
 
-    setEdges((state) => {
-      const newState = state.concat(newEdges);
-      return newState;
-    });
+    newEdges.forEach((edge) =>
+      workflow.connectEdge({
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: edge.sourceHandle || '',
+        targetHandle: edge.targetHandle || ''
+      })
+    );
 
     setHandleParams(null);
 

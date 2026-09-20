@@ -3,6 +3,8 @@ import { getNanoid } from '@fastgpt/global/common/string/tools';
 import { isNestedParentNodeType } from '@fastgpt/global/core/workflow/node/constant';
 import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import { useCopyData } from '@fastgpt/web/hooks/useCopyData';
+import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/cutover/translate';
 import { useKeyPress as useKeyPressEffect } from 'ahooks';
 import { useTranslation } from 'next-i18next';
 import { useCallback } from 'react';
@@ -23,6 +25,7 @@ export const useKeyboard = () => {
   const { copyData } = useCopyData();
   const { computedNewNodeName } = useWorkflowUtils();
   const { screenToFlowPosition } = useReactFlow();
+  const workflow = useWorkflowAdapter();
 
   const isDowningCtrl = useKeyPress(['Meta', 'Control']);
 
@@ -97,15 +100,8 @@ export const useKeyboard = () => {
       });
 
       // Reset all node to not select and concat new node
-      setNodes((prev) =>
-        prev
-          .map((node) => ({
-            ...node,
-            selected: false
-          }))
-          //@ts-ignore
-          .concat(newNodes)
-      );
+      setNodes((prev) => prev.map((node) => ({ ...node, selected: false })));
+      workflow.addNodes(newNodes.map(canvasNodeToStoreNode));
     } catch {}
   }, [
     computedNewNodeName,
@@ -113,7 +109,8 @@ export const useKeyboard = () => {
     hasInputtingElement,
     mouseInCanvas,
     screenToFlowPosition,
-    setNodes
+    setNodes,
+    workflow
   ]);
 
   useKeyPressEffect(['ctrl.c', 'meta.c'], (e) => {

@@ -30,16 +30,19 @@ import { WorkflowInitContext } from '../../../context/workflowInitContext';
 import { nodeTemplate2FlowNode } from '@/web/core/workflow/utils';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
 import { i18nT } from '@fastgpt/global/common/i18n/utils';
+import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/cutover/translate';
 
 const NodeLoopRun = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useTranslation();
   const { nodeId, inputs, outputs, isFolded, catchError } = data;
   const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
   const splitOutput = useContextSelector(WorkflowUtilsContext, (v) => v.splitOutput);
-  const { getNodeById, setNodes, childrenNodeIdListMap } = useContextSelector(
+  const { getNodeById, childrenNodeIdListMap } = useContextSelector(
     WorkflowBufferDataContext,
     (v) => v
   );
+  const workflow = useWorkflowAdapter();
   const childNodeIds = useMemo(
     () => childrenNodeIdListMap[nodeId] ?? [],
     [childrenNodeIdListMap, nodeId]
@@ -184,10 +187,10 @@ const NodeLoopRun = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
           parentNodeId: nodeId,
           t
         });
-        setNodes((state) => state.concat(breakNode));
+        workflow.addNode(canvasNodeToStoreNode(breakNode));
       }
     }
-  }, [mode, childNodeIds, nodeId, getNodeById, getRawNodeById, onChangeNode, setNodes, t]);
+  }, [mode, childNodeIds, nodeId, getNodeById, getRawNodeById, onChangeNode, t, workflow]);
 
   useEffect(() => {
     const declared = inputs.filter((i) => i.canEdit === true);

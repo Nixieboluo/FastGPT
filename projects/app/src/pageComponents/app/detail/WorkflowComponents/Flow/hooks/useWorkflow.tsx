@@ -3,7 +3,6 @@ import {
   type Connection,
   type NodeChange,
   type OnConnectStartParams,
-  addEdge,
   type EdgeChange,
   type Edge,
   type Node,
@@ -11,11 +10,9 @@ import {
   type XYPosition,
   useReactFlow,
   type NodeRemoveChange,
-  type NodeSelectionChange,
-  type EdgeRemoveChange
+  type NodeSelectionChange
 } from 'reactflow';
 import {
-  EDGE_TYPE,
   FlowNodeTypeEnum,
   isNestedParentNodeType
 } from '@fastgpt/global/core/workflow/node/constant';
@@ -27,6 +24,7 @@ import { useKeyboard } from './useKeyboard';
 import { useContextSelector } from 'use-context-selector';
 import { type THelperLine } from '@/web/core/workflow/type';
 import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
+import { useCanvas, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
 import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { useMemoizedFn } from 'ahooks';
 import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
@@ -387,11 +385,13 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
   const { t } = useTranslation();
 
   const { nodes, getRawNodeById } = useContextSelector(WorkflowInitContext, (state) => state);
-  const { onNodesChange, setNodes, getNodeById, edges, setEdges, onEdgesChange } =
+  const { onNodesChange, onEdgesChange, setNodes, getNodeById, getNodes, edges } =
     useContextSelector(WorkflowBufferDataContext, (state) => state);
   const selectedNodesMap = useContextSelector(WorkflowSelectionContext, (v) => v.selectedNodesMap);
+  const workflow = useWorkflowAdapter();
+  const canvas = useCanvas();
 
-  const { setConnectingEdge, onChangeNode } = useContextSelector(WorkflowActionsContext, (v) => v);
+  const { setConnectingEdge } = useContextSelector(WorkflowActionsContext, (v) => v);
   /** 标红焦点归 host：取消选中标红节点时清除焦点，画布不再自己维护错误标记。 */
   const focusIssueNode = useContextSelector(WorkflowHostContext, (v) => v.focusIssueNode);
   const { setHoverEdgeId, setMenu } = useContextSelector(WorkflowUIContext, (v) => v);
@@ -454,16 +454,21 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
         }
       }
 
-      onChangeNode({
-        nodeId: node.id,
-        type: 'attr',
-        key: 'parentNodeId',
-        value: parentNode.id
-      });
-      // 删除当前节点与其他节点的连接
-      setEdges((state) =>
-        state.filter((edge) => edge.source !== node.id && edge.target !== node.id)
-      );
+      const result = workflow.attachToContainer(node.id, parentNode.id);
+      if (!result.ok) return;
+      // 旧行为是落入容器后删除该节点全部连线，按值断连避免投影 id 重排失效。
+      edges
+        .filter((edge) => edge.source === node.id || edge.target === node.id)
+        .forEach((edge) =>
+          workflow.disconnectEdge({
+            edge: {
+              source: edge.source,
+              target: edge.target,
+              sourceHandle: edge.sourceHandle || '',
+              targetHandle: edge.targetHandle || ''
+            }
+          })
+        );
     }
   });
 
@@ -523,41 +528,6 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
   );
 
   /* node */
-  // Remove change node and its child nodes and edges
-  const handleRemoveNode = useCallback(
-    (change: NodeRemoveChange, nodeId: string) => {
-      // If the node has child nodes, remove the child nodes
-      const deletedNodeIdList = [nodeId];
-      const deletedEdgeIdList = edges
-        .filter((edge) => edge.source === nodeId || edge.target === nodeId)
-        .map((edge) => edge.id);
-
-      const childNodes = nodes.filter((n) => n.data.parentNodeId === nodeId);
-      if (childNodes.length > 0) {
-        const childNodeIds = childNodes.map((node) => node.id);
-        deletedNodeIdList.push(...childNodeIds);
-
-        const childEdges = edges.filter(
-          (edge) => childNodeIds.includes(edge.source) || childNodeIds.includes(edge.target)
-        );
-        deletedEdgeIdList.push(...childEdges.map((edge) => edge.id));
-      }
-
-      onNodesChange(
-        deletedNodeIdList.map<NodeRemoveChange>((id) => ({
-          type: 'remove',
-          id
-        }))
-      );
-      onEdgesChange(
-        deletedEdgeIdList.map<EdgeRemoveChange>((id) => ({
-          type: 'remove',
-          id
-        }))
-      );
-    },
-    [edges, nodes, onNodesChange, onEdgesChange]
-  );
   const handleSelectNode = useMemoizedFn((change: NodeSelectionChange) => {
     // If the node is not selected and the Ctrl key is pressed, select the node
     if (change.selected === false && isDowningCtrl) {
@@ -682,6 +652,7 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
   );
   const handleNodesChange = useMemoizedFn((changes: NodeChange[]) => {
     const childChanges: NodeChange[] = [];
+    const removableNodeIds: string[] = [];
     const removedIds = new Set(
       changes.filter((c): c is NodeRemoveChange => c.type === 'remove').map((c) => c.id)
     );
@@ -731,7 +702,7 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
             }
           }
         }
-        handleRemoveNode(change, node.id);
+        removableNodeIds.push(node.id);
       } else if (change.type === 'select') {
         handleSelectNode(change);
       } else if (change.type === 'position') {
@@ -742,8 +713,27 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
       }
     }
 
-    // Remove separately
-    onNodesChange(changes.filter((c) => c.type !== 'remove').concat(childChanges as any));
+    const localChanges = changes.filter((c) => c.type !== 'remove').concat(childChanges as any);
+    onNodesChange(localChanges);
+
+    if (removableNodeIds.length > 0) workflow.removeNodes(removableNodeIds);
+
+    const geometryNodeIds = new Set(
+      [...changes, ...childChanges]
+        .filter(
+          (change): change is NodePositionChange => change.type === 'position' && !change.dragging
+        )
+        .map((change) => change.id)
+    );
+    if (geometryNodeIds.size > 0) {
+      const currentNodes = getNodes();
+      canvas.commitGeometry(
+        [...geometryNodeIds].flatMap((nodeId) => {
+          const node = currentNodes.find((item) => item.id === nodeId);
+          return node ? [{ nodeId, position: node.position }] : [];
+        })
+      );
+    }
   });
 
   const handleEdgeChange = useCallback(
@@ -755,8 +745,22 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
       );
 
       onEdgesChange(changesFiltered);
+      changesFiltered
+        .filter((change) => change.type === 'remove')
+        .map((change) => edges.find((edge) => edge.id === change.id))
+        .filter((edge): edge is Edge => !!edge)
+        .forEach((edge) =>
+          workflow.disconnectEdge({
+            edge: {
+              source: edge.source,
+              target: edge.target,
+              sourceHandle: edge.sourceHandle || '',
+              targetHandle: edge.targetHandle || ''
+            }
+          })
+        );
     },
-    [selectedNodesMap, onEdgesChange]
+    [edges, selectedNodesMap, workflow, onEdgesChange]
   );
 
   const onNodeDragStop = useCallback(
@@ -776,12 +780,7 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
       // If node is folded, unfold it when connecting
       const sourceNode = getNodeById(nodeId);
       if (sourceNode?.isFolded) {
-        onChangeNode({
-          nodeId,
-          type: 'attr',
-          key: 'isFolded',
-          value: false
-        });
+        canvas.commitGeometry([{ nodeId, isFolded: false }]);
       }
       setConnectingEdge(params);
 
@@ -820,10 +819,10 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
     [
       getNodeById,
       setConnectingEdge,
-      onChangeNode,
       getTemplatesListPopoverPosition,
       getAddNodePosition,
-      setHandleParams
+      setHandleParams,
+      canvas
     ]
   );
   const onConnectEnd = useCallback(() => {
@@ -831,19 +830,15 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
   }, [setConnectingEdge]);
   const onConnect = useCallback(
     ({ connect }: { connect: Connection }) => {
-      // [workflow-runtime-cutover] 连线翻译为 connectEdge 命令；工作流开始输入的
-      // 自动填充由 Runtime 在同一事务内完成，旧的手动 patch 已删除。
-      setEdges((state) =>
-        addEdge(
-          {
-            ...connect,
-            type: EDGE_TYPE
-          },
-          state
-        )
-      );
+      if (!connect.source || !connect.target) return;
+      workflow.connectEdge({
+        source: connect.source,
+        target: connect.target,
+        sourceHandle: connect.sourceHandle || '',
+        targetHandle: connect.targetHandle || ''
+      });
     },
-    [setEdges]
+    [workflow]
   );
   const customOnConnect = useCallback(
     (connect: Connection) => {
@@ -929,7 +924,7 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
     setMenu(null);
   }, [setMenu]);
 
-  // [workflow-runtime-cutover] 旧的防抖全量快照推送已删除：历史由 Runtime 在每笔事务内维护。
+  // 旧的防抖全量快照推送已删除：历史由 Runtime 在每笔事务内维护。
 
   return {
     handleNodesChange,

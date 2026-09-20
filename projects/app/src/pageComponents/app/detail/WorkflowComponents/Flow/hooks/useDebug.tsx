@@ -57,7 +57,6 @@ export const useDebug = () => {
   const { t: workflowT } = useTranslation();
   const { toast } = useToast();
 
-  const setNodes = useContextSelector(WorkflowBufferDataContext, (v) => v.setNodes);
   const getNodes = useContextSelector(WorkflowBufferDataContext, (v) => v.getNodes);
   const edges = useContextSelector(WorkflowBufferDataContext, (v) => v.edges);
   const getNodeById = useContextSelector(WorkflowBufferDataContext, (v) => v.getNodeById);
@@ -69,9 +68,10 @@ export const useDebug = () => {
   const syncIssues = useContextSelector(WorkflowHostContext, (v) => v.syncIssues);
   const clearIssues = useContextSelector(WorkflowHostContext, (v) => v.clearIssues);
   const focusIssueNode = useContextSelector(WorkflowHostContext, (v) => v.focusIssueNode);
+  const patchViewData = useContextSelector(WorkflowHostContext, (v) => v.patchViewData);
   const onStartNodeDebug = useContextSelector(WorkflowDebugContext, (v) => v.onStartNodeDebug);
   const setDebugChatId = useContextSelector(WorkflowDebugContext, (v) => v.setDebugChatId);
-  // [workflow-runtime-cutover] 调试输入改读 host 出站边界（与保存发布同一个 codec）。
+  // 调试输入改读 host 出站边界（与保存发布同一个 codec）。
   const flowData2StoreData = useContextSelector(WorkflowUtilsContext, (v) => v.flowData2StoreData);
 
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
@@ -152,13 +152,10 @@ export const useDebug = () => {
       // 每次打开调试弹窗生成独立的会话 chatId，文件上传与调试运行共用，保证文件归属校验通过
       setDebugChatId(getNanoid());
 
-      setNodes((state) =>
-        state.map((node) => ({
-          ...node,
-          data: {
-            ...node.data,
-            debugResult: undefined
-          }
+      patchViewData(
+        getNodes().map((node) => ({
+          nodeId: node.data.nodeId,
+          values: { debugResult: undefined }
         }))
       );
       const {
@@ -186,7 +183,7 @@ export const useDebug = () => {
       setRuntimeNodes(runtimeNodes);
       setRuntimeEdges(runtimeEdges);
     },
-    [flowData2StoreDataAndCheck, setNodes, setDebugChatId]
+    [flowData2StoreDataAndCheck, getNodes, patchViewData, setDebugChatId]
   );
 
   const DebugInputModal = useCallback(() => {

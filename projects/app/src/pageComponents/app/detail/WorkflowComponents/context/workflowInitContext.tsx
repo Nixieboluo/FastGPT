@@ -1,8 +1,7 @@
-// [workflow-runtime-cutover] 临时兼容桥：本 Context 只剩「投影供数 + 写路径翻译」。
+// 临时兼容桥：本 Context 只剩「投影供数 + 画布交互状态」。
 // Runtime 拥有唯一的 Workflow Document / Node View；派生索引直接读 Runtime 结构快照与
 // 节点视图，画布数组只承载 reactflow 交互状态（拖拽帧、测量尺寸、层级）。
-// 旧调用点的 setNodes/setEdges/onNodesChange/onEdgesChange 仍在这里翻译成 Runtime 命令，
-// 迁移结束后薄壳随调用点改造删除。
+// 结构、几何与边写入由调用点直接使用 editor adapter 提交。
 import type {
   FlowNodeItemType,
   FlowNodeTemplateType
@@ -12,7 +11,6 @@ import { createContext, useContextSelector } from 'use-context-selector';
 import { NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import type {
-  WorkflowCommand,
   WorkflowRuntimePort,
   WorkflowSnapshot
 } from '@fastgpt/global/core/workflow/editor/types';
@@ -42,14 +40,7 @@ import {
   createProjectionCache,
   projectRuntimeCanvas
 } from '@/web/core/workflow/editor/cutover/projection';
-import {
-  diffCanvasEdges,
-  diffCanvasNodes,
-  translateDragEndChanges,
-  translateEdgeRemoveChanges,
-  translateNodeRemoveChanges,
-  type CanvasNode
-} from '@/web/core/workflow/editor/cutover/translate';
+import type { CanvasNode } from '@/web/core/workflow/editor/cutover/translate';
 
 type OnChange<ChangesType> = (changes: ChangesType[]) => void;
 
@@ -57,14 +48,14 @@ type WorkflowNodeContextType = {
   nodes: Node<FlowNodeItemType, string | undefined>[];
   rawNodesMap: Record<string, Node<FlowNodeItemType, string | undefined>>;
   getRawNodeById: (
-    nodeId: string | null | undefined
+    _nodeId: string | null | undefined
   ) => Node<FlowNodeItemType, string | undefined> | undefined;
 };
 export const WorkflowInitContext = createContext<WorkflowNodeContextType>({
   nodes: [],
   rawNodesMap: {},
   getRawNodeById: function (
-    nodeId: string | null | undefined
+    _nodeId: string | null | undefined
   ): Node<FlowNodeItemType, string | undefined> | undefined {
     throw new Error('Function not implemented.');
   }
@@ -105,15 +96,15 @@ export const WorkflowBufferDataContext = createContext<WorkflowDataContextType>(
   nodeIds: [],
   nodeAmount: 0,
   foldedNodesMap: {},
-  getNodeById: function (nodeId: string | null | undefined): FlowNodeItemType | undefined {
+  getNodeById: function (_nodeId: string | null | undefined): FlowNodeItemType | undefined {
     throw new Error('Function not implemented.');
   },
   setNodes: function (
-    value: React.SetStateAction<Node<FlowNodeItemType, string | undefined>[]>
+    _value: React.SetStateAction<Node<FlowNodeItemType, string | undefined>[]>
   ): void {
     throw new Error('Function not implemented.');
   },
-  onNodesChange: function (changes: NodeChange[]): void {
+  onNodesChange: function (_changes: NodeChange[]): void {
     throw new Error('Function not implemented.');
   },
   getNodes: function (): Node<FlowNodeItemType, string | undefined>[] {
@@ -123,10 +114,10 @@ export const WorkflowBufferDataContext = createContext<WorkflowDataContextType>(
     throw new Error('Function not implemented.');
   },
   edges: [],
-  setEdges: function (value: React.SetStateAction<Edge<any>[]>): void {
+  setEdges: function (_value: React.SetStateAction<Edge<any>[]>): void {
     throw new Error('Function not implemented.');
   },
-  onEdgesChange: function (changes: EdgeChange[]): void {
+  onEdgesChange: function (_changes: EdgeChange[]): void {
     throw new Error('Function not implemented.');
   },
   forbiddenSaveSnapshot: { current: false },
@@ -263,7 +254,6 @@ const WorkflowInitContextProvider = ({
   const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
   const runtimeTick = useContextSelector(WorkflowHostContext, (v) => v.runtimeTick);
   const overlaysRef = useContextSelector(WorkflowHostContext, (v) => v.overlaysRef);
-  const patchViewData = useContextSelector(WorkflowHostContext, (v) => v.patchViewData);
   // 问题状态归 host：投影时合并问题文案与标红焦点，画布数组不再是问题状态的写入方。
   const issuesRef = useContextSelector(WorkflowHostContext, (v) => v.issuesRef);
   const issueFocusRef = useContextSelector(WorkflowHostContext, (v) => v.issueFocusRef);
@@ -310,38 +300,20 @@ const WorkflowInitContextProvider = ({
     syncFromRuntime();
   }, [syncFromRuntime, runtime, runtimeTick]);
 
-  const dispatchCommands = useMemoizedFn((commands: WorkflowCommand[]) => {
-    if (commands.length === 0 || !isRuntimeActive()) return;
-    const res = runtime!.dispatch(commands);
-    if (!res.ok) {
-      console.warn('[workflow-runtime-cutover] command rejected:', res.error);
-      // 事务失败不产生事件，主动回滚乐观写入，保证画布与文档一致。
-      syncFromRuntime();
-    }
-  });
-
   const setNodes = useMemoizedFn((action: SetStateAction<CanvasNode[]>) => {
-    const prev = nodesRef.current;
-    const next = typeof action === 'function' ? action(prev) : action;
-    if (next === prev) return;
+    const current = nodesRef.current;
+    const next = typeof action === 'function' ? action(current) : action;
+    if (next === current) return;
     nodesRef.current = next;
     setNodesRaw(next);
-    if (!isRuntimeActive()) return;
-
-    const { commands, viewPatches } = diffCanvasNodes({ prev, next });
-    patchViewData(viewPatches);
-    dispatchCommands(commands);
   });
 
   const setEdges = useMemoizedFn((action: SetStateAction<Edge<any>[]>) => {
-    const prev = edgesRef.current;
-    const next = typeof action === 'function' ? action(prev) : action;
-    if (next === prev) return;
+    const current = edgesRef.current;
+    const next = typeof action === 'function' ? action(current) : action;
+    if (next === current) return;
     edgesRef.current = next;
     setEdgesRaw(next);
-    if (!isRuntimeActive()) return;
-
-    dispatchCommands(diffCanvasEdges({ prev, next, runtimeEdges: runtime!.getWorkflow().edges }));
   });
 
   const onNodesChange = useMemoizedFn((changes: NodeChange[]) => {
@@ -378,16 +350,6 @@ const WorkflowInitContextProvider = ({
       nodesRef.current = next;
       setNodesRaw(next);
     }
-    if (!isRuntimeActive()) return;
-
-    // 拖拽帧只留在本地；手势结束（dragging:false）后批量提交几何。
-    dispatchCommands([
-      ...translateNodeRemoveChanges(effectiveChanges),
-      ...translateDragEndChanges({
-        changes,
-        getPosition: (nodeId) => nodesRef.current.find((node) => node.id === nodeId)?.position
-      })
-    ]);
   });
 
   const onEdgesChange = useMemoizedFn((changes: EdgeChange[]) => {
@@ -397,19 +359,6 @@ const WorkflowInitContextProvider = ({
       edgesRef.current = next;
       setEdgesRaw(next);
     }
-    if (!isRuntimeActive()) return;
-
-    const removeIds = changes
-      .filter((change) => change.type === 'remove')
-      .map((change) => change.id);
-    if (removeIds.length === 0) return;
-    dispatchCommands(
-      translateEdgeRemoveChanges({
-        ids: removeIds,
-        localEdges: prev,
-        runtimeEdges: runtime!.getWorkflow().edges
-      })
-    );
   });
 
   const getNodes = useMemoizedFn(() => nodesRef.current);

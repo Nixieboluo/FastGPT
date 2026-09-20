@@ -61,9 +61,14 @@ import { useTranslation } from 'next-i18next';
 import React, { useCallback, useMemo, useState } from 'react';
 import { useReactFlow } from 'reactflow';
 import { useContextSelector } from 'use-context-selector';
+import { useNode, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/cutover/translate';
 
 import { WorkflowActionsContext } from '../../../context/workflowActionsContext';
-import { WorkflowBufferDataContext } from '../../../context/workflowInitContext';
+import {
+  WorkflowBufferDataContext,
+  WorkflowInitContext
+} from '../../../context/workflowInitContext';
 import { WorkflowUIContext } from '../../context/workflowUIContext';
 import { useDebug } from '../../hooks/useDebug';
 import { useNodeOutputValidity } from '../../hooks/useNodeOutputValidity';
@@ -142,6 +147,7 @@ const NodeCard = (props: Props) => {
   } = props;
 
   useNodeOutputValidity(nodeId);
+  const nodeHandle = useNode(nodeId);
 
   const { hasToolNode, getNodeById, foldedNodesMap } = useContextSelector(
     WorkflowBufferDataContext,
@@ -161,12 +167,7 @@ const NodeCard = (props: Props) => {
   );
 
   const handleDoubleClick = useCallback(() => {
-    onChangeNode({
-      nodeId,
-      type: 'attr',
-      key: 'isFolded',
-      value: false
-    });
+    nodeHandle?.setFolded(false);
     setPresentationMode(false);
 
     // Fit view to show this node in center
@@ -176,7 +177,7 @@ const NodeCard = (props: Props) => {
         padding: 0.3
       });
     }, 100);
-  }, [onChangeNode, setPresentationMode, fitView, nodeId]);
+  }, [nodeHandle, setPresentationMode, fitView, nodeId]);
 
   const showToolHandle = isTool && hasToolNode;
 
@@ -919,7 +920,9 @@ const MenuRender = React.memo(function MenuRender({
   const { t } = useTranslation();
   const { openDebugNode, DebugInputModal } = useDebug();
   const { setNodes, getNodeById } = useContextSelector(WorkflowBufferDataContext, (v) => v);
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const getRawNodeById = useContextSelector(WorkflowInitContext, (v) => v.getRawNodeById);
+  const workflow = useWorkflowAdapter();
+  const nodeHandle = useNode(nodeId);
   const { deleteElements } = useReactFlow();
 
   const { computedNewNodeName } = useWorkflowUtils();
@@ -930,79 +933,73 @@ const MenuRender = React.memo(function MenuRender({
 
   const onCopyNode = useCallback(
     (nodeId: string) => {
-      setNodes((state) => {
-        const node = state.find((node) => node.id === nodeId);
-        if (!node) return state;
-        const template: Omit<StoreNodeItemType, 'nodeId'> = {
+      const node = getRawNodeById(nodeId);
+      if (!node) return;
+      const template: Omit<StoreNodeItemType, 'nodeId'> = {
+        flowNodeType: node.data.flowNodeType,
+        parentNodeId: node.data.parentNodeId,
+        avatar: node.data.avatar,
+        avatarLinear: node.data.avatarLinear,
+        colorSchema: node.data.colorSchema,
+        name: computedNewNodeName({
+          templateName: node.data.name,
           flowNodeType: node.data.flowNodeType,
-          parentNodeId: node.data.parentNodeId,
-          avatar: node.data.avatar,
-          avatarLinear: node.data.avatarLinear,
-          colorSchema: node.data.colorSchema,
-          name: computedNewNodeName({
-            templateName: node.data.name,
-            flowNodeType: node.data.flowNodeType,
-            pluginId: node.data.pluginId
-          }),
-          intro: node.data.intro,
-          showStatus: node.data.showStatus,
+          pluginId: node.data.pluginId
+        }),
+        intro: node.data.intro,
+        showStatus: node.data.showStatus,
 
-          version: node.data.version,
-          versionLabel: node.data.versionLabel,
-          isLatestVersion: node.data.isLatestVersion,
+        version: node.data.version,
+        versionLabel: node.data.versionLabel,
+        isLatestVersion: node.data.isLatestVersion,
 
-          catchError: node.data.catchError,
-          inputs: node.data.inputs,
-          outputs: node.data.outputs,
+        catchError: node.data.catchError,
+        inputs: node.data.inputs,
+        outputs: node.data.outputs,
 
-          pluginId: node.data.pluginId,
-          source: node.data.source,
-          isFolder: node.data.isFolder,
-          pluginData: node.data.pluginData,
+        pluginId: node.data.pluginId,
+        source: node.data.source,
+        isFolder: node.data.isFolder,
+        pluginData: node.data.pluginData,
 
-          toolConfig: node.data.toolConfig,
+        toolConfig: node.data.toolConfig,
 
-          currentCost: node.data.currentCost,
-          systemKeyCost: node.data.systemKeyCost,
-          hasTokenFee: node.data.hasTokenFee,
-          hasSystemSecret: node.data.hasSystemSecret,
-          readmeUrl: node.data.readmeUrl
-        };
+        currentCost: node.data.currentCost,
+        systemKeyCost: node.data.systemKeyCost,
+        hasTokenFee: node.data.hasTokenFee,
+        hasSystemSecret: node.data.hasSystemSecret,
+        readmeUrl: node.data.readmeUrl
+      };
 
-        return [
-          ...state.map((item) => ({
-            ...item,
-            selected: false
-          })),
-          storeNode2FlowNode({
-            item: {
-              flowNodeType: template.flowNodeType,
-              avatar: template.avatar,
-              avatarLinear: template.avatarLinear,
-              colorSchema: template.colorSchema,
-              name: template.name,
-              intro: template.intro,
-              nodeId: getNanoid(),
-              position: { x: node.position.x + 200, y: node.position.y + 50 },
-              showStatus: template.showStatus,
-              pluginId: template.pluginId,
-              source: template.source,
-              inputs: template.inputs,
-              outputs: template.outputs,
-              version: template.version,
-              versionLabel: template.versionLabel,
-              isLatestVersion: template.isLatestVersion,
-              toolConfig: template.toolConfig,
-              catchError: template.catchError
-            },
-            selected: true,
-            parentNodeId: template.parentNodeId,
-            t
-          })
-        ];
+      const newNode = storeNode2FlowNode({
+        item: {
+          flowNodeType: template.flowNodeType,
+          avatar: template.avatar,
+          avatarLinear: template.avatarLinear,
+          colorSchema: template.colorSchema,
+          name: template.name,
+          intro: template.intro,
+          nodeId: getNanoid(),
+          position: { x: node.position.x + 200, y: node.position.y + 50 },
+          showStatus: template.showStatus,
+          pluginId: template.pluginId,
+          source: template.source,
+          inputs: template.inputs,
+          outputs: template.outputs,
+          version: template.version,
+          versionLabel: template.versionLabel,
+          isLatestVersion: template.isLatestVersion,
+          toolConfig: template.toolConfig,
+          catchError: template.catchError
+        },
+        selected: false,
+        parentNodeId: template.parentNodeId,
+        t
       });
+      setNodes((state) => state.map((item) => ({ ...item, selected: false })));
+      workflow.addNode(canvasNodeToStoreNode(newNode));
     },
-    [computedNewNodeName, setNodes, t]
+    [computedNewNodeName, getRawNodeById, setNodes, t, workflow]
   );
   const Render = useMemo(() => {
     const menuList = [
@@ -1014,12 +1011,7 @@ const MenuRender = React.memo(function MenuRender({
               label: isFolded ? t('workflow:Unfold') : t('workflow:Fold'),
               variant: 'whiteBase',
               onClick: () => {
-                onChangeNode({
-                  nodeId,
-                  type: 'attr',
-                  key: 'isFolded',
-                  value: !isFolded
-                });
+                nodeHandle?.setFolded(!isFolded);
               }
             }
           ]),
@@ -1101,7 +1093,7 @@ const MenuRender = React.memo(function MenuRender({
     onCopyNode,
     deleteElements,
     isFolded,
-    onChangeNode
+    nodeHandle
   ]);
 
   return Render;

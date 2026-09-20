@@ -8,6 +8,7 @@ import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
 import { getHandleId } from '@fastgpt/global/core/workflow/utils';
 import { Position } from 'reactflow';
 import { WorkflowActionsContext } from '../../context/workflowActionsContext';
+import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
 
 const IOTitle = ({
   text,
@@ -23,8 +24,8 @@ const IOTitle = ({
 } & StackProps) => {
   const { t } = useTranslation();
   const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
-  const onEdgesChange = useContextSelector(WorkflowBufferDataContext, (v) => v.onEdgesChange);
   const edges = useContextSelector(WorkflowBufferDataContext, (v) => v.edges);
+  const workflow = useWorkflowAdapter();
 
   const handleCatchErrorChange = (checked: boolean) => {
     if (!nodeId) return;
@@ -36,15 +37,19 @@ const IOTitle = ({
       value: checked
     });
 
-    // Delete edges
-    onEdgesChange([
-      {
-        type: 'remove',
-        id: edges.find(
-          (edge) => edge.sourceHandle === getHandleId(nodeId, 'source_catch', Position.Right)
-        )?.id!
-      }
-    ]);
+    const edge = edges.find(
+      (item) => item.sourceHandle === getHandleId(nodeId, 'source_catch', Position.Right)
+    );
+    if (edge) {
+      workflow.disconnectEdge({
+        edge: {
+          source: edge.source,
+          target: edge.target,
+          sourceHandle: edge.sourceHandle || '',
+          targetHandle: edge.targetHandle || ''
+        }
+      });
+    }
   };
 
   return (

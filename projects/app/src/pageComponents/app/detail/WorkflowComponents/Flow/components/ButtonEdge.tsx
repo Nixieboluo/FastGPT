@@ -15,6 +15,7 @@ import { WorkflowDebugContext } from '../../context/workflowDebugContext';
 import { WorkflowUIContext } from '../context/workflowUIContext';
 import { WorkflowSelectionContext } from '../context/workflowSelectionContext';
 import { getCustomStepPath } from '../utils/edge';
+import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
 
 export const CustomConnectionLine = ({
   fromX,
@@ -43,12 +44,13 @@ export const CustomConnectionLine = ({
 
 const ButtonEdge = (props: EdgeProps) => {
   const selectedNodesMap = useContextSelector(WorkflowSelectionContext, (v) => v.selectedNodesMap);
-  const { onEdgesChange, getNodeById, foldedNodesMap, edges, getNodes } = useContextSelector(
+  const { getNodeById, foldedNodesMap, edges, getNodes } = useContextSelector(
     WorkflowBufferDataContext,
     (v) => v
   );
   const workflowDebugData = useContextSelector(WorkflowDebugContext, (v) => v.workflowDebugData);
   const hoverEdgeId = useContextSelector(WorkflowUIContext, (v) => v.hoverEdgeId);
+  const workflow = useWorkflowAdapter();
 
   const {
     id,
@@ -113,14 +115,18 @@ const ButtonEdge = (props: EdgeProps) => {
 
   const onDelConnect = useCallback(
     (id: string) => {
-      onEdgesChange([
-        {
-          type: 'remove',
-          id
+      const edge = edges.find((item) => item.id === id);
+      if (!edge) return;
+      workflow.disconnectEdge({
+        edge: {
+          source: edge.source,
+          target: edge.target,
+          sourceHandle: edge.sourceHandle || '',
+          targetHandle: edge.targetHandle || ''
         }
-      ]);
+      });
     },
-    [onEdgesChange]
+    [edges, workflow]
   );
 
   // Selected edge or source/target node selected

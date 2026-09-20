@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { useSize } from 'ahooks';
 import { useContextSelector } from 'use-context-selector';
 import {
   ArrayTypeMap,
@@ -7,10 +6,6 @@ import {
   VARIABLE_NODE_ID,
   WorkflowIOValueTypeEnum
 } from '@fastgpt/global/core/workflow/constants';
-import {
-  Input_Template_Children_Node_List,
-  Input_Template_NESTED_NODE_OFFSET
-} from '@fastgpt/global/core/workflow/template/input';
 import { isValidArrayReferenceValue } from '@fastgpt/global/core/workflow/utils';
 import { type ReferenceArrayValueType } from '@fastgpt/global/core/workflow/type/io';
 import { type FlowNodeInputItemType } from '@fastgpt/global/core/workflow/type/io';
@@ -40,17 +35,12 @@ export const useNestedNode = ({
   inputs,
   arrayInputKey = NodeInputKeyEnum.nestedInputArray
 }: UseNestedNodeParams): UseNestedNodeResult => {
-  const { getNodeById, nodeIds, childNodeIds } = useContextSelector(
-    WorkflowBufferDataContext,
-    (v) => {
-      return {
-        getNodeById: v.getNodeById,
-        nodeIds: v.nodeIds,
-        childNodeIds: v.childrenNodeIdListMap[nodeId],
-        getNodeList: v.getNodeList
-      };
-    }
-  );
+  const { getNodeById, nodeIds } = useContextSelector(WorkflowBufferDataContext, (v) => {
+    return {
+      getNodeById: v.getNodeById,
+      nodeIds: v.nodeIds
+    };
+  });
   const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
 
@@ -65,10 +55,7 @@ export const useNestedNode = ({
       ),
       nestedInputArray: arrayInputKey
         ? inputs.find((input) => input.key === arrayInputKey)
-        : undefined,
-      loopNodeInputHeight: inputs.find(
-        (input) => input.key === NodeInputKeyEnum.nestedNodeInputHeight
-      )
+        : undefined
     };
   }, [inputs, arrayInputKey]);
 
@@ -78,9 +65,6 @@ export const useNestedNode = ({
   );
   const nodeWidth = computedResult.nodeWidth;
   const nodeHeight = computedResult.nodeHeight;
-  const loopNodeInputHeight =
-    computedResult.loopNodeInputHeight ?? Input_Template_NESTED_NODE_OFFSET;
-
   // ── 2. Infer array valueType from referenced output ─────────────────────────
   const newValueType = useMemo(() => {
     if (!nestedInputArray) return WorkflowIOValueTypeEnum.arrayAny;
@@ -120,38 +104,10 @@ export const useNestedNode = ({
     });
   }, [nestedInputArray, newValueType, nodeId, onChangeNode, arrayInputKey]);
 
-  // ── 3. Maintain childrenNodeIdList ─────────────────────────────────────────
-  useEffect(() => {
-    onChangeNode({
-      nodeId,
-      type: 'updateInput',
-      key: NodeInputKeyEnum.childrenNodeIdList,
-      value: {
-        ...Input_Template_Children_Node_List,
-        value: childNodeIds
-      }
-    });
-  }, [childNodeIds, nodeId, onChangeNode]);
-
-  // ── 4. Measure input-box height and sync to document ───────────────────────
-  // 容器外框尺寸不再回写文档（已接受的过渡回归，见 Flow/utils/layout.ts 说明），
-  // 这里只把头部输入区实测高度同步给容器节点。
+  // ── 3. Measure input-box height locally ────────────────────────────────────
+  // childrenNodeIdList 由 Runtime 在结构命令中维护；尺寸字段属于画布状态，
+  // 不在节点挂载时回写文档，避免打开工作流凭空生成历史。
   const inputBoxRef = useRef<HTMLDivElement>(null);
-  const size = useSize(inputBoxRef);
-  useEffect(() => {
-    if (!size?.height) return;
-
-    onChangeNode({
-      nodeId,
-      type: 'replaceInput',
-      key: NodeInputKeyEnum.nestedNodeInputHeight,
-      value: {
-        ...loopNodeInputHeight,
-        value: size.height
-      }
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [size?.height]);
 
   return { nodeWidth, nodeHeight, inputBoxRef };
 };
