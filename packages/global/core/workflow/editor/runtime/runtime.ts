@@ -409,47 +409,70 @@ export const createWorkflowEditor = (
     return { ok: true, change };
   };
 
-  /** 以 undo/redo 来源重放 history，不新增 history entry。 */
-  const replayHistory = (direction: 'undo' | 'redo'): WorkflowDispatchResult => {
+  /**
+   * 以 undo/redo 来源重放 history，不新增 history entry。
+   *
+   * count > 1 服务于版本列表跳转：连续回放多条记录，中间态一律不发布，订阅者只看到一条合并事件，
+   * 因此回放过程不会被画布当成新编辑写回（写回会推入新记录并清空 redo 分支）。
+   * 可用记录不足 count 时按实际条数回放并成功返回，目标版本是否命中由调用方按 Content Revision 校验。
+   */
+  const replayHistory = (direction: 'undo' | 'redo', count = 1): WorkflowDispatchResult => {
     if (disposed)
       return { ok: false, error: getError('disposed', 'Workflow editor has been disposed') };
-    const entry = history.take(direction);
-    if (!entry) return { ok: false, error: getError('invalid_command', `Nothing to ${direction}`) };
-    const originalChange = entry.change;
+    const steps = Number.isFinite(count) ? Math.max(1, Math.trunc(count)) : 1;
+    // Issue 差异按整批计算：批量回放对订阅者是一次变化，中间态的 issue 抖动没有意义。
     const previousIssues = issue.getIssuesByNode();
-    workflowVersion++;
-    // Content Revision 由 history 记录恢复，因此撤销回已保存内容会自然回到干净状态。
-    contentRevision =
-      direction === 'undo' ? entry.beforeContentRevision : entry.afterContentRevision;
-    nodeView.applyHistoryViews(entry.viewChanges, direction);
-    if (entry.kind === 'checkpoint') {
-      document.setDocument(direction === 'undo' ? entry.before : entry.after);
-      document.rebuildNodeIndex();
-      semanticVersion++;
-      document.rebuildGraphIndex();
-      document.rebuildWorkflowStartIds();
-      reference.clearFieldStatusCache();
-      issue.rebuildIssues();
-      reference.rebuildGraph();
-      fieldSnapshotCache.clear();
+    const meta = createMutationMeta('geometry');
+    let applied = 0;
+
+    /** 把一条 history 记录携带的变更集合并入整批 meta；replay 只借 meta 组装事件，视图值已由记录恢复。 */
+    const mergeReplayedChange = (originalChange: WorkflowChange) => {
+      originalChange.changedRecords.nodeIds.forEach((nodeId) => meta.changedNodeIds.add(nodeId));
+      originalChange.changedRecords.nodeViewIds.forEach((nodeId) =>
+        meta.nodeViewChanges.set(nodeId, {})
+      );
+      originalChange.changedRecords.fieldIds.forEach((field) =>
+        addFieldIdentity(meta.changedFieldIds, field)
+      );
+      originalChange.changedRecords.edgeIds.forEach((edgeId) => meta.changedEdgeIds.add(edgeId));
+      meta.chatConfigChanged = meta.chatConfigChanged || originalChange.changedRecords.chatConfig;
+      originalChange.affectedRecords.nodeIds.forEach((nodeId) => meta.affectedNodeIds.add(nodeId));
+      originalChange.affectedRecords.fieldIds.forEach((field) =>
+        addFieldIdentity(meta.affectedFieldIds, field)
+      );
+      meta.structureChanged = meta.structureChanged || originalChange.affectedRecords.structure;
+    };
+
+    for (let step = 0; step < steps; step++) {
+      const entry = history.take(direction);
+      if (!entry) break;
+      applied++;
+      workflowVersion++;
+      // Content Revision 由 history 记录恢复，因此撤销回已保存内容会自然回到干净状态。
+      contentRevision =
+        direction === 'undo' ? entry.beforeContentRevision : entry.afterContentRevision;
+      nodeView.applyHistoryViews(entry.viewChanges, direction);
+      if (entry.kind === 'checkpoint') {
+        document.setDocument(direction === 'undo' ? entry.before : entry.after);
+        document.rebuildNodeIndex();
+        semanticVersion++;
+        document.rebuildGraphIndex();
+        document.rebuildWorkflowStartIds();
+        reference.clearFieldStatusCache();
+        issue.rebuildIssues();
+        reference.rebuildGraph();
+        fieldSnapshotCache.clear();
+      }
+      // 事件粒度取最宽的一条：混入语义记录后不能再按 geometry 通知，否则数据订阅者收不到刷新。
+      if (entry.change.kind === 'replace') meta.kind = 'replace';
+      else if (meta.kind !== 'replace' && entry.change.kind === 'semantic') meta.kind = 'semantic';
+      mergeReplayedChange(entry.change);
     }
-    const meta = createMutationMeta(originalChange.kind);
-    originalChange.changedRecords.nodeIds.forEach((nodeId) => meta.changedNodeIds.add(nodeId));
-    // replay 只借 meta 组装事件；视图值已经由 history 记录恢复，这里不需要前后值。
-    originalChange.changedRecords.nodeViewIds.forEach((nodeId) =>
-      meta.nodeViewChanges.set(nodeId, {})
-    );
-    originalChange.changedRecords.fieldIds.forEach((field) =>
-      addFieldIdentity(meta.changedFieldIds, field)
-    );
-    originalChange.changedRecords.edgeIds.forEach((edgeId) => meta.changedEdgeIds.add(edgeId));
-    meta.chatConfigChanged = originalChange.changedRecords.chatConfig;
-    originalChange.affectedRecords.nodeIds.forEach((nodeId) => meta.affectedNodeIds.add(nodeId));
-    originalChange.affectedRecords.fieldIds.forEach((field) =>
-      addFieldIdentity(meta.affectedFieldIds, field)
-    );
-    meta.structureChanged = originalChange.affectedRecords.structure;
-    if (originalChange.kind === 'replace') {
+
+    if (applied === 0)
+      return { ok: false, error: getError('invalid_command', `Nothing to ${direction}`) };
+
+    if (meta.kind === 'replace') {
       meta.structureChanged = true;
     } else {
       issue.addChangedIssueRecords(
@@ -496,6 +519,7 @@ export const createWorkflowEditor = (
     },
     getChangeLog: () => freezeValue([...changeLog]) as readonly WorkflowChange[],
     dispatch,
+    replayHistory,
     subscribe: (listener) => {
       if (disposed) return () => undefined;
       listeners.add(listener);

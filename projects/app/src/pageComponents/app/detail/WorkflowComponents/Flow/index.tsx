@@ -24,6 +24,7 @@ import { WorkflowUIContext } from './context/workflowUIContext';
 import { WorkflowSelectionProvider } from './context/workflowSelectionContext';
 import MyTooltip from '@fastgpt/web/components/common/MyTooltip';
 import { useTranslation } from 'next-i18next';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 
 const NodeSimple = dynamic(() => import('./nodes/NodeSimple'));
 const NodeStopTool = React.memo((props: NodeProps<FlowNodeItemType>) => (
@@ -75,7 +76,7 @@ const edgeTypes = {
   [EDGE_TYPE]: ButtonEdge
 };
 
-const Workflow = () => {
+const WorkflowCanvas = () => {
   const { t } = useTranslation();
   const nodes = useContextSelector(WorkflowInitContext, (v) => v.nodes);
   const edges = useContextSelector(WorkflowBufferDataContext, (v) => v.edges);
@@ -232,9 +233,17 @@ const Workflow = () => {
  * 覆盖 useWorkflow 与节点/边渲染器（Handle、ButtonEdge）等全部消费者。
  */
 const Flow = () => (
-  <WorkflowSelectionProvider>
-    <Workflow />
-  </WorkflowSelectionProvider>
+  <WorkflowRuntimeGate>
+    <WorkflowSelectionProvider>
+      <WorkflowCanvas />
+    </WorkflowSelectionProvider>
+  </WorkflowRuntimeGate>
 );
+
+/** Runtime hydrate 前保留数据层初始化，但延迟挂载会调用 adapter hooks 的画布子树。 */
+const WorkflowRuntimeGate = ({ children }: { children: React.ReactNode }) => {
+  const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
+  return runtime ? children : null;
+};
 
 export default React.memo(Flow);

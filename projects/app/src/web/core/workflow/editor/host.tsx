@@ -314,12 +314,12 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
 
       const targetIndex = versionsRef.current.indexOf(entry);
       if (targetIndex >= 0 && entry.contentRevision !== undefined) {
-        while (current.getSavepoint().contentRevision !== entry.contentRevision) {
-          const liveIndex = versionsRef.current.findIndex((item) => item.live);
-          if (liveIndex < 0) return false;
-          const res = targetIndex > liveIndex ? current.undo() : current.redo();
-          if (!res.ok) return false;
-        }
+        const liveIndex = versionsRef.current.findIndex((item) => item.live);
+        if (liveIndex < 0) return false;
+        const direction = targetIndex > liveIndex ? 'undo' : 'redo';
+        const res = current.replayHistory(direction, Math.abs(targetIndex - liveIndex));
+        if (!res.ok || current.getSavepoint().contentRevision !== entry.contentRevision)
+          return false;
       } else {
         // 云端版本不属于本地 Runtime History，只抑制“My Edit”新增记录。
         suppressVersionHistoryRef.current = true;

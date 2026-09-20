@@ -240,6 +240,8 @@ export type WorkflowRuntimePort = {
   subscribe: (listener: (change: WorkflowChange) => void) => () => void;
   undo: () => WorkflowDispatchResult;
   redo: () => WorkflowDispatchResult;
+  /** 一次性回放多条相邻 history，最终状态只发布一条 change。 */
+  replayHistory: (direction: 'undo' | 'redo', count: number) => WorkflowDispatchResult;
   /**
    * 回填保存点。host 在发起保存请求前读取内容版本，请求成功后用该版本调用本方法，
    * 失败不调用；请求期间产生的新编辑因此仍然算未保存。

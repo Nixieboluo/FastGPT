@@ -1,4 +1,5 @@
 import OptimizerPopover from '@/components/common/PromptEditor/OptimizerPopover';
+import { Box } from '@chakra-ui/react';
 import InputRender from '@/components/core/app/formRender';
 import { InputTypeEnum } from '@/components/core/app/formRender/constant';
 import { nodeInputTypeToInputType } from '@/components/core/app/formRender/utils';
@@ -115,16 +116,20 @@ const CommonInputForm = ({ item, nodeId }: RenderInputProps) => {
   );
 
   return (
-    <InputRender
-      inputType={inputType}
-      value={item.value}
-      onChange={handleChange}
-      variables={[...(editorVariables || []), ...(externalVariables || [])]}
-      variableLabels={editorVariables}
-      ExtensionPopover={canOptimizePrompt ? [OptimizerPopverComponent] : undefined}
-      menuPlacement={menuPlacement}
-      {...item}
-    />
+    // 字段撤销由 Runtime 统一托管：打上标记后画布快捷键在捕获阶段接管，
+    // 不再让编辑器本地历史（Lexical 按秒合并连续输入）与逐条记录的工作流历史互相覆盖。
+    <Box data-workflow-history="external">
+      <InputRender
+        inputType={inputType}
+        value={item.value}
+        onChange={handleChange}
+        variables={[...(editorVariables || []), ...(externalVariables || [])]}
+        variableLabels={editorVariables}
+        ExtensionPopover={canOptimizePrompt ? [OptimizerPopverComponent] : undefined}
+        menuPlacement={menuPlacement}
+        {...item}
+      />
+    </Box>
   );
 };
 

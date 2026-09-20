@@ -540,6 +540,38 @@ describe('workflow editor runtime modules', () => {
     expect(editor.getSavepoint()).toEqual(afterEdit);
   });
 
+  it('keeps the final value when undoing and redoing consecutive field updates', () => {
+    const editor = createRuntime();
+    const query = { nodeId: 'answer', fieldKey: NodeInputKeyEnum.answerText };
+
+    for (const value of ['1', '12', '123', '1234', '12345', '123456', '1234566']) {
+      editor.dispatch({ type: 'updateField', ...query, value });
+    }
+
+    editor.undo();
+    expect(editor.getField(query)?.input?.value).toBe('123456');
+    editor.redo();
+    expect(editor.getField(query)?.input?.value).toBe('1234566');
+  });
+
+  it('publishes one final change for multi-entry history replay', () => {
+    const editor = createRuntime();
+    const changes: WorkflowChange[] = [];
+    editor.subscribe((change) => changes.push(change));
+
+    editor.dispatch({ type: 'updateNode', nodeId: 'answer', patch: { name: 'One' } });
+    editor.dispatch({ type: 'updateNode', nodeId: 'answer', patch: { name: 'Two' } });
+    editor.dispatch({ type: 'updateNode', nodeId: 'answer', patch: { name: 'Three' } });
+    changes.length = 0;
+
+    const result = editor.replayHistory('undo', 3);
+
+    expect(result.ok).toBe(true);
+    expect(editor.getNode('answer')?.name).toBe('Answer');
+    expect(changes).toHaveLength(1);
+    expect(changes[0]?.origin).toBe('undo');
+  });
+
   it('keeps edits made during a save request unsaved', () => {
     const editor = createRuntime();
     editor.dispatch({ type: 'updateNode', nodeId: 'answer', patch: { name: 'Saved' } });
