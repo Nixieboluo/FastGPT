@@ -21,12 +21,8 @@ import MyIcon from '@fastgpt/web/components/common/Icon';
 import Reference from './Reference';
 import ValueTypeLabel from '../../ValueTypeLabel';
 import { useContextSelector } from 'use-context-selector';
-import {
-  WorkflowBufferDataContext,
-  WorkflowNodeDataContext
-} from '../../../../../context/workflowInitContext';
+import { WorkflowBufferDataContext } from '../../../../../context/workflowInitContext';
 import { getWorkflowGlobalVariables } from '@/web/core/workflow/utils';
-import { useCreation } from 'ahooks';
 import { AppContext } from '@/pageComponents/app/detail/context';
 import QuestionTip from '@fastgpt/web/components/common/MyTooltip/QuestionTip';
 import FormLabel from '@fastgpt/web/components/common/MyBox/FormLabel';
