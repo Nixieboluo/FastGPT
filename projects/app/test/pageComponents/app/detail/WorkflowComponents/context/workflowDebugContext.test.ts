@@ -1,17 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('@/pageComponents/app/detail/WorkflowComponents/context/workflowInitContext', async () => {
+vi.mock('@/web/core/workflow/editor/host', async () => {
   const { createContext } = await import('use-context-selector');
-  return { WorkflowBufferDataContext: createContext({}) };
+  return { WorkflowHostContext: createContext({}) };
 });
-
-vi.mock(
-  '@/pageComponents/app/detail/WorkflowComponents/context/workflowActionsContext',
-  async () => {
-    const { createContext } = await import('use-context-selector');
-    return { WorkflowActionsContext: createContext({}) };
-  }
-);
 
 vi.mock('@/pageComponents/app/detail/context', async () => {
   const { createContext } = await import('use-context-selector');

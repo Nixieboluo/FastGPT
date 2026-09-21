@@ -4,7 +4,7 @@ import { isNestedParentNodeType } from '@fastgpt/global/core/workflow/node/const
 import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import { useCopyData } from '@fastgpt/web/hooks/useCopyData';
 import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
-import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/cutover/translate';
+import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/canvas';
 import { useKeyPress as useKeyPressEffect } from 'ahooks';
 import { useTranslation } from 'next-i18next';
 import { useCallback } from 'react';

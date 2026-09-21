@@ -71,11 +71,6 @@ vi.mock('use-context-selector', () => ({
 vi.mock('@/pageComponents/app/detail/context', () => ({
   AppContext: { value: { appDetail: { _id: 'current-app' } } }
 }));
-vi.mock('@/pageComponents/app/detail/WorkflowComponents/context/workflowInitContext', () => ({
-  WorkflowBufferDataContext: {
-    value: { basicNodeTemplates: [], getNodeList: () => [], nodeAmount: 0 }
-  }
-}));
 // nodeAmount 现改从文档图 reader 读取；本测试只关心分页路由，桩掉 reader 即可，
 // 同时避免引入 editor/host 模块链（上面的 react mock 未提供 createContext）。
 vi.mock(

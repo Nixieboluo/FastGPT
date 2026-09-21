@@ -1,6 +1,4 @@
 import React from 'react';
-import { appSystemModuleTemplates } from '@fastgpt/global/core/workflow/template/constants';
-
 import { useContextSelector } from 'use-context-selector';
 import { AppContext, TabEnum } from '../context';
 import { useMount } from 'ahooks';
@@ -9,10 +7,12 @@ import { Box, Flex } from '@chakra-ui/react';
 import { workflowBoxStyles } from '../constants';
 import dynamic from 'next/dynamic';
 import { cloneDeep } from 'lodash-es';
+import { useTranslation } from 'next-i18next';
+import { materializeWorkflow } from '@/web/core/workflow/editor/codec';
 
 import Flow from '../WorkflowComponents/Flow';
 import { ReactFlowCustomProvider } from '../WorkflowComponents/context/index';
-import { WorkflowUtilsContext } from '../WorkflowComponents/context/workflowUtilsContext';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { WorkflowUIProvider } from '../WorkflowComponents/Flow/context/workflowUIContext';
 import { WorkflowModalProvider } from '../WorkflowComponents/Flow/context/workflowModalContext';
 
@@ -20,18 +20,22 @@ const Logs = dynamic(() => import('../Logs/index'));
 const PublishChannel = dynamic(() => import('../Publish'));
 
 const WorkflowEdit = () => {
+  const { t } = useTranslation();
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
   const currentTab = useContextSelector(AppContext, (v) => v.currentTab);
 
-  const initData = useContextSelector(WorkflowUtilsContext, (v) => v.initData);
+  const initRuntime = useContextSelector(WorkflowHostContext, (v) => v.initRuntime);
 
   useMount(() => {
-    initData(
-      cloneDeep({
-        nodes: appDetail.modules || [],
-        edges: appDetail.edges || []
-      }),
-      true
+    initRuntime(
+      materializeWorkflow({
+        input: {
+          nodes: cloneDeep(appDetail.modules || []),
+          edges: cloneDeep(appDetail.edges || [])
+        },
+        chatConfig: appDetail.chatConfig,
+        t
+      })
     );
   });
 
@@ -70,7 +74,7 @@ const WorkflowEdit = () => {
 
 const Render = () => {
   return (
-    <ReactFlowCustomProvider templates={appSystemModuleTemplates}>
+    <ReactFlowCustomProvider>
       <WorkflowEdit />
     </ReactFlowCustomProvider>
   );

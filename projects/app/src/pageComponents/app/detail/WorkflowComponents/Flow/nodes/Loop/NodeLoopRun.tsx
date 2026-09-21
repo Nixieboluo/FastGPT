@@ -30,7 +30,7 @@ import {
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
 import { i18nT } from '@fastgpt/global/common/i18n/utils';
 import { useNode, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
-import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/cutover/translate';
+import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/canvas';
 import { useWorkflowDocument } from '../render/useWorkflowDocument';
 import isEqual from 'lodash-es/isEqual';
 

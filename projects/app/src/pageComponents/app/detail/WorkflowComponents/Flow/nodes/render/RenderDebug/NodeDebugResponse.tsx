@@ -17,7 +17,7 @@ import {
 } from '@fastgpt/global/core/chat/type';
 import { ChatRoleEnum } from '@fastgpt/global/core/chat/constants';
 import PopoverConfirm from '@fastgpt/web/components/common/MyPopover/PopoverConfirm';
-import { WorkflowActionsContext } from '../../../../context/workflowActionsContext';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { WorkflowDebugContext } from '../../../../context/workflowDebugContext';
 
 type NodeDebugResponseProps = {
@@ -72,7 +72,7 @@ const NodeDebugResponse = ({ nodeId, debugResult }: NodeDebugResponseProps) => {
     WorkflowDebugContext,
     (v) => v
   );
-  const { onChangeNode } = useContextSelector(WorkflowActionsContext, (v) => v);
+  const patchViewData = useContextSelector(WorkflowHostContext, (v) => v.patchViewData);
 
   const statusData = {
     running: {
@@ -151,15 +151,12 @@ const NodeDebugResponse = ({ nodeId, debugResult }: NodeDebugResponseProps) => {
             cursor={'pointer'}
             fontSize={'sm'}
             onClick={() =>
-              onChangeNode({
-                nodeId,
-                type: 'attr',
-                key: 'debugResult',
-                value: {
-                  ...debugResult,
-                  showResult: !debugResult.showResult
+              patchViewData([
+                {
+                  nodeId,
+                  values: { debugResult: { ...debugResult, showResult: !debugResult.showResult } }
                 }
-              })
+              ])
             }
           >
             {debugResult.showResult

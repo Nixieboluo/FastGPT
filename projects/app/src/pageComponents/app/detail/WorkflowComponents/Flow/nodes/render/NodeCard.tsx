@@ -64,10 +64,7 @@ import { useContextSelector } from 'use-context-selector';
 import { omit } from 'lodash-es';
 import { migrateToolInputConfig } from '@fastgpt/global/core/app/formEdit/utils';
 import { useField, useNode, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
-import {
-  canvasNodeToStoreNode,
-  VIEW_DATA_KEYS
-} from '@/web/core/workflow/editor/cutover/translate';
+import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/canvas';
 
 import { WorkflowUIContext } from '../../context/workflowUIContext';
 import { useDebug } from '../../hooks/useDebug';
@@ -857,7 +854,7 @@ const NodeVersion = React.memo(function NodeVersion({ node }: { node: FlowNodeIt
                   migrateToolInputConfig({ input, sourceInput: sourceInputMap.get(input.key) })
                 )
               },
-              VIEW_DATA_KEYS as unknown as string[]
+              ['debugResult', 'searchedText', 'courseUrl', 'readmeUrl', 'userGuide']
             ) as Partial<DeepReadonly<WorkflowNodeData>>
           );
         }

@@ -31,9 +31,16 @@ vi.mock('@/web/core/workflow/modelData', () => ({
   getWorkflowModelDetails: vi.fn(async () => [])
 }));
 vi.mock('@/web/core/workflow/workflowCheck', () => ({
-  checkWorkflowNodeIssues: vi.fn(() => ({}))
+  checkWorkflowNodeIssues: vi.fn(() => ({})),
+  checkWorkflowBeforeRunOrPublish: vi.fn(() => ({
+    issueMap: {},
+    hasError: false,
+    firstErrorNodeId: undefined,
+    errorNodeIds: [],
+    chatConfigIssues: []
+  }))
 }));
-vi.mock('@/web/core/workflow/editor/cutover/projection', () => ({
+vi.mock('@/web/core/workflow/editor/projection', () => ({
   createProjectionCache: () => ({}),
   projectRuntimeCanvas: () => ({ nodes: [], edges: [] })
 }));
@@ -126,6 +133,9 @@ describe('WorkflowHostProvider version history', () => {
     const liveVersions = host!.versions.filter((item) => item.live);
     expect(liveVersions).toHaveLength(1);
     expect(liveVersions[0]?.content).toBe(initialVersion.content);
+
+    const serialized = await host!.serializeWorkflowAndCheck(true);
+    expect(serialized).toEqual(expect.objectContaining({ nodes: [], edges: [] }));
 
     act(() => root.unmount());
   });

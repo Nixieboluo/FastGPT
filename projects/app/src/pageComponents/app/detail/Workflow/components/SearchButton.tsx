@@ -8,7 +8,7 @@ import MyIcon from '@fastgpt/web/components/common/Icon';
 import MyTooltip from '@fastgpt/web/components/common/MyTooltip';
 import { useSystem } from '@fastgpt/web/hooks/useSystem';
 import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
-import type { ViewOverlayPatch } from '@/web/core/workflow/editor/cutover/translate';
+import type { ViewOverlayPatch } from '@/web/core/workflow/editor/canvas';
 import { useWorkflowSnapshotGetter } from '../../WorkflowComponents/Flow/nodes/render/useWorkflowDocument';
 
 const SearchButton = (props: ButtonProps) => {

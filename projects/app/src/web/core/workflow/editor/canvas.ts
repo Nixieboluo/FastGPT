@@ -1,5 +1,4 @@
-// 迁移期共享的画布类型、overlay 与投影边编码。
-// 结构/几何 diff 已迁到调用点 adapter；本文件随收尾票删除。
+// ReactFlow projection helpers shared by the renderer and adapter boundaries.
 import { omit } from 'lodash-es';
 import type { Node } from 'reactflow';
 import { StoreNodeItemTypeSchema } from '@fastgpt/global/core/workflow/type/node';
@@ -13,14 +12,7 @@ export type CanvasNode = Node<FlowNodeItemType, string | undefined>;
  * 归入视图字段避免 updateNode 时被 store schema 丢弃。
  * isError/workflowCheckIssues 不在此列：问题状态由 host 问题存储持有，投影时直接合并。
  */
-export const VIEW_DATA_KEYS = [
-  'debugResult',
-  'searchedText',
-  'courseUrl',
-  'readmeUrl',
-  'userGuide'
-] as const;
-export type ViewDataKey = (typeof VIEW_DATA_KEYS)[number];
+export type ViewDataKey = 'debugResult' | 'searchedText' | 'courseUrl' | 'readmeUrl' | 'userGuide';
 
 /** 单个节点的视图 overlay 变更。 */
 export type ViewOverlayPatch = {
@@ -31,7 +23,7 @@ export type ViewOverlayPatch = {
 /** 画布节点 -> 严格 store 节点：剥离视图字段与模板专用字段，保留 position/isFolded。 */
 export const canvasNodeToStoreNode = (node: CanvasNode): StoreNodeItemType =>
   StoreNodeItemTypeSchema.parse({
-    ...omit(node.data, VIEW_DATA_KEYS as unknown as string[]),
+    ...omit(node.data, ['debugResult', 'searchedText', 'courseUrl', 'readmeUrl', 'userGuide']),
     position: node.position
   });
 

@@ -1,5 +1,4 @@
 import React from 'react';
-import { pluginSystemModuleTemplates } from '@fastgpt/global/core/workflow/template/constants';
 import { ReactFlowCustomProvider } from '../WorkflowComponents/context';
 import { useContextSelector } from 'use-context-selector';
 import { AppContext, TabEnum } from '../context';
@@ -9,9 +8,11 @@ import { Flex } from '@chakra-ui/react';
 import { workflowBoxStyles } from '../constants';
 import dynamic from 'next/dynamic';
 import { cloneDeep } from 'lodash-es';
+import { useTranslation } from 'next-i18next';
+import { materializeWorkflow } from '@/web/core/workflow/editor/codec';
 
 import Flow from '../WorkflowComponents/Flow';
-import { WorkflowUtilsContext } from '../WorkflowComponents/context/workflowUtilsContext';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { WorkflowUIProvider } from '../WorkflowComponents/Flow/context/workflowUIContext';
 import { WorkflowModalProvider } from '../WorkflowComponents/Flow/context/workflowModalContext';
 
@@ -19,17 +20,21 @@ const Logs = dynamic(() => import('../Logs/index'));
 const PublishChannel = dynamic(() => import('../Publish'));
 
 const WorkflowEdit = () => {
+  const { t } = useTranslation();
   const { appDetail, currentTab } = useContextSelector(AppContext, (e) => e);
 
-  const initData = useContextSelector(WorkflowUtilsContext, (v) => v.initData);
+  const initRuntime = useContextSelector(WorkflowHostContext, (v) => v.initRuntime);
 
   useMount(() => {
-    initData(
-      cloneDeep({
-        nodes: appDetail.modules || [],
-        edges: appDetail.edges || []
-      }),
-      true
+    initRuntime(
+      materializeWorkflow({
+        input: {
+          nodes: cloneDeep(appDetail.modules || []),
+          edges: cloneDeep(appDetail.edges || [])
+        },
+        chatConfig: appDetail.chatConfig,
+        t
+      })
     );
   });
 
@@ -66,7 +71,7 @@ const WorkflowEdit = () => {
 
 const Render = () => {
   return (
-    <ReactFlowCustomProvider templates={pluginSystemModuleTemplates}>
+    <ReactFlowCustomProvider>
       <WorkflowEdit />
     </ReactFlowCustomProvider>
   );

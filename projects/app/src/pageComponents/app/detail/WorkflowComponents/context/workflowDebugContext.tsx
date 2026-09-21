@@ -2,7 +2,7 @@
 
 import React, { useCallback, useState } from 'react';
 import { createContext, useContextSelector } from 'use-context-selector';
-import { WorkflowBufferDataContext } from './workflowInitContext';
+import { WorkflowCanvasContext } from '../Flow/context/workflowCanvasContext';
 import { AppContext } from '@/pageComponents/app/detail/context';
 import { postWorkflowDebug } from '@/web/core/workflow/api';
 import { formatTime2YMDHMW } from '@fastgpt/global/common/string/time';
@@ -13,7 +13,7 @@ import type { RuntimeEdgeItemType } from '@fastgpt/global/core/workflow/type/edg
 import type { ChatItemMiniType, UserChatItemValueItemType } from '@fastgpt/global/core/chat/type';
 import type { WorkflowDebugResponse } from '@fastgpt/service/core/workflow/dispatch/type';
 import type { WorkflowInteractiveResponseType } from '@fastgpt/global/core/workflow/template/system/interactive/type';
-import { WorkflowActionsContext } from './workflowActionsContext';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
 import { WorkflowRuntimeContextProvider } from '@/components/core/chat/ChatContainer/context/workflowRuntimeContext';
 import { ChatSourceTypeEnum } from '@fastgpt/global/core/chat/constants';
@@ -160,8 +160,8 @@ export const WorkflowDebugContext = createContext<WorkflowDebugContextValue>({
 
 export const WorkflowDebugProvider = ({ children }: { children: React.ReactNode }) => {
   // 获取依赖的 context
-  const { setNodes } = useContextSelector(WorkflowBufferDataContext, (v) => v);
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const { setNodes, getNodes } = useContextSelector(WorkflowCanvasContext, (v) => v);
+  const patchViewData = useContextSelector(WorkflowHostContext, (v) => v.patchViewData);
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
   const appId = appDetail._id;
 
@@ -191,6 +191,12 @@ export const WorkflowDebugProvider = ({ children }: { children: React.ReactNode 
           }
         }))
       );
+      patchViewData(
+        getNodes().map((node) => ({
+          nodeId: node.data.nodeId,
+          values: { debugResult: undefined }
+        }))
+      );
 
       // 2. Set isEntry field and get entryNodes, and set running status
       const runtimeNodes = debugData.runtimeNodes.map((item) => ({
@@ -199,12 +205,7 @@ export const WorkflowDebugProvider = ({ children }: { children: React.ReactNode 
       }));
       const entryNodes = runtimeNodes.filter((item) => {
         if (item.isEntry) {
-          onChangeNode({
-            nodeId: item.nodeId,
-            type: 'attr',
-            key: 'debugResult',
-            value: defaultRunningStatus
-          });
+          patchViewData([{ nodeId: item.nodeId, values: { debugResult: defaultRunningStatus } }]);
           return true;
         }
       });
@@ -253,6 +254,20 @@ export const WorkflowDebugProvider = ({ children }: { children: React.ReactNode 
         );
 
         // 5. selected entry node and Update entry node debug result
+        patchViewData(
+          Object.entries(nodeResponses).map(([nodeId, result]) => ({
+            nodeId,
+            values: {
+              debugResult: {
+                status: result.type === 'run' ? 'success' : 'skipped',
+                response: result.response,
+                showResult: true,
+                isExpired: false,
+                interactiveResponse: result.interactiveResponse
+              }
+            }
+          }))
+        );
         setNodes((state) =>
           state.map((node) => {
             const isEntryNode = entryNodes.some((item) => item.nodeId === node.data.nodeId);
@@ -263,14 +278,7 @@ export const WorkflowDebugProvider = ({ children }: { children: React.ReactNode 
               ...node,
               selected: result.type === 'run' && isEntryNode,
               data: {
-                ...node.data,
-                debugResult: {
-                  status: result.type === 'run' ? 'success' : 'skipped',
-                  response: result.response,
-                  showResult: true,
-                  isExpired: false,
-                  interactiveResponse: result.interactiveResponse
-                }
+                ...node.data
               }
             };
           })
@@ -282,26 +290,33 @@ export const WorkflowDebugProvider = ({ children }: { children: React.ReactNode 
         // }
       } catch (error) {
         entryNodes.forEach((node) => {
-          onChangeNode({
-            nodeId: node.nodeId,
-            type: 'attr',
-            key: 'debugResult',
-            value: {
-              status: 'failed',
-              message: getErrText(error, 'Debug failed'),
-              showResult: true
+          patchViewData([
+            {
+              nodeId: node.nodeId,
+              values: {
+                debugResult: {
+                  status: 'failed',
+                  message: getErrText(error, 'Debug failed'),
+                  showResult: true
+                }
+              }
             }
-          });
+          ]);
         });
-        console.log(error);
       }
     },
-    [appId, onChangeNode, setNodes, appDetail.chatConfig]
+    [appId, getNodes, patchViewData, setNodes, appDetail.chatConfig]
   );
 
   // 停止调试 - 清理调试状态
   const onStopNodeDebug = useCallback(() => {
     setWorkflowDebugData(undefined);
+    patchViewData(
+      getNodes().map((node) => ({
+        nodeId: node.data.nodeId,
+        values: { debugResult: undefined }
+      }))
+    );
     setNodes((state) =>
       state.map((node) => ({
         ...node,
@@ -312,7 +327,7 @@ export const WorkflowDebugProvider = ({ children }: { children: React.ReactNode 
         }
       }))
     );
-  }, [setNodes]);
+  }, [getNodes, patchViewData, setNodes]);
 
   // 开始调试 - 初始化调试会话
   const onStartNodeDebug = useCallback(
@@ -338,8 +353,6 @@ export const WorkflowDebugProvider = ({ children }: { children: React.ReactNode 
   );
 
   const contextValue = useMemoEnhance(() => {
-    console.log('WorkflowDebugContextValue 更新了');
-
     return {
       workflowDebugData,
       onNextNodeDebug,

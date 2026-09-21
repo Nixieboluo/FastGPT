@@ -1,18 +1,15 @@
-// [workflow-runtime-cutover] 临时兼容桥：Runtime snapshot -> reactflow 画布数组投影。
+// Runtime snapshot -> ReactFlow renderer projection.
 // 画布节点 = Node Data（storeNode2FlowNode 物化）+ Node View State（位置/折叠）
 // + host 问题存储（按节点问题文案 + 标红焦点）
 // + host 视图 overlay（debugResult/searchedText/教程元信息）
 // + renderer 交互状态（选中、拖拽、测量尺寸、层级，从本地数组保留）。
-// 迁移结束后本文件随 cutover 目录整体删除。
 import { pick } from 'lodash-es';
 import type { Edge } from 'reactflow';
 import type { TFunction } from 'next-i18next';
 import { EDGE_TYPE } from '@fastgpt/global/core/workflow/node/constant';
 import { NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
-import type {
-  StoreNodeItemType,
-  WorkflowCheckNodeIssueMap
-} from '@fastgpt/global/core/workflow/type/node';
+import { StoreNodeItemTypeSchema } from '@fastgpt/global/core/workflow/type/node';
+import type { WorkflowCheckNodeIssueMap } from '@fastgpt/global/core/workflow/type/node';
 import type {
   WorkflowNodeSnapshot,
   WorkflowNodeViewSnapshot,
@@ -24,7 +21,7 @@ import {
   normalizeEdgeHandles,
   type CanvasNode,
   type ViewDataKey
-} from './translate';
+} from '@/web/core/workflow/editor/canvas';
 
 /** host 持有的按节点视图数据（不进文档）。 */
 export type ViewDataOverlayMap = Record<string, Partial<Record<ViewDataKey, unknown>>>;
@@ -145,7 +142,7 @@ export const projectRuntimeCanvas = ({
     // （Issue View 文案未 i18n，合并会出现英文重复条目），投影时剥离。
     const { issues: _issues, ...docNode } = snapshot;
     const flowNode = storeNode2FlowNode({
-      item: { ...docNode, position } as unknown as StoreNodeItemType,
+      item: StoreNodeItemTypeSchema.parse({ ...docNode, position }),
       isTool,
       t
     });
@@ -163,7 +160,7 @@ export const projectRuntimeCanvas = ({
       position,
       selected,
       zIndex,
-      ...(local ? pick(local, INTERACTION_FIELDS as unknown as string[]) : {}),
+      ...(local ? pick(local, [...INTERACTION_FIELDS]) : {}),
       // 标红焦点节点保持选中：与旧 onUpdateNodeError 一致，定位后无需再点一次即可操作该节点。
       ...(isError ? { selected: true } : {})
     };

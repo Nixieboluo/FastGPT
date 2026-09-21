@@ -14,7 +14,7 @@ import { WorkflowUIContext } from '../context/workflowUIContext';
 import { getHandleIndex } from '../utils/edge';
 import { getParentNodeSizeAndPosition } from '../utils/layout';
 import { useCanvas, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
-import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/cutover/translate';
+import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/canvas';
 import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { useWorkflowDocument } from '../nodes/render/useWorkflowDocument';
 

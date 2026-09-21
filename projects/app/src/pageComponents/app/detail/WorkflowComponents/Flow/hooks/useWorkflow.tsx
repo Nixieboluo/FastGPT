@@ -28,7 +28,7 @@ import { useCanvas, useWorkflow as useWorkflowAdapter } from '@/web/core/workflo
 import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { useMemoizedFn } from 'ahooks';
 import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
-import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
+import { WorkflowCanvasContext } from '../context/workflowCanvasContext';
 import { WorkflowUIContext } from '../context/workflowUIContext';
 import { WorkflowModalContext } from '../context/workflowModalContext';
 import { WorkflowSelectionContext } from '../context/workflowSelectionContext';
@@ -387,7 +387,7 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
   // 画布本地交互数组（拖拽帧、选中、测量尺寸）仍读 renderer 数组：handleNodesChange 要在
   // 应用变更后同步读回最终位置提交几何，reactflow store 得等下一次 commit 才刷新。
   const { onNodesChange, onEdgesChange, setNodes, getNodes } = useContextSelector(
-    WorkflowBufferDataContext,
+    WorkflowCanvasContext,
     (state) => state
   );
   const selectedNodesMap = useContextSelector(WorkflowSelectionContext, (v) => v.selectedNodesMap);
@@ -724,7 +724,10 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
       }
     }
 
-    const localChanges = changes.filter((c) => c.type !== 'remove').concat(childChanges as any);
+    const localChanges: NodeChange[] = [
+      ...changes.filter((c) => c.type !== 'remove'),
+      ...childChanges
+    ];
     onNodesChange(localChanges);
 
     if (removableNodeIds.length > 0) workflow.removeNodes(removableNodeIds);

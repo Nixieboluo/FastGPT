@@ -15,7 +15,7 @@ import { useReactFlow, type Node } from 'reactflow';
 import { useContextSelector } from 'use-context-selector';
 import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
-import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/cutover/translate';
+import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/canvas';
 import { WorkflowModalContext } from './context/workflowModalContext';
 import NodeTemplateListHeader from './components/NodeTemplates/header';
 import NodeTemplateList from './components/NodeTemplates/list';

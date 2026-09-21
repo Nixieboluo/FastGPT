@@ -4,7 +4,7 @@ import { useLocalStorageState } from 'ahooks';
 import React, { type PropsWithChildren, useCallback, useEffect, useRef, useState } from 'react';
 import { createContext, useContextSelector } from 'use-context-selector';
 import { AppContext } from '@/pageComponents/app/detail/context';
-import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { useWorkflowDemoTrack } from '@/web/common/middle/tracks/workflowDemoTrack';
 import type { OnConnectStartParams } from 'reactflow';
 
@@ -90,8 +90,7 @@ export const WorkflowUIContext = createContext<WorkflowUIContextValue>({
 
 /**
  * 画布交互状态 Provider：只承载 renderer 层的瞬时交互状态，不持有工作流文档数据。
- * 因为要读上层数据 Context 的 nodeAmount（演示模式埋点），必须挂在 ReactFlowCustomProvider 之内；
- * 又因为 Header 与画布都要读写弹窗/交互状态，挂载点取两者的共同祖先（Workflow / Plugin 页面的 WorkflowEdit）。
+ * 画布与 Header 都要读写弹窗/交互状态，挂载点取两者的共同祖先（Workflow / Plugin 页面的 WorkflowEdit）。
  */
 export const WorkflowUIProvider: React.FC<PropsWithChildren> = ({ children }) => {
   // 悬停状态 (高频更新)
@@ -104,7 +103,7 @@ export const WorkflowUIProvider: React.FC<PropsWithChildren> = ({ children }) =>
   const [mouseInCanvas, setMouseInCanvas] = useState(false);
   const mousePositionRef = useRef<MousePosition | null>(null);
   // 使用 ref 来存储 wrapper 引用和 cleanup 函数
-  const reactFlowWrapper = useRef<HTMLDivElement>(null);
+  const reactFlowWrapper = useRef<HTMLDivElement | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
 
   /** 读取最新鼠标坐标，避免 mousemove 触发 Context 更新。 */
@@ -118,7 +117,7 @@ export const WorkflowUIProvider: React.FC<PropsWithChildren> = ({ children }) =>
     }
 
     if (node) {
-      (reactFlowWrapper as any).current = node;
+      reactFlowWrapper.current = node;
 
       const handleMouseInCanvas = () => {
         setMouseInCanvas(true);
@@ -144,7 +143,7 @@ export const WorkflowUIProvider: React.FC<PropsWithChildren> = ({ children }) =>
         mousePositionRef.current = null;
       };
     } else {
-      (reactFlowWrapper as any).current = null;
+      reactFlowWrapper.current = null;
     }
   }, []);
 
@@ -170,14 +169,15 @@ export const WorkflowUIProvider: React.FC<PropsWithChildren> = ({ children }) =>
 
   // ---- 演示模式埋点 ----
   const appId = useContextSelector(AppContext, (v) => v.appId);
-  const nodeAmount = useContextSelector(WorkflowBufferDataContext, (v) => v.nodeAmount);
+  const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
+  const _runtimeTick = useContextSelector(WorkflowHostContext, (v) => v.runtimeTick);
+  const nodeAmount = runtime && !runtime.isDisposed() ? runtime.getWorkflow().nodes.length : 0;
   useWorkflowDemoTrack(appId, nodeAmount, presentationMode);
 
   // 右键菜单
   const [menu, setMenu] = useState<{ top: number; left: number } | null>(null);
 
   const contextValue = useMemoEnhance(() => {
-    console.log('WorkflowUIContextValue 更新了');
     return {
       hoverNodeId,
       setHoverNodeId,

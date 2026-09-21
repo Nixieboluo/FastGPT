@@ -1,7 +1,5 @@
 import React from 'react';
-import { getWorkflowModelDetails } from '@/web/core/workflow/modelData';
 import { getNodeAllSource } from '@/web/core/workflow/utils';
-import { checkWorkflowBeforeRunOrPublish } from '@/web/core/workflow/workflowCheck';
 import { type RuntimeNodeItemType } from '@fastgpt/global/core/workflow/runtime/type';
 import { storeNodes2RuntimeNodes } from '@fastgpt/global/core/workflow/runtime/utils';
 import {
@@ -9,7 +7,6 @@ import {
   type StoreEdgeItemType
 } from '@fastgpt/global/core/workflow/type/edge';
 import { type StoreNodeItemType } from '@fastgpt/global/core/workflow/type/node';
-import { useToast } from '@fastgpt/web/hooks/useToast';
 import { useCallback, useMemo, useState } from 'react';
 
 import LabelAndFormRender from '@/components/core/app/formRender/LabelAndForm';
@@ -28,10 +25,10 @@ import dynamic from 'next/dynamic';
 import { type FieldErrors, useForm } from 'react-hook-form';
 import { useContextSelector } from 'use-context-selector';
 import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
+import { useWorkflowDocument } from '../nodes/render/useWorkflowDocument';
+import { useReactFlow } from 'reactflow';
 import { AppContext } from '../../../context';
 import { WorkflowDebugContext } from '../../context/workflowDebugContext';
-import { WorkflowUtilsContext } from '../../context/workflowUtilsContext';
-import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
 import {
   checkInputShouldRenderInDebug,
   debugNodeShouldShowAllInputs,
@@ -55,24 +52,17 @@ enum TabEnum {
 export const useDebug = () => {
   const { t } = useSafeTranslation();
   const { t: workflowT } = useTranslation();
-  const { toast } = useToast();
 
-  const getNodes = useContextSelector(WorkflowBufferDataContext, (v) => v.getNodes);
-  const edges = useContextSelector(WorkflowBufferDataContext, (v) => v.edges);
-  const getNodeById = useContextSelector(WorkflowBufferDataContext, (v) => v.getNodeById);
-  const childrenNodeIdListMap = useContextSelector(
-    WorkflowBufferDataContext,
-    (v) => v.childrenNodeIdListMap
-  );
-  /** 调试入口 gate 与保存/发布 gate 写同一份 host 问题存储，提示、标红与定位保持一致。 */
-  const syncIssues = useContextSelector(WorkflowHostContext, (v) => v.syncIssues);
-  const clearIssues = useContextSelector(WorkflowHostContext, (v) => v.clearIssues);
-  const focusIssueNode = useContextSelector(WorkflowHostContext, (v) => v.focusIssueNode);
+  const { reader } = useWorkflowDocument();
+  const { getNodes } = useReactFlow();
   const patchViewData = useContextSelector(WorkflowHostContext, (v) => v.patchViewData);
   const onStartNodeDebug = useContextSelector(WorkflowDebugContext, (v) => v.onStartNodeDebug);
   const setDebugChatId = useContextSelector(WorkflowDebugContext, (v) => v.setDebugChatId);
   // 调试输入改读 host 出站边界（与保存发布同一个 codec）。
-  const flowData2StoreData = useContextSelector(WorkflowUtilsContext, (v) => v.flowData2StoreData);
+  const serializeWorkflowAndCheck = useContextSelector(
+    WorkflowHostContext,
+    (v) => v.serializeWorkflowAndCheck
+  );
 
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
 
@@ -104,49 +94,6 @@ export const useDebug = () => {
   const [runtimeNodes, setRuntimeNodes] = useState<RuntimeNodeItemType[]>();
   const [runtimeEdges, setRuntimeEdges] = useState<RuntimeEdgeItemType[]>();
 
-  const flowData2StoreDataAndCheck = useCallback(async () => {
-    const nodes = getNodes();
-
-    const { issueMap, hasError, firstErrorNodeId, chatConfigIssues } =
-      checkWorkflowBeforeRunOrPublish({
-        nodes,
-        edges,
-        models: await getWorkflowModelDetails(nodes, appDetail.chatConfig),
-        chatConfig: appDetail.chatConfig,
-        t: workflowT
-      });
-
-    if (!hasError) {
-      clearIssues();
-      return JSON.stringify(flowData2StoreData());
-    }
-
-    syncIssues(issueMap);
-    if (firstErrorNodeId) focusIssueNode(firstErrorNodeId);
-
-    toast({
-      status: 'warning',
-      title: t('common:core.workflow.Check Failed'),
-      description: [...Object.values(issueMap).flat(), ...chatConfigIssues]
-        .filter((issue) => issue.level === 'error')
-        .map((issue) => issue.message)
-        .filter(Boolean)
-        .join('\n')
-    });
-    return Promise.reject();
-  }, [
-    appDetail.chatConfig,
-    edges,
-    getNodes,
-    t,
-    toast,
-    workflowT,
-    flowData2StoreData,
-    syncIssues,
-    clearIssues,
-    focusIssueNode
-  ]);
-
   const openDebugNode = useCallback(
     async ({ entryNodeId }: { entryNodeId: string }) => {
       // 每次打开调试弹窗生成独立的会话 chatId，文件上传与调试运行共用，保证文件归属校验通过
@@ -158,13 +105,10 @@ export const useDebug = () => {
           values: { debugResult: undefined }
         }))
       );
-      const {
-        nodes,
-        edges
-      }: {
-        nodes: StoreNodeItemType[];
-        edges: StoreEdgeItemType[];
-      } = JSON.parse(await flowData2StoreDataAndCheck());
+      const serialized = await serializeWorkflowAndCheck();
+      if (!serialized) return;
+      const { nodes, edges }: { nodes: StoreNodeItemType[]; edges: StoreEdgeItemType[] } =
+        serialized;
 
       const runtimeNodes = storeNodes2RuntimeNodes(nodes, [entryNodeId]);
       const runtimeEdges: RuntimeEdgeItemType[] = edges.map((edge) =>
@@ -183,7 +127,7 @@ export const useDebug = () => {
       setRuntimeNodes(runtimeNodes);
       setRuntimeEdges(runtimeEdges);
     },
-    [flowData2StoreDataAndCheck, getNodes, patchViewData, setDebugChatId]
+    [serializeWorkflowAndCheck, getNodes, patchViewData, setDebugChatId]
   );
 
   const DebugInputModal = useCallback(() => {
@@ -195,6 +139,9 @@ export const useDebug = () => {
     const runtimeNode = runtimeNodes.find((node) => node.nodeId === runtimeNodeId);
 
     if (!runtimeNode) return <></>;
+    const edges = reader?.edges ?? [];
+    const getNodeById = reader?.getNodeById ?? (() => undefined);
+    const childrenNodeIdListMap = reader?.childrenNodeIdListMap ?? {};
     const referenceSourceNodes = getNodeAllSource({
       nodeId: runtimeNode.nodeId,
       getNodeById,
@@ -381,10 +328,8 @@ export const useDebug = () => {
     filteredVar,
     runtimeNodeId,
     onStartNodeDebug,
-    getNodeById,
-    edges,
-    appDetail.chatConfig,
-    childrenNodeIdListMap
+    reader,
+    appDetail.chatConfig
   ]);
 
   return {

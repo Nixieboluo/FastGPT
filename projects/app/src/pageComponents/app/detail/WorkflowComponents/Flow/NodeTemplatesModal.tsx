@@ -9,7 +9,7 @@ import React from 'react';
 import { useContextSelector } from 'use-context-selector';
 import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
-import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/cutover/translate';
+import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/canvas';
 import AppDetailPanelModal from '../../components/AppDetailPanelModal';
 import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import { useDocumentGetNodeById, useWorkflowDocument } from './nodes/render/useWorkflowDocument';

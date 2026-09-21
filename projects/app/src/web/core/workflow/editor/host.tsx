@@ -16,10 +16,10 @@ import React, {
 import { useMemoizedFn } from 'ahooks';
 import { isEqual } from 'lodash-es';
 import { useTranslation } from 'next-i18next';
-import { useReactFlow } from 'reactflow';
+import { useReactFlow, type Edge } from 'reactflow';
 import { createContext, useContextSelector } from 'use-context-selector';
 import { formatTime2YMDHMS } from '@fastgpt/global/common/string/time';
-import type { AppChatConfigType } from '@fastgpt/global/core/app/type';
+import { AppChatConfigTypeSchema } from '@fastgpt/global/core/app/type';
 import type { AppVersionSchemaType } from '@fastgpt/global/core/app/version/type';
 import {
   hydrateWorkflowEditor,
@@ -29,16 +29,20 @@ import type { WorkflowRuntimePort } from '@fastgpt/global/core/workflow/editor/t
 import type { CanonicalWorkflowData } from '@fastgpt/global/core/workflow/migration';
 import type { WorkflowCheckNodeIssueMap } from '@fastgpt/global/core/workflow/type/node';
 import { useWorkflowDraftLifecycle } from '@/web/core/workflow/localDraft/useWorkflowDraftLifecycle';
+import { useToast } from '@fastgpt/web/hooks/useToast';
 import { getWorkflowModelDetails } from '@/web/core/workflow/modelData';
-import { checkWorkflowNodeIssues } from '@/web/core/workflow/workflowCheck';
+import {
+  checkWorkflowBeforeRunOrPublish,
+  checkWorkflowNodeIssues
+} from '@/web/core/workflow/workflowCheck';
+import { useSystemStore } from '@/web/common/system/useSystemStore';
+import { useUserStore } from '@/web/support/user/useUserStore';
+import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
+import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import { AppContext } from '@/pageComponents/app/detail/context';
 import { materializeWorkflow, serializeRuntime } from './codec';
-import {
-  createProjectionCache,
-  projectRuntimeCanvas,
-  type ViewDataOverlayMap
-} from './cutover/projection';
-import type { ViewOverlayPatch } from './cutover/translate';
+import { createProjectionCache, projectRuntimeCanvas, type ViewDataOverlayMap } from './projection';
+import type { ViewOverlayPatch } from './canvas';
 import { WorkflowEditorProvider } from './react';
 
 /** Environment Issue 定时扫描间隔。 */
@@ -86,6 +90,8 @@ export type WorkflowHostValue = {
   leaveSaveSign: MutableRefObject<boolean>;
   /** 出站序列化（保存、发布、草稿、调试共用）；同时捕获内容版本供 markSaved 回填。 */
   serializeWorkflow: () => StoreWorkflow | undefined;
+  /** 保存、发布、调试共用的 host 校验与序列化 gate。 */
+  serializeWorkflowAndCheck: (hideTip?: boolean) => Promise<StoreWorkflow | undefined>;
   /** 保存成功后回填 Savepoint；失败不调用即不回填，请求期间的新编辑仍算未保存。 */
   markSaved: () => void;
 
@@ -125,6 +131,7 @@ export const WorkflowHostContext = createContext<WorkflowHostValue>({
   isSaved: true,
   leaveSaveSign: { current: true },
   serializeWorkflow: notImplemented,
+  serializeWorkflowAndCheck: notImplemented,
   markSaved: notImplemented,
   issuesRef: { current: {} },
   issueFocusRef: { current: undefined },
@@ -142,10 +149,15 @@ export const WorkflowHostContext = createContext<WorkflowHostValue>({
  */
 export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
   const { t } = useTranslation();
+  const { toast } = useToast();
   // host 在 ReactFlowProvider 内，问题焦点定位直接用画布视口 API。
   const { fitView } = useReactFlow();
   const setAppDetail = useContextSelector(AppContext, (v) => v.setAppDetail);
   const appDetailChatConfig = useContextSelector(AppContext, (v) => v.appDetail.chatConfig);
+  const { feConfigs } = useSystemStore();
+  const { teamPlanStatus } = useUserStore();
+  const showSandbox = feConfigs?.show_agent_sandbox;
+  const enableSandbox = !teamPlanStatus?.standard || !!teamPlanStatus?.standard?.enableSandbox;
 
   const [runtime, setRuntime] = useState<WorkflowRuntimePort | null>(null);
   const runtimeRef = useRef<WorkflowRuntimePort | null>(null);
@@ -221,7 +233,7 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
       // undo/redo/replace 恢复文档 chatConfig 时回写 appDetail。
       if (change.changedRecords.chatConfig && !next.isDisposed()) {
         // snapshot 是 DeepReadonly；appDetail 需要可变类型，这里只做引用替换不修改内容。
-        const nextConfig = next.getWorkflow().chatConfig as unknown as AppChatConfigType;
+        const nextConfig = AppChatConfigTypeSchema.parse(next.getWorkflow().chatConfig);
         setAppDetailRef.current((detail) =>
           isEqual(detail.chatConfig, nextConfig) ? detail : { ...detail, chatConfig: nextConfig }
         );
@@ -250,11 +262,134 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
   const history = runtime && !runtime.isDisposed() ? runtime.getHistory() : undefined;
   const isSaved = !runtime || runtime.isDisposed() ? true : !runtime.getSavepoint().isDirty;
 
+  /**
+   * 全量覆盖问题存储：新 map 外的旧问题一并清除（定时扫描与保存/发布 gate 共用）。
+   * 内容未变的节点沿用旧数组身份，投影的按节点缓存才不会每轮扫描整表失效。
+   */
+  const syncIssues = useMemoizedFn((issueMap: WorkflowCheckNodeIssueMap) => {
+    const prevStore = issuesRef.current;
+    const nextStore: WorkflowCheckNodeIssueMap = {};
+    let changed = Object.keys(prevStore).some((nodeId) => !issueMap[nodeId]?.length);
+
+    Object.entries(issueMap).forEach(([nodeId, issues]) => {
+      if (!issues?.length) return;
+      const prevIssues = prevStore[nodeId];
+      const reused =
+        prevIssues && JSON.stringify(prevIssues) === JSON.stringify(issues) ? prevIssues : issues;
+      if (reused !== prevIssues) changed = true;
+      nextStore[nodeId] = reused;
+    });
+
+    issuesRef.current = nextStore;
+    if (changed) bump();
+  });
+
+  /** 清空问题存储与焦点标红；选中态随焦点标记一起由投影还原成本地交互值。 */
+  const clearIssues = useMemoizedFn(() => {
+    const hadIssues = Object.keys(issuesRef.current).length > 0;
+    const hadFocus = issueFocusRef.current !== undefined;
+    issuesRef.current = {};
+    issueFocusRef.current = undefined;
+    if (hadIssues || hadFocus) bump();
+  });
+
+  /**
+   * 问题焦点：标红哪个节点由 host 单点持有（旧行为同一时刻只标红一个），投影合并进节点 data。
+   * 传入 nodeId 时同时 fitView 定位，保存/发布 gate 与调试入口共用；传 undefined 只清除标红，
+   * 用于节点被点击或取消选中的场景，此时不应移动视口。
+   */
+  const focusIssueNode = useMemoizedFn((nodeId?: string) => {
+    if (issueFocusRef.current !== nodeId) {
+      issueFocusRef.current = nodeId;
+      bump();
+    }
+    if (nodeId) fitView({ nodes: [{ id: nodeId }], padding: ISSUE_FOCUS_FIT_PADDING });
+  });
+
   const serializeWorkflow = useMemoizedFn((): StoreWorkflow | undefined => {
     const current = runtimeRef.current;
     if (!current || current.isDisposed()) return undefined;
     pendingSaveRevision.current = current.getSavepoint().contentRevision;
     return serializeRuntime(current);
+  });
+
+  /**
+   * 在保存、发布或调试前从 Runtime 快照执行 sandbox、模型目录和工作流规则校验。
+   * 校验失败只更新 host 问题状态与焦点，不序列化不完整文档；hideTip 用于静默预检。
+   */
+  const serializeWorkflowAndCheck = useMemoizedFn(async (hideTip = false) => {
+    const current = runtimeRef.current;
+    if (!current || current.isDisposed()) return undefined;
+    const workflow = current.getWorkflow();
+    const sandboxNode = workflow.nodes.find((node) => {
+      if (
+        node.flowNodeType !== FlowNodeTypeEnum.agent &&
+        node.flowNodeType !== FlowNodeTypeEnum.toolCall
+      )
+        return false;
+      const enabled = node.inputs.find(
+        (input) => input.key === NodeInputKeyEnum.useAgentSandbox
+      )?.value;
+      return !!enabled && (!showSandbox || !enableSandbox);
+    });
+    if (sandboxNode) {
+      if (!hideTip) {
+        focusIssueNode(sandboxNode.nodeId);
+        toast({
+          status: 'warning',
+          title: !showSandbox
+            ? t('skill:sandbox_system_not_configured_toast')
+            : t('app:sandbox_free_not_support')
+        });
+      }
+      return undefined;
+    }
+    const nodes = projectRuntimeCanvas({
+      runtime: current,
+      overlays: EMPTY_OVERLAYS,
+      issues: EMPTY_ISSUES,
+      t,
+      localNodes: [],
+      localEdges: [],
+      cache: scanProjectionCache.current
+    }).nodes;
+    const models = await getWorkflowModelDetails(nodes, appDetailChatConfig).catch(() => undefined);
+    if (!models) {
+      if (!hideTip) toast({ status: 'error', title: t('common:model_catalog_load_failed') });
+      return undefined;
+    }
+    const edges: Edge[] = workflow.edges.map((edge, index) => ({
+      id: `wfedge-${index}`,
+      source: edge.source,
+      target: edge.target,
+      sourceHandle: edge.sourceHandle,
+      targetHandle: edge.targetHandle
+    }));
+    const result = checkWorkflowBeforeRunOrPublish({
+      nodes,
+      edges,
+      models,
+      chatConfig: appDetailChatConfig,
+      t
+    });
+    if (result.hasError) {
+      if (!hideTip) {
+        syncIssues(result.issueMap);
+        if (result.firstErrorNodeId) focusIssueNode(result.firstErrorNodeId);
+        toast({
+          status: 'warning',
+          title: t('common:core.workflow.Check Failed'),
+          description: [...Object.values(result.issueMap).flat(), ...result.chatConfigIssues]
+            .filter((issue) => issue.level === 'error')
+            .map((issue) => issue.message)
+            .filter(Boolean)
+            .join('\n')
+        });
+      }
+      return undefined;
+    }
+    clearIssues();
+    return serializeWorkflow();
   });
 
   const markSaved = useMemoizedFn(() => {
@@ -380,50 +515,6 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
   });
 
   /**
-   * 全量覆盖问题存储：新 map 外的旧问题一并清除（定时扫描与保存/发布 gate 共用）。
-   * 内容未变的节点沿用旧数组身份，投影的按节点缓存才不会每轮扫描整表失效。
-   */
-  const syncIssues = useMemoizedFn((issueMap: WorkflowCheckNodeIssueMap) => {
-    const prevStore = issuesRef.current;
-    const nextStore: WorkflowCheckNodeIssueMap = {};
-    let changed = Object.keys(prevStore).some((nodeId) => !issueMap[nodeId]?.length);
-
-    Object.entries(issueMap).forEach(([nodeId, issues]) => {
-      if (!issues?.length) return;
-      const prevIssues = prevStore[nodeId];
-      const reused =
-        prevIssues && JSON.stringify(prevIssues) === JSON.stringify(issues) ? prevIssues : issues;
-      if (reused !== prevIssues) changed = true;
-      nextStore[nodeId] = reused;
-    });
-
-    issuesRef.current = nextStore;
-    if (changed) bump();
-  });
-
-  /** 清空问题存储与焦点标红；选中态随焦点标记一起由投影还原成本地交互值。 */
-  const clearIssues = useMemoizedFn(() => {
-    const hadIssues = Object.keys(issuesRef.current).length > 0;
-    const hadFocus = issueFocusRef.current !== undefined;
-    issuesRef.current = {};
-    issueFocusRef.current = undefined;
-    if (hadIssues || hadFocus) bump();
-  });
-
-  /**
-   * 问题焦点：标红哪个节点由 host 单点持有（旧行为同一时刻只标红一个），投影合并进节点 data。
-   * 传入 nodeId 时同时 fitView 定位，保存/发布 gate 与调试入口共用；传 undefined 只清除标红，
-   * 用于节点被点击或取消选中的场景，此时不应移动视口。
-   */
-  const focusIssueNode = useMemoizedFn((nodeId?: string) => {
-    if (issueFocusRef.current !== nodeId) {
-      issueFocusRef.current = nodeId;
-      bump();
-    }
-    if (nodeId) fitView({ nodes: [{ id: nodeId }], padding: ISSUE_FOCUS_FIT_PADDING });
-  });
-
-  /**
    * 扫描文档投影并写入问题存储：定时全量扫描与单节点复查共用同一条写入路径。
    * 节点与边读文档投影（不带 overlay、问题与交互状态），与画布校验用的是同一份节点形状；
    * 指定 nodeId 时只复查该节点，模型目录也只取该节点所需。
@@ -524,6 +615,7 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
       isSaved,
       leaveSaveSign,
       serializeWorkflow,
+      serializeWorkflowAndCheck,
       markSaved,
       issuesRef,
       issueFocusRef,
@@ -547,6 +639,7 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
       switchCloudVersion,
       isSaved,
       serializeWorkflow,
+      serializeWorkflowAndCheck,
       markSaved,
       syncIssues,
       clearIssues,

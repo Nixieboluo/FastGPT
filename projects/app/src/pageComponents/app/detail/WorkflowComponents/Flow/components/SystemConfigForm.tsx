@@ -1,5 +1,5 @@
 import React, { type Dispatch, useCallback, useMemo } from 'react';
-import { useReactFlow, useViewport } from 'reactflow';
+import { useViewport } from 'reactflow';
 import { Box } from '@chakra-ui/react';
 
 import QGConfig from '@/components/core/app/QGConfig';
@@ -17,7 +17,12 @@ import WelcomeTextConfig from '@/components/core/app/WelcomeTextConfig';
 import FileSelect from '@/components/core/app/FileSelect';
 import { userFilesInput } from '@fastgpt/global/core/workflow/template/system/workflowStart';
 import AutoExecConfig from '@/components/core/app/AutoExecConfig';
-import { WorkflowActionsContext } from '../../context/workflowActionsContext';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
+import type { WorkflowCommand } from '@fastgpt/global/core/workflow/editor/types';
+import {
+  FlowNodeInputItemTypeSchema,
+  FlowNodeOutputItemTypeSchema
+} from '@fastgpt/global/core/workflow/type/io';
 import {
   collectWorkflowStartInputAutoFillPatches,
   collectWorkflowStartOutputAutoFillRevertPatches
@@ -342,12 +347,10 @@ function QuestionInputGuide({ chatConfig: { chatInputGuide }, setAppDetail }: Co
 }
 
 function FileSelectConfig({ chatConfig: { fileSelectConfig }, setAppDetail }: ComponentProps) {
-  // 文件上传开关要同时改「流程开始」的输出与全部下游节点的自动填充引用：一次交互跨多个节点，
-  // adapter 只有单节点 updateNode，逐节点提交会把撤销拆成 N 步，
-  // 因此这里保留 Actions 的批量翻译入口（收尾票随翻译层一起处理）。
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
-  const { getNodes, getEdges } = useReactFlow();
-  const nodeList = useWorkflowDocument().reader?.nodes;
+  // 文件上传开关同时更新开始节点输出和下游自动填充引用，合并为一个 Runtime 事务。
+  const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
+  const { reader } = useWorkflowDocument();
+  const nodeList = reader?.nodes;
   // 工具（Plugin host）没有流程开始节点，此时整段配置不渲染。
   const workflowStartNode = useMemo(
     () => nodeList?.find((node) => node.flowNodeType === FlowNodeTypeEnum.workflowStart),
@@ -369,8 +372,15 @@ function FileSelectConfig({ chatConfig: { fileSelectConfig }, setAppDetail }: Co
         }));
 
         // 自动填充按当前画布整体扫描；读取时机在点击回调内，取 store 最新值即可。
-        const nodes = getNodes();
-        const edges = getEdges();
+        const nodes = (nodeList ?? []).map((data) => ({
+          id: data.nodeId,
+          data,
+          position: { x: 0, y: 0 }
+        }));
+        const edges = (reader?.edges ?? []).map((edge) => ({
+          id: `${edge.source}-${edge.target}-${edge.sourceHandle ?? ''}-${edge.targetHandle ?? ''}`,
+          ...edge
+        }));
         // Dynamic add or delete userFilesInput
         const canUploadFiles =
           e.canSelectFile ||
@@ -379,6 +389,30 @@ function FileSelectConfig({ chatConfig: { fileSelectConfig }, setAppDetail }: Co
           e.canSelectAudio ||
           e.canSelectCustomFileExtension;
         const repeatKey = workflowStartNode.outputs.find((item) => item.key === userFilesInput.key);
+        const buildInputUpdateCommands = (
+          inputPatches: Array<{ nodeId: string; key: string; value: unknown }>
+        ): WorkflowCommand[] => {
+          const inputsByNode = new Map<
+            string,
+            ReturnType<typeof FlowNodeInputItemTypeSchema.parse>[]
+          >();
+          inputPatches.forEach((patch) => {
+            const node = runtime?.getNode(patch.nodeId);
+            if (!node) return;
+            const inputs =
+              inputsByNode.get(patch.nodeId) ??
+              node.inputs.map((input) => FlowNodeInputItemTypeSchema.parse(input));
+            const inputIndex = inputs.findIndex((input) => input.key === patch.key);
+            if (inputIndex < 0) return;
+            inputs[inputIndex] = FlowNodeInputItemTypeSchema.parse(patch.value);
+            inputsByNode.set(patch.nodeId, inputs);
+          });
+          return [...inputsByNode].map(([nodeId, inputs]) => ({
+            type: 'updateNode',
+            nodeId,
+            patch: { inputs }
+          }));
+        };
         if (canUploadFiles) {
           const patches = collectWorkflowStartInputAutoFillPatches({
             nodes,
@@ -391,18 +425,24 @@ function FileSelectConfig({ chatConfig: { fileSelectConfig }, setAppDetail }: Co
             }
           });
 
-          onChangeNode([
-            ...(!repeatKey
-              ? [
-                  {
-                    nodeId: workflowStartNode.nodeId,
-                    type: 'addOutput' as const,
-                    value: userFilesInput
-                  }
-                ]
-              : []),
-            ...patches.map((patch) => ({ ...patch, type: 'updateInput' as const }))
-          ]);
+          if (!runtime || runtime.isDisposed()) return;
+          const commands: WorkflowCommand[] = [];
+          if (!repeatKey) {
+            const node = runtime.getNode(workflowStartNode.nodeId);
+            if (node)
+              commands.push({
+                type: 'updateNode',
+                nodeId: node.nodeId,
+                patch: {
+                  outputs: [
+                    ...node.outputs.map((output) => FlowNodeOutputItemTypeSchema.parse(output)),
+                    FlowNodeOutputItemTypeSchema.parse(userFilesInput)
+                  ]
+                }
+              });
+          }
+          commands.push(...buildInputUpdateCommands(patches));
+          runtime.dispatch(commands);
         } else if (repeatKey) {
           const patches = collectWorkflowStartOutputAutoFillRevertPatches({
             nodes,
@@ -411,14 +451,21 @@ function FileSelectConfig({ chatConfig: { fileSelectConfig }, setAppDetail }: Co
             outputKey: userFilesInput.key
           });
 
-          onChangeNode([
-            ...patches.map((patch) => ({ ...patch, type: 'updateInput' as const })),
-            {
-              nodeId: workflowStartNode.nodeId,
-              type: 'delOutput',
-              key: userFilesInput.key
-            }
-          ]);
+          if (!runtime || runtime.isDisposed()) return;
+          const commands: WorkflowCommand[] = [];
+          commands.push(...buildInputUpdateCommands(patches));
+          const startNode = runtime.getNode(workflowStartNode.nodeId);
+          if (startNode)
+            commands.push({
+              type: 'updateNode',
+              nodeId: startNode.nodeId,
+              patch: {
+                outputs: startNode.outputs
+                  .filter((output) => output.key !== userFilesInput.key)
+                  .map((output) => FlowNodeOutputItemTypeSchema.parse(output))
+              }
+            });
+          runtime.dispatch(commands);
         }
       }}
     />

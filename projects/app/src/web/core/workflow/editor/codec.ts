@@ -37,7 +37,7 @@ export const materializeWorkflow = ({
   const workflow = migrateStoreWorkflow(
     chatConfig ? { ...(input as Record<string, unknown>), chatConfig } : input
   );
-  // [workflow-runtime-cutover] 临时转换：入站过滤历史遗留的悬挂边；旧保存路径同样会在导出时过滤。
+  // 入站过滤历史遗留的悬挂边；旧保存路径同样会在导出时过滤。
   const nodeIds = new Set(workflow.nodes.map((node) => node.nodeId));
   const canonicalEdges = workflow.edges.filter(
     (edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)
@@ -47,7 +47,7 @@ export const materializeWorkflow = ({
       .filter((edge) => edge.targetHandle === NodeOutputKeyEnum.selectedTools)
       .map((edge) => edge.target)
   );
-  // [workflow-runtime-cutover] 临时 Materialization：复用旧 initData 的模板物化，
+  // Materialization：复用现有模板物化，
   // 保证字段命令按 key 能解析到模板新增而存量数据缺失的字段（ADR 0001）。
   const nodes = workflow.nodes.map((node) => {
     const flowNode = storeNode2FlowNode({
@@ -55,7 +55,7 @@ export const materializeWorkflow = ({
       isTool: toolNodeIds.has(node.nodeId),
       t
     });
-    // [workflow-runtime-cutover] 临时转换：canonical schema 剥离画布/模板专用字段，
+    // canonical schema 剥离画布/模板专用字段，
     // 语义值保持物化结果原样，不在此处执行保存时归一化。
     return StoreNodeItemTypeSchema.parse({ ...flowNode.data, position: flowNode.position });
   });
@@ -78,7 +78,7 @@ export const hydrateRuntime = ({
  */
 export const serializeRuntime = (runtime: WorkflowRuntimePort): StoreWorkflow => {
   const data = serializeWorkflowEditor(runtime);
-  // [workflow-runtime-cutover] 临时转换：把 Runtime 导出包装成 reactflow 形状，
+  // 把 Runtime 导出包装成 reactflow 形状，
   // 直接复用 uiWorkflow2StoreWorkflow，一行不改既有归一化行为。
   const normalized = uiWorkflow2StoreWorkflow({
     nodes: data.nodes.map((node) => ({
