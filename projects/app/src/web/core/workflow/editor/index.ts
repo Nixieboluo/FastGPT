@@ -16,6 +16,7 @@ export {
   type WorkflowGeometryUpdate,
   type WorkflowNodeHandle,
   type WorkflowNodeIdentity,
+  type WorkflowNodeUpdateOptions,
   type WorkflowStructureHandle,
   type WorkflowStructureSnapshot
 } from './react';

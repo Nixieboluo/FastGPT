@@ -9,21 +9,10 @@ import { materializeWorkflow } from '@/web/core/workflow/editor/codec';
 import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { checkWorkflowBeforeRunOrPublish } from '@/web/core/workflow/workflowCheck';
 import { useUserStore } from '@/web/support/user/useUserStore';
-import {
-  canInputBeAgentGenerated,
-  normalizeFlowNodeInputType
-} from '@fastgpt/global/core/app/formEdit/utils';
 import type { AppChatConfigType } from '@fastgpt/global/core/app/type';
 import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
-import {
-  FlowNodeOutputTypeEnum,
-  FlowNodeTypeEnum
-} from '@fastgpt/global/core/workflow/node/constant';
+import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import type { StoreEdgeItemType } from '@fastgpt/global/core/workflow/type/edge';
-import type {
-  FlowNodeInputItemType,
-  FlowNodeOutputItemType
-} from '@fastgpt/global/core/workflow/type/io';
 import type { StoreNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import { useToast } from '@fastgpt/web/hooks/useToast';
 import { useTranslation } from 'next-i18next';
@@ -55,46 +44,6 @@ type WorkflowUtilsContextValue = {
       }
     | undefined
   >;
-  splitToolInputs: (
-    inputs: FlowNodeInputItemType[],
-    nodeId: string
-  ) => {
-    isTool: boolean;
-    toolInputs: FlowNodeInputItemType[];
-    commonInputs: FlowNodeInputItemType[];
-  };
-  splitOutput: (outputs: FlowNodeOutputItemType[]) => {
-    successOutputs: FlowNodeOutputItemType[];
-    hiddenOutputs: FlowNodeOutputItemType[];
-    errorOutputs: FlowNodeOutputItemType[];
-  };
-};
-
-/** 将工具输入和普通节点输入分开，避免 Agent 生成参数在节点内重复渲染。 */
-export const splitToolInputsByMode = (inputs: FlowNodeInputItemType[], isTool: boolean) => {
-  const toolInputs: FlowNodeInputItemType[] = [];
-  const commonInputs: FlowNodeInputItemType[] = [];
-
-  inputs.forEach((item) => {
-    const normalizedInput = normalizeFlowNodeInputType(item, { isTool });
-    // canEdit 仅表示该字段可在节点内编辑；代码变量不应自动成为工具参数。
-    const isToolParamInput =
-      item.canEdit === true &&
-      item.defaultToAgentGenerated === true &&
-      canInputBeAgentGenerated(item);
-
-    if (isTool && isToolParamInput) {
-      toolInputs.push(item);
-      return;
-    }
-
-    commonInputs.push(normalizedInput);
-  });
-
-  return {
-    toolInputs,
-    commonInputs
-  };
 };
 
 export const WorkflowUtilsContext = createContext<WorkflowUtilsContextValue>({
@@ -110,14 +59,6 @@ export const WorkflowUtilsContext = createContext<WorkflowUtilsContextValue>({
   ) => {
     void args;
     throw new Error('Function not implemented.');
-  },
-  splitOutput: (...args: Parameters<WorkflowUtilsContextValue['splitOutput']>) => {
-    void args;
-    throw new Error('Function not implemented.');
-  },
-  splitToolInputs: (...args: Parameters<WorkflowUtilsContextValue['splitToolInputs']>) => {
-    void args;
-    throw new Error('Function not implemented.');
   }
 });
 
@@ -130,7 +71,7 @@ export const WorkflowUtilsProvider = ({ children }: { children: ReactNode }) => 
   const enableSandbox = !teamPlanStatus?.standard || !!teamPlanStatus?.standard?.enableSandbox;
 
   const { appDetail, setAppDetail } = useContextSelector(AppContext, (v) => v);
-  const { edges, getNodes, toolNodesMap } = useContextSelector(WorkflowBufferDataContext, (v) => v);
+  const { edges, getNodes } = useContextSelector(WorkflowBufferDataContext, (v) => v);
   const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
   const initRuntime = useContextSelector(WorkflowHostContext, (v) => v.initRuntime);
   const loadDocument = useContextSelector(WorkflowHostContext, (v) => v.loadDocument);
@@ -140,47 +81,6 @@ export const WorkflowUtilsProvider = ({ children }: { children: ReactNode }) => 
   const focusIssueNode = useContextSelector(WorkflowHostContext, (v) => v.focusIssueNode);
   /** 出站序列化统一走 host：保存、发布、草稿、调试读同一份内容并共用保存点捕获。 */
   const flowData2StoreData = useContextSelector(WorkflowHostContext, (v) => v.serializeWorkflow);
-
-  // 优化为单次遍历,分类输出项
-  const splitOutput = useCallback((outputs: FlowNodeOutputItemType[]) => {
-    const successOutputs: FlowNodeOutputItemType[] = [];
-    const hiddenOutputs: FlowNodeOutputItemType[] = [];
-    const errorOutputs: FlowNodeOutputItemType[] = [];
-
-    outputs.forEach((item) => {
-      if (
-        item.type === FlowNodeOutputTypeEnum.dynamic ||
-        item.type === FlowNodeOutputTypeEnum.static ||
-        item.type === FlowNodeOutputTypeEnum.source
-      ) {
-        successOutputs.push(item);
-      } else if (item.type === FlowNodeOutputTypeEnum.hidden) {
-        hiddenOutputs.push(item);
-      } else {
-        errorOutputs.push(item);
-      }
-    });
-
-    return {
-      successOutputs,
-      hiddenOutputs,
-      errorOutputs
-    };
-  }, []);
-  /* If the module is connected by a tool, the tool input and the normal input are separated */
-  const splitToolInputs = useCallback(
-    (inputs: FlowNodeInputItemType[], nodeId: string) => {
-      const isTool = toolNodesMap[nodeId] ?? false;
-      const { toolInputs, commonInputs } = splitToolInputsByMode(inputs, isTool);
-
-      return {
-        isTool,
-        toolInputs,
-        commonInputs
-      };
-    },
-    [toolNodesMap]
-  );
 
   // 转换并验证工作流数据
   const flowData2StoreDataAndCheck = useCallback(
@@ -302,11 +202,9 @@ export const WorkflowUtilsProvider = ({ children }: { children: ReactNode }) => 
     return {
       initData,
       flowData2StoreData,
-      flowData2StoreDataAndCheck,
-      splitOutput,
-      splitToolInputs
+      flowData2StoreDataAndCheck
     };
-  }, [initData, flowData2StoreData, flowData2StoreDataAndCheck, splitOutput, splitToolInputs]);
+  }, [initData, flowData2StoreData, flowData2StoreDataAndCheck]);
 
   return (
     <WorkflowUtilsContext.Provider value={contextValue}>{children}</WorkflowUtilsContext.Provider>

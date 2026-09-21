@@ -51,6 +51,9 @@ export const isTemplateVisible = (
   return !template.isShowInContext || template.isShowInContext(ctx);
 };
 
+/** 连接上下文判定只读端点与目标 handle；画布边与 Runtime 文档边（只读快照）都满足。 */
+type NodeTemplateEdge = { source?: string; target: string; targetHandle?: string | null };
+
 /** 校验节点连接的容器和模板上下文，供目标柄展示与最终提交共用。 */
 export const isNodeConnectionAllowed = ({
   targetTemplate,
@@ -63,7 +66,7 @@ export const isNodeConnectionAllowed = ({
   targetTemplate?: Pick<FlowNodeTemplateType, 'flowNodeType' | 'isShowInContext'>;
   targetNode: Pick<FlowNodeItemType, 'parentNodeId'>;
   sourceNode: Pick<FlowNodeItemType, 'nodeId' | 'flowNodeType' | 'isTool' | 'parentNodeId'>;
-  edges: { source?: string; target: string; targetHandle?: string | null }[];
+  edges: readonly NodeTemplateEdge[];
   handleId?: string | null;
   getNodeById: (nodeId: string | undefined | null) => FlowNodeItemType | undefined;
 }) => {
@@ -178,7 +181,7 @@ export const buildNodeTemplateContext = ({
   sourceNode:
     | Pick<FlowNodeItemType, 'nodeId' | 'flowNodeType' | 'isTool' | 'parentNodeId'>
     | undefined;
-  edges: { source?: string; target: string; targetHandle?: string | null }[];
+  edges: readonly NodeTemplateEdge[];
   handleId?: string | null;
   getNodeById: (nodeId: string | undefined | null) => FlowNodeItemType | undefined;
   isSidebar?: boolean;
@@ -192,7 +195,7 @@ export const buildNodeTemplateContext = ({
   const isConnectedTool = (() => {
     if (!sourceNode) return false;
 
-    const incomingEdges = new Map<string, typeof edges>();
+    const incomingEdges = new Map<string, NodeTemplateEdge[]>();
     for (const edge of edges) {
       const targetEdges = incomingEdges.get(edge.target);
       if (targetEdges) {

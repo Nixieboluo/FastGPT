@@ -1,4 +1,8 @@
-import { getNodeAllSource, workflowReferenceValueIsSelectable } from '@/web/core/workflow/utils';
+import {
+  getNodeAllSource,
+  workflowReferenceValueIsSelectable,
+  type WorkflowGraphEdge
+} from '@/web/core/workflow/utils';
 import { workflowSystemVariables } from '@/web/core/app/utils';
 import { type AppChatConfigType, type AppDetailType } from '@fastgpt/global/core/app/type';
 import {
@@ -229,7 +233,7 @@ export const getEditorVariables = ({
 }: {
   nodeId: string;
   getNodeById: (nodeId: string | null | undefined) => FlowNodeItemType | undefined;
-  edges: Edge<any>[];
+  edges: readonly WorkflowGraphEdge[];
   appDetail: AppDetailType;
   t: TFunction;
 }) => {

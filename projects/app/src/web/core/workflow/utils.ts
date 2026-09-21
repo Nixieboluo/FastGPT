@@ -1,6 +1,6 @@
 import type { StoreNodeItemType, FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import type { FlowNodeTemplateType } from '@fastgpt/global/core/workflow/type/node';
-import type { Edge, Node, XYPosition } from 'reactflow';
+import type { Node, XYPosition } from 'reactflow';
 import { moduleTemplatesFlat } from '@fastgpt/global/core/workflow/template/constants';
 import {
   EDGE_TYPE,
@@ -18,6 +18,7 @@ import { type EditorVariablePickerType } from '@fastgpt/web/components/common/Te
 import {
   formatEditorVariablePickerIcon,
   getAppChatConfig,
+  getHandleId,
   getSelectedInputRenderType,
   isWorkflowSystemModelInput,
   nodeInputIsReference,
@@ -36,9 +37,12 @@ import {
 import { type IfElseListItemType } from '@fastgpt/global/core/workflow/template/system/ifElse/type';
 import { initNewIfElseList } from '@fastgpt/global/core/workflow/template/system/ifElse/utils';
 import { type AppChatConfigType } from '@fastgpt/global/core/app/type';
+import type { WorkflowSnapshot } from '@fastgpt/global/core/workflow/editor/types';
 import { workflowSystemVariables } from '../app/utils';
-import type { WorkflowDataContextType } from '@/pageComponents/app/detail/WorkflowComponents/context/workflowInitContext';
-import { normalizeFlowNodeInputType } from '@fastgpt/global/core/app/formEdit/utils';
+import {
+  canInputBeAgentGenerated,
+  normalizeFlowNodeInputType
+} from '@fastgpt/global/core/app/formEdit/utils';
 import { isEmptyModelValue } from '@fastgpt/global/core/ai/modelReference';
 import {
   DatasetTagFilterVersionEnum,
@@ -437,6 +441,65 @@ export const getInputComponentProps = (input: FlowNodeInputItemType) => {
   };
 };
 
+/* ====== 节点 IO 分类 ======= */
+
+/**
+ * 将工具输入和普通节点输入分开，避免 Agent 生成参数在节点内重复渲染。
+ * isTool 由调用方按连线判定（见 useIsToolNode），本函数只做纯分类。
+ */
+export const splitToolInputsByMode = (inputs: FlowNodeInputItemType[], isTool: boolean) => {
+  const toolInputs: FlowNodeInputItemType[] = [];
+  const commonInputs: FlowNodeInputItemType[] = [];
+
+  inputs.forEach((item) => {
+    const normalizedInput = normalizeFlowNodeInputType(item, { isTool });
+    // canEdit 仅表示该字段可在节点内编辑；代码变量不应自动成为工具参数。
+    const isToolParamInput =
+      item.canEdit === true &&
+      item.defaultToAgentGenerated === true &&
+      canInputBeAgentGenerated(item);
+
+    if (isTool && isToolParamInput) {
+      toolInputs.push(item);
+      return;
+    }
+
+    commonInputs.push(normalizedInput);
+  });
+
+  return {
+    toolInputs,
+    commonInputs
+  };
+};
+
+/** 单次遍历把输出分成可展示的成功输出、隐藏输出与错误捕获输出。 */
+export const splitNodeOutputs = (outputs: FlowNodeOutputItemType[]) => {
+  const successOutputs: FlowNodeOutputItemType[] = [];
+  const hiddenOutputs: FlowNodeOutputItemType[] = [];
+  const errorOutputs: FlowNodeOutputItemType[] = [];
+
+  outputs.forEach((item) => {
+    if (
+      item.type === FlowNodeOutputTypeEnum.dynamic ||
+      item.type === FlowNodeOutputTypeEnum.static ||
+      item.type === FlowNodeOutputTypeEnum.source
+    ) {
+      successOutputs.push(item);
+    } else if (item.type === FlowNodeOutputTypeEnum.hidden) {
+      hiddenOutputs.push(item);
+    } else {
+      errorOutputs.push(item);
+    }
+  });
+
+  return {
+    successOutputs,
+    hiddenOutputs,
+    errorOutputs
+  };
+};
+
 /* ====== Reference ======= */
 export const getRefData = ({
   variable,
@@ -444,7 +507,7 @@ export const getRefData = ({
   chatConfig
 }: {
   variable?: ReferenceItemValueType;
-  getNodeById: WorkflowDataContextType['getNodeById'];
+  getNodeById: (nodeId: string | null | undefined) => FlowNodeItemType | undefined;
   chatConfig?: AppChatConfigType;
 }) => {
   if (!variable)
@@ -484,6 +547,87 @@ export const getRefData = ({
   };
 };
 /**
+ * 图查询只用到连线端点与 handle；画布边与 Runtime 文档边都满足这个形状。
+ */
+export type WorkflowGraphEdge = {
+  source: string;
+  target: string;
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
+};
+
+export type WorkflowGraphReader = {
+  getNodeById: (nodeId: string | null | undefined) => FlowNodeItemType | undefined;
+  /** 文档节点列表（只读快照身份）：节点数量、唯一性过滤、名称搜索、开始节点等派生的唯一来源。 */
+  nodes: readonly FlowNodeItemType[];
+  edges: readonly WorkflowGraphEdge[];
+  childrenNodeIdListMap: Record<string, string[]>;
+  chatConfig: AppChatConfigType;
+};
+
+const graphReaderCache = new WeakMap<WorkflowSnapshot, WorkflowGraphReader>();
+
+/**
+ * 从 Runtime 文档快照派生只读图查询面，供变量列表、可用引用等纯函数按需计算。
+ *
+ * 文档节点在入站边界（ADR 0001）已物化，name/inputs/outputs/catchError 等语义字段与画布节点一致；
+ * 模板专用展示字段（id、showSourceHandle、isTool）不进文档，需要时按模板目录或连线另行派生。
+ * 结果按 snapshot 身份缓存：getWorkflow() 有版本缓存，同一语义版本内多个字段共用一份索引，
+ * 避免每个字段各建一次 O(n) map。
+ */
+export const getWorkflowGraphReader = (workflow: WorkflowSnapshot): WorkflowGraphReader => {
+  const cached = graphReaderCache.get(workflow);
+  if (cached) return cached;
+
+  const nodeMap = new Map<string, FlowNodeItemType>();
+  const childrenNodeIdListMap: Record<string, string[]> = {};
+  // 文档节点在入站边界已物化，形状与画布 data 一致，只读消费者可直接当 FlowNodeItemType 用。
+  const nodes = workflow.nodes as unknown as readonly FlowNodeItemType[];
+  workflow.nodes.forEach((node) => {
+    nodeMap.set(node.nodeId, node as unknown as FlowNodeItemType);
+    if (!node.parentNodeId) return;
+    const siblings = childrenNodeIdListMap[node.parentNodeId];
+    if (siblings) siblings.push(node.nodeId);
+    else childrenNodeIdListMap[node.parentNodeId] = [node.nodeId];
+  });
+
+  const reader: WorkflowGraphReader = {
+    getNodeById: (nodeId) => (nodeId ? nodeMap.get(nodeId) : undefined),
+    nodes,
+    edges: workflow.edges,
+    childrenNodeIdListMap,
+    // 只读快照与既有纯函数入参只差 readonly 修饰，reader 自身不写回文档。
+    chatConfig: workflow.chatConfig as AppChatConfigType
+  };
+  graphReaderCache.set(workflow, reader);
+  return reader;
+};
+
+/**
+ * 收集某个输出字段 source handle 上的连线断开命令。
+ *
+ * 删除或替换输出字段时，旧 handle 上的连线必须和 outputs 一起消失；调用方把结果作为
+ * updateNode 的 disconnectEdges 传入，保证一个事务、一条历史。
+ * index 按降序返回：同一事务内逐条删除会改变后续下标。
+ */
+export const getOutputDisconnectCommands = ({
+  edges,
+  nodeId,
+  outputKey
+}: {
+  edges: readonly WorkflowGraphEdge[];
+  nodeId: string;
+  outputKey: string;
+}): { index: number }[] => {
+  const handle = getHandleId(nodeId, 'source', outputKey);
+  const indexes: number[] = [];
+  edges.forEach((edge, index) => {
+    if (edge.source === nodeId && edge.sourceHandle === handle) indexes.push(index);
+  });
+  return indexes.sort((a, b) => b - a).map((index) => ({ index }));
+};
+
+/**
  * 获取当前节点可引用的普通来源 ID。
  * 按当前节点到根容器的入边和 reference 输入遍历，visited 防止坏 parent 数据循环。
  */
@@ -496,7 +640,7 @@ export const getNodeAllSourceIds = ({
 }: {
   nodeId: string;
   getNodeById: (nodeId: string | null | undefined) => FlowNodeItemType | undefined;
-  edges: Edge[];
+  edges: readonly WorkflowGraphEdge[];
   includeChildren?: boolean;
   childrenNodeIdListMap?: Record<string, string[]>;
 }): string[] => {
@@ -566,7 +710,7 @@ export const getNodeAllSource = ({
 }: {
   nodeId: string;
   getNodeById: (nodeId: string | null | undefined) => FlowNodeItemType | undefined;
-  edges: Edge[];
+  edges: readonly WorkflowGraphEdge[];
   chatConfig: AppChatConfigType;
   t: TFunction;
   includeChildren?: boolean;

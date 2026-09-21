@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { splitToolInputsByMode } from '@/pageComponents/app/detail/WorkflowComponents/context/workflowUtilsContext';
+import { splitToolInputsByMode } from '@/web/core/workflow/utils';
 import { FlowNodeInputTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { ToolCallNode } from '@fastgpt/global/core/workflow/template/system/toolCall';

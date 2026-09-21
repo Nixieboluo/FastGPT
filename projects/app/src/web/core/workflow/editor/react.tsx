@@ -15,6 +15,7 @@ import type {
   WorkflowFieldQuery,
   WorkflowFieldSnapshot,
   WorkflowCommand,
+  WorkflowNodeData,
   WorkflowNodeSnapshot,
   WorkflowNodeViewSnapshot,
   WorkflowRuntimePort,
@@ -44,6 +45,15 @@ export type WorkflowNodeHandle = {
   view: WorkflowNodeViewSnapshot;
   setName: (name: string) => WorkflowDispatchResult;
   setFolded: (isFolded: boolean) => WorkflowDispatchResult;
+  /**
+   * 提交节点语义数据 patch（updateNode 命令）：记录级增删改由调用方读当前记录、
+   * 拼完整数组后走这里，差异记录仍由 Runtime 按字段粒度发布。
+   * patch 接受只读快照形状，位置与折叠不在此提交（只走 commitGeometry）。
+   */
+  updateNode: (
+    patch: Partial<DeepReadonly<WorkflowNodeData>>,
+    options?: WorkflowNodeUpdateOptions
+  ) => WorkflowDispatchResult;
 };
 
 export type WorkflowFieldHandle = {
@@ -53,6 +63,15 @@ export type WorkflowFieldHandle = {
 };
 
 type WorkflowDisconnectEdge = Omit<Extract<WorkflowCommand, { type: 'disconnectEdge' }>, 'type'>;
+
+export type WorkflowNodeUpdateOptions = {
+  /**
+   * 与 patch 同一事务断开的连线。
+   * 删除或替换输出字段时旧 handle 上的连线必须一起消失；拆成两次 dispatch 会让撤销需要按两下。
+   * index 需按降序给出：同一事务内逐条删除会改变后续下标。
+   */
+  disconnectEdges?: readonly WorkflowDisconnectEdge[];
+};
 
 export type WorkflowStructureHandle = WorkflowStructureSnapshot & {
   addNode: (node: StoreNodeItemType) => WorkflowDispatchResult;
@@ -174,6 +193,7 @@ export const createWorkflowEditorAdapter = (
   const fieldHandles = new Map<string, WorkflowFieldHandle>();
   const setNameActions = new Map<string, WorkflowNodeHandle['setName']>();
   const setFoldedActions = new Map<string, WorkflowNodeHandle['setFolded']>();
+  const updateNodeActions = new Map<string, WorkflowNodeHandle['updateNode']>();
 
   const subscribeRegistry = (registry: ListenerRegistry, nodeId: string, listener: Listener) => {
     const listeners = registry.get(nodeId) ?? new Set<Listener>();
@@ -191,6 +211,19 @@ export const createWorkflowEditorAdapter = (
   const setName = (nodeId: string, name: string): WorkflowDispatchResult =>
     runtime.dispatch({ type: 'updateNode', nodeId, patch: { name } });
 
+  const updateNode = (
+    nodeId: string,
+    patch: Partial<DeepReadonly<WorkflowNodeData>>,
+    options?: WorkflowNodeUpdateOptions
+  ): WorkflowDispatchResult => {
+    const disconnects = options?.disconnectEdges;
+    // Runtime 会 clone patch，只读快照可以原样透传。
+    return runtime.dispatch([
+      ...(disconnects?.map((command) => ({ type: 'disconnectEdge' as const, ...command })) ?? []),
+      { type: 'updateNode', nodeId, patch: patch as Partial<WorkflowNodeData> }
+    ]);
+  };
+
   const getSetName = (nodeId: string) => {
     const previous = setNameActions.get(nodeId);
     if (previous) return previous;
@@ -207,14 +240,31 @@ export const createWorkflowEditorAdapter = (
     return action;
   };
 
+  const getUpdateNode = (nodeId: string) => {
+    const previous = updateNodeActions.get(nodeId);
+    if (previous) return previous;
+    const action = (
+      patch: Partial<DeepReadonly<WorkflowNodeData>>,
+      options?: WorkflowNodeUpdateOptions
+    ) => updateNode(nodeId, patch, options);
+    updateNodeActions.set(nodeId, action);
+    return action;
+  };
+
+  /** 节点消失时一并丢弃句柄与缓存 action，避免删除后仍能被写。 */
+  const dropNodeHandle = (nodeId: string) => {
+    nodeHandles.delete(nodeId);
+    setNameActions.delete(nodeId);
+    setFoldedActions.delete(nodeId);
+    updateNodeActions.delete(nodeId);
+  };
+
   const getNodeSnapshot = (nodeId: string): WorkflowNodeHandle | undefined => {
     if (disposed) return undefined;
     const data = runtime.getNode(nodeId);
     const view = runtime.getNodeView(nodeId);
     if (!data || !view) {
-      nodeHandles.delete(nodeId);
-      setNameActions.delete(nodeId);
-      setFoldedActions.delete(nodeId);
+      dropNodeHandle(nodeId);
       return undefined;
     }
 
@@ -225,7 +275,8 @@ export const createWorkflowEditorAdapter = (
       data,
       view,
       setName: getSetName(nodeId),
-      setFolded: getSetFolded(nodeId)
+      setFolded: getSetFolded(nodeId),
+      updateNode: getUpdateNode(nodeId)
     } satisfies WorkflowNodeHandle;
     nodeHandles.set(nodeId, handle);
     return handle;
@@ -320,11 +371,7 @@ export const createWorkflowEditorAdapter = (
 
     if (change.kind === 'replace') {
       [...nodeHandles.keys()].forEach((nodeId) => {
-        if (!runtime.getNode(nodeId)) {
-          nodeHandles.delete(nodeId);
-          setNameActions.delete(nodeId);
-          setFoldedActions.delete(nodeId);
-        }
+        if (!runtime.getNode(nodeId)) dropNodeHandle(nodeId);
       });
       fieldHandles.clear();
       collectRegistryListeners(nodeDataListeners, [...nodeDataListeners.keys()]).forEach(
@@ -335,11 +382,7 @@ export const createWorkflowEditorAdapter = (
       );
     } else {
       change.changedRecords.nodeIds.forEach((nodeId) => {
-        if (!runtime.getNode(nodeId)) {
-          nodeHandles.delete(nodeId);
-          setNameActions.delete(nodeId);
-          setFoldedActions.delete(nodeId);
-        }
+        if (!runtime.getNode(nodeId)) dropNodeHandle(nodeId);
       });
     }
     dataListeners.forEach((listener) => viewListeners.delete(listener));
@@ -407,6 +450,7 @@ export const createWorkflowEditorAdapter = (
       fieldHandles.clear();
       setNameActions.clear();
       setFoldedActions.clear();
+      updateNodeActions.clear();
     }
   };
 };
