@@ -327,7 +327,8 @@ export const MultipleRowArraySelect = ({
   maxH = 300,
   onSelect,
   popDirection = 'bottom',
-  ButtonProps
+  ButtonProps,
+  onOpenFunc
 }: MultipleArraySelectProps) => {
   const { t } = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
@@ -435,7 +436,8 @@ export const MultipleRowArraySelect = ({
   const onOpenSelect = useCallback(() => {
     setNavigationPath([]);
     onOpen();
-  }, [onOpen]);
+    onOpenFunc?.();
+  }, [onOpen, onOpenFunc]);
 
   return (
     <Box ref={ref} position={'relative'}>
