@@ -1,4 +1,4 @@
-import React, { useCallback, type MutableRefObject } from 'react';
+import React, { useCallback, useRef, type MutableRefObject } from 'react';
 import {
   type Connection,
   type NodeChange,
@@ -31,7 +31,6 @@ import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import { WorkflowCanvasContext } from '../context/workflowCanvasContext';
 import { WorkflowUIContext } from '../context/workflowUIContext';
 import { WorkflowModalContext } from '../context/workflowModalContext';
-import { WorkflowSelectionContext } from '../context/workflowSelectionContext';
 import { type HelperLinesController } from '../components/HelperLines';
 import { useDocumentGetNodeById } from '../nodes/render/useWorkflowDocument';
 import {
@@ -380,6 +379,26 @@ type UseWorkflowParams = {
   helperLinesRef: MutableRefObject<HelperLinesController | null>;
 };
 
+/** 断连命令的画布边入参：投影边 id 是投影内部细节，不进 adapter。 */
+export type EdgeDisconnectValue = {
+  source: string;
+  target: string;
+  sourceHandle: string;
+  targetHandle: string;
+};
+
+/**
+ * 丢弃端点落在待删节点上的断连命令。
+ * reactflow 的 deleteElements 先派生连线 remove 变更、再派生节点 remove 变更，而 runtime 的
+ * removeNodes 已经级联删除相连边；被拒删除的节点（forbidDelete、条件循环最后一个 loopRunBreak）
+ * 也必须保住自己的连线。所以同一批次里这些断连要么多余、要么有害。
+ */
+export const dropEdgeDisconnectsOfRemovedNodes = (
+  edges: readonly EdgeDisconnectValue[],
+  removedNodeIds: ReadonlySet<string>
+): EdgeDisconnectValue[] =>
+  edges.filter((edge) => !removedNodeIds.has(edge.source) && !removedNodeIds.has(edge.target));
+
 export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
   const { toast } = useToast();
   const { t } = useTranslation();
@@ -390,7 +409,6 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
     WorkflowCanvasContext,
     (state) => state
   );
-  const selectedNodesMap = useContextSelector(WorkflowSelectionContext, (v) => v.selectedNodesMap);
   const workflow = useWorkflowAdapter();
   const canvas = useCanvas();
   // 跨节点语义读取走文档 reader；按 id 取画布节点（位置、尺寸、选中）走 reactflow store。
@@ -408,6 +426,22 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
 
   const { getIntersectingNodes, flowToScreenPosition, getZoom, getNode, getEdge } = useReactFlow();
   const { isDowningCtrl } = useKeyboard();
+
+  /*
+    删除批次里 onEdgesChange 早于 onNodesChange，此时还不知道节点会不会真被删掉。
+    断连命令先攒进 ref，等同一批次的节点变更处理完再由微任务一次性提交：
+    节点删除派生的连线会在那里被丢弃，剩下的才真正断连。
+    不这么做的话，"删一个带两条连线的节点"会写出三条历史（两次断连 + 一次删节点）。
+  */
+  const pendingEdgeDisconnects = useRef<EdgeDisconnectValue[]>([]);
+  const edgeDisconnectScheduled = useRef(false);
+
+  const flushEdgeDisconnects = useMemoizedFn(() => {
+    edgeDisconnectScheduled.current = false;
+    const edges = pendingEdgeDisconnects.current;
+    pendingEdgeDisconnects.current = [];
+    edges.forEach((edge) => workflow.disconnectEdge({ edge }));
+  });
 
   /** 同步应用吸附结果，并命令式绘制当前帧辅助线。 */
   const applyHelperLineResult = useMemoizedFn(
@@ -666,6 +700,9 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
     const removedIds = new Set(
       changes.filter((c): c is NodeRemoveChange => c.type === 'remove').map((c) => c.id)
     );
+    // removedIds 会在校验中被剔除（forbidDelete、条件循环最后一个 break），
+    // 这里另存完整的本批次试图删除集合，用来判定哪些断连是节点删除派生出来的。
+    const attemptedNodeIds = new Set(removedIds);
 
     for (const change of changes) {
       if (change.type === 'remove') {
@@ -730,6 +767,13 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
     ];
     onNodesChange(localChanges);
 
+    if (attemptedNodeIds.size > 0) {
+      pendingEdgeDisconnects.current = dropEdgeDisconnectsOfRemovedNodes(
+        pendingEdgeDisconnects.current,
+        attemptedNodeIds
+      );
+    }
+
     if (removableNodeIds.length > 0) workflow.removeNodes(removableNodeIds);
 
     const geometryNodeIds = new Set(
@@ -750,34 +794,29 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
     }
   });
 
-  const handleEdgeChange = useCallback(
-    (changes: EdgeChange[]) => {
-      // If any node is selected, don't remove edges
-      const hasSelectedNode = Object.keys(selectedNodesMap).length > 0;
-      const changesFiltered = changes.filter(
-        (change) => !(change.type === 'remove' && hasSelectedNode)
-      );
+  const handleEdgeChange = useMemoizedFn((changes: EdgeChange[]) => {
+    // 先从 store 解析被删的画布边，再按端点值断连：投影边 id 是投影内部细节，不进 adapter。
+    const removedEdges = changes
+      .filter((change) => change.type === 'remove')
+      .map((change) => getEdge(change.id))
+      .filter((edge): edge is Edge => !!edge)
+      .map((edge) => ({
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: edge.sourceHandle || '',
+        targetHandle: edge.targetHandle || ''
+      }));
 
-      // 先从 store 解析被删的画布边，再按端点值断连：投影边 id 是投影内部细节，不进 adapter。
-      const removedEdges = changesFiltered
-        .filter((change) => change.type === 'remove')
-        .map((change) => getEdge(change.id))
-        .filter((edge): edge is Edge => !!edge);
+    // 结构删除统一交给 runtime 重投影：这里不乐观移除画布边，
+    // 否则节点删除被拒时画布先掉边、文档还留着，视图和数据会对不上。
+    onEdgesChange(changes.filter((change) => change.type !== 'remove'));
 
-      onEdgesChange(changesFiltered);
-      removedEdges.forEach((edge) =>
-        workflow.disconnectEdge({
-          edge: {
-            source: edge.source,
-            target: edge.target,
-            sourceHandle: edge.sourceHandle || '',
-            targetHandle: edge.targetHandle || ''
-          }
-        })
-      );
-    },
-    [getEdge, selectedNodesMap, workflow, onEdgesChange]
-  );
+    if (removedEdges.length === 0) return;
+    pendingEdgeDisconnects.current.push(...removedEdges);
+    if (edgeDisconnectScheduled.current) return;
+    edgeDisconnectScheduled.current = true;
+    queueMicrotask(flushEdgeDisconnects);
+  });
 
   const onNodeDragStop = useCallback(
     (_: any, node: Node) => {

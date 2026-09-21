@@ -10,6 +10,7 @@ import {
   createBoundedMaxHeap,
   collectNearestNodes,
   computeHelperLines as computeHelperLinesWithNode,
+  dropEdgeDisconnectsOfRemovedNodes,
   popoverWidth,
   popoverHeight
 } from '@/pageComponents/app/detail/WorkflowComponents/Flow/hooks/useWorkflow';
@@ -436,5 +437,33 @@ describe('popover constants', () => {
   it('should expose expected popover dimensions', () => {
     expect(popoverWidth).toBe(400);
     expect(popoverHeight).toBe(600);
+  });
+});
+
+describe('dropEdgeDisconnectsOfRemovedNodes', () => {
+  const edge = (source: string, target: string) => ({
+    source,
+    target,
+    sourceHandle: 'source',
+    targetHandle: 'target'
+  });
+
+  it('drops every edge of a deleted node so the delete stays one history entry', () => {
+    // 删中间节点：reactflow 先派生两条连线 remove，再派生节点 remove。
+    // 两条断连都要丢掉，removeNodes 会级联删边，最终只提交一条命令。
+    expect(
+      dropEdgeDisconnectsOfRemovedNodes([edge('a', 'b'), edge('b', 'c')], new Set(['b']))
+    ).toEqual([]);
+  });
+
+  it('keeps edges that are unrelated to the deleted node', () => {
+    expect(
+      dropEdgeDisconnectsOfRemovedNodes([edge('a', 'b'), edge('c', 'd')], new Set(['b']))
+    ).toEqual([edge('c', 'd')]);
+  });
+
+  it('keeps edges in the document when nothing is being deleted', () => {
+    const edges = [edge('a', 'b')];
+    expect(dropEdgeDisconnectsOfRemovedNodes(edges, new Set())).toEqual(edges);
   });
 });

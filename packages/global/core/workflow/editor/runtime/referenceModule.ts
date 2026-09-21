@@ -3,6 +3,7 @@ import { NodeOutputKeyEnum, VARIABLE_NODE_ID } from '../../constants';
 import { FlowNodeOutputTypeEnum, FlowNodeTypeEnum } from '../../node/constant';
 import { isToolParamInput } from '../../../app/formEdit/utils';
 import { nodeInputIsReference } from '../../utils';
+import { i18nT } from '../../../../common/i18n/utils';
 import {
   filterSelectableWorkflowNodeOutputs,
   getHTTPToolParamOutputs,
@@ -234,7 +235,7 @@ const getReferenceSource = ({
           valueType: variable.valueType,
           label: variable.label
         },
-        sourceLabel: 'Variable',
+        sourceLabel: i18nT('common:core.module.Variable'),
         outputLabel: variable.label,
         icon: 'core/workflow/template/variable'
       };
@@ -585,7 +586,7 @@ export const createReferenceModule = (document: DocumentReadApi) => {
         options.push({
           reference: [VARIABLE_NODE_ID, variable.key],
           sourceType: variable.valueType,
-          sourceLabel: 'Variable',
+          sourceLabel: i18nT('common:core.module.Variable'),
           outputLabel: variable.label,
           icon: 'core/workflow/template/variable'
         });

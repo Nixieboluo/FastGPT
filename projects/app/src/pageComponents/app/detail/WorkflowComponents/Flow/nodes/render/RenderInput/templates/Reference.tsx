@@ -230,6 +230,8 @@ const SingleReferenceSelector = ({
   onOpenList,
   reference
 }: SelectProps<false>) => {
+  // runtime 只发 i18n key 或字面量，展示名统一在渲染层过一遍 t。
+  const { t } = useSafeTranslation();
   const getSelectValue = useCallback(
     (value: ReferenceValueType) => {
       if (!value) return undefined;
@@ -239,8 +241,8 @@ const SingleReferenceSelector = ({
       if (reference) {
         const status = reference[0];
         if (status?.code !== 'valid') return undefined;
-        const nodeText = status.sourceLabel || '';
-        const outputText = status.outputLabel || '';
+        const nodeText = status.sourceLabel ? t(status.sourceLabel) : '';
+        const outputText = status.outputLabel ? t(status.outputLabel) : '';
         return {
           avatar: status.icon,
           text: nodeText && outputText ? `${nodeText} > ${outputText}` : nodeText || outputText
@@ -262,7 +264,7 @@ const SingleReferenceSelector = ({
         text: nodeText && outputText ? `${nodeText} > ${outputText}` : nodeText || outputText
       };
     },
-    [list, reference]
+    [list, reference, t]
   );
 
   // Adapt array type from old version
@@ -337,6 +339,7 @@ const MultipleReferenceSelector = ({
   onOpenList,
   reference
 }: SelectProps<true>) => {
+  const { t } = useSafeTranslation();
   const getSelectValue = useCallback(
     (value: ReferenceValueType) => {
       if (!value) return [];
@@ -362,8 +365,8 @@ const MultipleReferenceSelector = ({
         const isValid = status.code === 'valid';
         return {
           rawValue: status.reference,
-          nodeName: isValid ? (status.sourceLabel ?? '') : '',
-          outputName: isValid ? (status.outputLabel ?? '') : ''
+          nodeName: isValid && status.sourceLabel ? t(status.sourceLabel) : '',
+          outputName: isValid && status.outputLabel ? t(status.outputLabel) : ''
         };
       });
     }
@@ -378,7 +381,7 @@ const MultipleReferenceSelector = ({
         outputName
       };
     });
-  }, [getSelectValue, reference, value]);
+  }, [getSelectValue, reference, t, value]);
 
   const invalidList = useMemo(() => {
     return formatList.filter((item) => item.nodeName && item.outputName);
