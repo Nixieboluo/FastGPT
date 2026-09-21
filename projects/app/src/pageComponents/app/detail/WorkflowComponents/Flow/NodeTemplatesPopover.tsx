@@ -11,40 +11,42 @@ import type { FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import MyBox from '@fastgpt/web/components/common/MyBox';
 import { useMemoizedFn } from 'ahooks';
 import React from 'react';
-import { type Node } from 'reactflow';
+import { useReactFlow, type Node } from 'reactflow';
 import { useContextSelector } from 'use-context-selector';
 import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
 import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/cutover/translate';
-import { WorkflowBufferDataContext } from '../context/workflowInitContext';
 import { WorkflowModalContext } from './context/workflowModalContext';
 import NodeTemplateListHeader from './components/NodeTemplates/header';
 import NodeTemplateList from './components/NodeTemplates/list';
 import { useNodeTemplates } from './components/NodeTemplates/useNodeTemplates';
 import { popoverHeight, popoverWidth } from './hooks/useWorkflow';
+import { useDocumentGetNodeById, useWorkflowDocument } from './nodes/render/useWorkflowDocument';
 
 const NodeTemplatesPopover = () => {
   const { handleParams, setHandleParams } = useContextSelector(WorkflowModalContext, (v) => v);
 
-  const { setNodes, edges, getNodeById, hasToolNode, hasLoopRunNode } = useContextSelector(
-    WorkflowBufferDataContext,
-    (v) => v
-  );
   /** 新增节点后立即复查问题文案，不等 host 的 10s 定时扫描。 */
   const refreshNodeIssues = useContextSelector(WorkflowHostContext, (v) => v.refreshNodeIssues);
   const workflow = useWorkflowAdapter();
+  const { setNodes } = useReactFlow();
+  const getNodeById = useDocumentGetNodeById();
+  const nodeList = useWorkflowDocument().reader?.nodes;
+  // 模板目录按画布级存在性标记过滤：工具调用与循环执行入口容器各自唯一。
+  const hasToolNode = !!nodeList?.some((node) => node.flowNodeType === FlowNodeTypeEnum.toolCall);
+  const hasLoopRunNode = !!nodeList?.some((node) => node.flowNodeType === FlowNodeTypeEnum.loopRun);
 
   const nodeTemplateContext = React.useMemo(
     () =>
       buildNodeTemplateContext({
         sourceNode: handleParams?.nodeId ? getNodeById(handleParams.nodeId) : undefined,
-        edges,
+        edges: workflow.edges,
         handleId: handleParams?.handleId,
         getNodeById,
         hasToolNode,
         hasLoopRunNode
       }),
-    [handleParams, edges, getNodeById, hasToolNode, hasLoopRunNode]
+    [handleParams, workflow.edges, getNodeById, hasToolNode, hasLoopRunNode]
   );
 
   const {

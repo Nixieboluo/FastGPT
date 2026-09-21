@@ -10,15 +10,16 @@ import { SmallAddIcon } from '@chakra-ui/icons';
 import { type FlowNodeInputItemType } from '@fastgpt/global/core/workflow/type/io';
 import ToolParamsEditModal from '../components/ToolParamsEditModal';
 import MyIcon from '@fastgpt/web/components/common/Icon';
-import { useContextSelector } from 'use-context-selector';
-import { WorkflowActionsContext } from '../../../context/workflowActionsContext';
 import { defaultToolParamFormData } from '../components/ToolParamsEditModal/constants';
+import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
+import { useNode, useWorkflow } from '@/web/core/workflow/editor';
 
 const NodeToolParams = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useTranslation();
   const [editField, setEditField] = useState<FlowNodeInputItemType>();
   const { nodeId, inputs } = data;
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const node = useNode(nodeId);
+  const { edges } = useWorkflow();
 
   const Render = useMemo(() => {
     return (
@@ -82,16 +83,25 @@ const NodeToolParams = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                             w={'16px'}
                             cursor={'pointer'}
                             onClick={() => {
-                              onChangeNode({
-                                nodeId,
-                                type: 'delInput',
-                                key: item.key
-                              });
-                              onChangeNode({
-                                nodeId,
-                                type: 'delOutput',
-                                key: item.key
-                              });
+                              // 参数与其同名 output 一起删除，旧 handle 连线同事务断开。
+                              const documentInputs = node?.data.inputs;
+                              const documentOutputs = node?.data.outputs;
+                              if (!documentInputs || !documentOutputs) return;
+                              node?.updateNode(
+                                {
+                                  inputs: documentInputs.filter((input) => input.key !== item.key),
+                                  outputs: documentOutputs.filter(
+                                    (output) => output.key !== item.key
+                                  )
+                                },
+                                {
+                                  disconnectEdges: getOutputDisconnectCommands({
+                                    edges,
+                                    nodeId,
+                                    outputKey: item.key
+                                  })
+                                }
+                              );
                             }}
                           />
                         </Flex>
@@ -105,7 +115,7 @@ const NodeToolParams = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         </Container>
       </NodeCard>
     );
-  }, [selected, data, t, editField, inputs, onChangeNode, nodeId]);
+  }, [selected, data, t, editField, inputs, node, edges, nodeId]);
 
   return Render;
 };

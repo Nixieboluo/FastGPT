@@ -17,12 +17,12 @@ import {
 } from '@fastgpt/global/core/workflow/node/constant';
 import { FlowValueTypeMap } from '@fastgpt/global/core/workflow/node/constant';
 import VariableTable from './VariableTable';
-import { useContextSelector } from 'use-context-selector';
 import IOTitle from '../../components/IOTitle';
 import dynamic from 'next/dynamic';
 import { defaultInput } from './InputEditModal';
 import RenderOutput from '../render/RenderOutput';
-import { WorkflowActionsContext } from '../../../context/workflowActionsContext';
+import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
+import { useNode, useWorkflow } from '@/web/core/workflow/editor';
 
 const FieldEditModal = dynamic(() => import('./InputEditModal'));
 
@@ -36,56 +36,54 @@ const NodePluginInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useSafeTranslation();
   const { nodeId, inputs = [], outputs } = data;
 
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const node = useNode(nodeId);
+  const { edges } = useWorkflow();
   const [editField, setEditField] = useState<FlowNodeInputItemType>();
 
+  /**
+   * 提交插件自定义输入：input 与对称 output 必须同一事务写入，撤销才不会拆成两步。
+   * 编辑按原 key 整体替换记录，新增走追加；只有改名时旧 handle 上的连线才需要一起断开。
+   */
   const onSubmit = useCallback(
     (data: FlowNodeInputItemType) => {
       if (!editField) return;
+      const documentInputs = node?.data.inputs;
+      const documentOutputs = node?.data.outputs;
+      if (!documentInputs || !documentOutputs) return;
 
-      if (editField?.key) {
-        const output = outputs.find((output) => output.key === editField.key);
-        const newOutput: FlowNodeOutputItemType = {
-          ...(output as FlowNodeOutputItemType),
-          valueType: data.valueType,
-          key: data.key,
-          label: data.label
-        };
-        onChangeNode({
-          nodeId,
-          type: 'replaceInput',
-          key: editField.key,
-          value: data
-        });
-        onChangeNode({
-          nodeId,
-          type: 'replaceOutput',
-          key: editField.key,
-          value: newOutput
-        });
-      } else {
-        const newOutput: FlowNodeOutputItemType = {
-          id: data.key,
-          valueType: data.valueType,
-          key: data.key,
-          label: data.label,
-          type: FlowNodeOutputTypeEnum.hidden
-        };
+      const editKey = editField.key;
+      const newOutput: FlowNodeOutputItemType = editKey
+        ? {
+            ...(documentOutputs.find((output) => output.key === editKey) as FlowNodeOutputItemType),
+            valueType: data.valueType,
+            key: data.key,
+            label: data.label
+          }
+        : {
+            id: data.key,
+            valueType: data.valueType,
+            key: data.key,
+            label: data.label,
+            type: FlowNodeOutputTypeEnum.hidden
+          };
 
-        // add_new_input
-        onChangeNode({
-          nodeId,
-          type: 'addInput',
-          value: data
-        });
-        onChangeNode({
-          nodeId,
-          type: 'addOutput',
-          value: newOutput
-        });
-      }
+      node?.updateNode(
+        {
+          inputs: editKey
+            ? documentInputs.map((input) => (input.key === editKey ? data : input))
+            : documentInputs.concat(data),
+          outputs: editKey
+            ? documentOutputs.map((output) => (output.key === editKey ? newOutput : output))
+            : documentOutputs.concat(newOutput)
+        },
+        editKey && editKey !== data.key
+          ? {
+              disconnectEdges: getOutputDisconnectCommands({ edges, nodeId, outputKey: editKey })
+            }
+          : undefined
+      );
     },
-    [editField, nodeId, onChangeNode, outputs]
+    [editField, edges, node, nodeId]
   );
 
   const Render = useMemo(() => {
@@ -129,16 +127,20 @@ const NodePluginInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
               setEditField(input);
             }}
             onDelete={(key) => {
-              onChangeNode({
-                nodeId,
-                type: 'delInput',
-                key
-              });
-              onChangeNode({
-                nodeId,
-                type: 'delOutput',
-                key
-              });
+              const documentInputs = node?.data.inputs;
+              const documentOutputs = node?.data.outputs;
+              if (!documentInputs || !documentOutputs) return;
+
+              // 删除字段时其对称 output 与 handle 连线同事务消失，撤销一步恢复。
+              node.updateNode(
+                {
+                  inputs: documentInputs.filter((input) => input.key !== key),
+                  outputs: documentOutputs.filter((output) => output.key !== key)
+                },
+                {
+                  disconnectEdges: getOutputDisconnectCommands({ edges, nodeId, outputKey: key })
+                }
+              );
             }}
           />
         </Container>
@@ -150,7 +152,7 @@ const NodePluginInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         )}
       </NodeCard>
     );
-  }, [data, inputs, nodeId, onChangeNode, outputs, selected, t]);
+  }, [data, edges, inputs, node, nodeId, outputs, selected, t]);
 
   return (
     <>

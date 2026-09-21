@@ -6,6 +6,7 @@ import { createContext, useContextSelector } from 'use-context-selector';
 import { AppContext } from '@/pageComponents/app/detail/context';
 import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
 import { useWorkflowDemoTrack } from '@/web/common/middle/tracks/workflowDemoTrack';
+import type { OnConnectStartParams } from 'reactflow';
 
 type MousePosition = { x: number; y: number };
 
@@ -22,6 +23,12 @@ type WorkflowUIContextValue = {
 
   /** 设置悬停的边 ID */
   setHoverEdgeId: React.Dispatch<React.SetStateAction<string | undefined>>;
+
+  /** 正在拖拽连线的源 handle；连接柄高亮与可连接判定都读它 */
+  connectingEdge?: OnConnectStartParams;
+
+  /** 设置正在拖拽连线的源 handle */
+  setConnectingEdge: React.Dispatch<React.SetStateAction<OnConnectStartParams | undefined>>;
 
   /** 鼠标是否在 Canvas 中 */
   mouseInCanvas: boolean;
@@ -57,6 +64,11 @@ export const WorkflowUIContext = createContext<WorkflowUIContextValue>({
   setHoverEdgeId: function (_value: React.SetStateAction<string | undefined>): void {
     throw new Error('Function not implemented.');
   },
+  setConnectingEdge: function (
+    _value: React.SetStateAction<OnConnectStartParams | undefined>
+  ): void {
+    throw new Error('Function not implemented.');
+  },
   mouseInCanvas: false,
   getMousePosition: () => null,
   reactFlowWrapperCallback: function (_node: HTMLDivElement | null): void {
@@ -85,6 +97,8 @@ export const WorkflowUIProvider: React.FC<PropsWithChildren> = ({ children }) =>
   // 悬停状态 (高频更新)
   const [hoverNodeId, setHoverNodeId] = useState<string>();
   const [hoverEdgeId, setHoverEdgeId] = useState<string>();
+  // 拖拽连线是纯 renderer 交互状态：只在手势期间存在，不进文档。
+  const [connectingEdge, setConnectingEdge] = useState<OnConnectStartParams>();
 
   // Canvas 交互
   const [mouseInCanvas, setMouseInCanvas] = useState(false);
@@ -169,6 +183,8 @@ export const WorkflowUIProvider: React.FC<PropsWithChildren> = ({ children }) =>
       setHoverNodeId,
       hoverEdgeId,
       setHoverEdgeId,
+      connectingEdge,
+      setConnectingEdge,
       mouseInCanvas,
       getMousePosition,
       reactFlowWrapperCallback,
@@ -182,6 +198,7 @@ export const WorkflowUIProvider: React.FC<PropsWithChildren> = ({ children }) =>
   }, [
     hoverNodeId,
     hoverEdgeId,
+    connectingEdge,
     mouseInCanvas,
     getMousePosition,
     reactFlowWrapperCallback,

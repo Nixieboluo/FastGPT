@@ -11,24 +11,26 @@ import { type FlowNodeInputItemType } from '@fastgpt/global/core/workflow/type/i
 import { getNanoid } from '@fastgpt/global/common/string/tools';
 import { MySourceHandle } from './render/Handle';
 import { getHandleId } from '@fastgpt/global/core/workflow/utils';
-import { useContextSelector } from 'use-context-selector';
 import { type UserSelectOptionItemType } from '@fastgpt/global/core/workflow/template/system/interactive/type';
 import IOTitle from '../components/IOTitle';
 import RenderOutput from './render/RenderOutput';
-import { WorkflowActionsContext } from '../../context/workflowActionsContext';
 import DraggableInputList from '@/components/core/app/DraggableInputList';
+import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
+import { useField, useNode, useWorkflow } from '@/web/core/workflow/editor';
 
 const NodeUserSelect = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useTranslation();
   const { nodeId, inputs, outputs } = data;
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
-  const onDelEdge = useContextSelector(WorkflowActionsContext, (v) => v.onDelEdge);
+  const node = useNode(nodeId);
+  const { edges } = useWorkflow();
+  // CustomComponent 是被 RenderInput 直接调用的普通函数，字段句柄必须在组件顶层取。
+  const optionsField = useField(nodeId, NodeInputKeyEnum.userSelectOptions, 'input');
   const { zoom } = useViewport();
 
   const CustomComponent = useMemo(
     () => ({
       [NodeInputKeyEnum.userSelectOptions]: (v: FlowNodeInputItemType) => {
-        const { key: optionKey, value, ...props } = v;
+        const { key: optionKey, value } = v;
         const options = value as UserSelectOptionItemType[];
 
         return (
@@ -38,16 +40,7 @@ const NodeUserSelect = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
               zoom={zoom}
               addText={t('common:core.module.Add_option')}
               onDragEnd={(list) => {
-                onChangeNode({
-                  nodeId,
-                  type: 'updateInput',
-                  key: optionKey,
-                  value: {
-                    ...props,
-                    key: optionKey,
-                    value: list
-                  }
-                });
+                optionsField?.setValue(list);
               }}
               onChange={(key, value) => {
                 const newVal = options.map((val) =>
@@ -58,44 +51,27 @@ const NodeUserSelect = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                       }
                     : val
                 );
-                onChangeNode({
-                  nodeId,
-                  type: 'updateInput',
-                  key: optionKey,
-                  value: {
-                    ...props,
-                    key: optionKey,
-                    value: newVal
-                  }
-                });
+                optionsField?.setValue(newVal);
               }}
               onAdd={() => {
-                onChangeNode({
-                  nodeId,
-                  type: 'updateInput',
-                  key: optionKey,
-                  value: {
-                    ...props,
-                    key: optionKey,
-                    value: options.concat({ value: '', key: getNanoid() })
-                  }
-                });
+                optionsField?.setValue(options.concat({ value: '', key: getNanoid() }));
               }}
               onDelete={(key) => {
-                onChangeNode({
-                  nodeId,
-                  type: 'updateInput',
-                  key: optionKey,
-                  value: {
-                    ...props,
-                    key: optionKey,
-                    value: options.filter((input) => input.key !== key)
+                // 删除选项要同时断开该分支 handle 上的连线：同一事务提交，撤销只需一步。
+                const documentInputs = node?.data.inputs;
+                if (!documentInputs) return;
+                node?.updateNode(
+                  {
+                    inputs: documentInputs.map((input) =>
+                      input.key === optionKey
+                        ? { ...input, value: options.filter((option) => option.key !== key) }
+                        : input
+                    )
+                  },
+                  {
+                    disconnectEdges: getOutputDisconnectCommands({ edges, nodeId, outputKey: key })
                   }
-                });
-                onDelEdge({
-                  nodeId,
-                  sourceHandle: getHandleId(nodeId, 'source', key)
-                });
+                );
               }}
               renderRight={(item, snapshot) =>
                 !snapshot.isDragging && (
@@ -114,7 +90,7 @@ const NodeUserSelect = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         );
       }
     }),
-    [nodeId, onChangeNode, onDelEdge, t, zoom]
+    [edges, node, nodeId, optionsField, t, zoom]
   );
 
   return (

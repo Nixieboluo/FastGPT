@@ -10,37 +10,38 @@ import { Box } from '@chakra-ui/react';
 import IOTitle from '../components/IOTitle';
 import MyIcon from '@fastgpt/web/components/common/Icon';
 import RenderOutput from './render/RenderOutput';
-import { useContextSelector } from 'use-context-selector';
 import CatchError from './render/RenderOutput/CatchError';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
-import { WorkflowUtilsContext } from '../../context/workflowUtilsContext';
 import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import WorkflowSandboxConfig, {
   createSandboxEntrypointInput
 } from './components/WorkflowSandboxConfig';
-import { WorkflowActionsContext } from '../../context/workflowActionsContext';
 import { useSystemStore } from '@/web/common/system/useSystemStore';
 import { useUserStore } from '@/web/support/user/useUserStore';
 import { useToast } from '@fastgpt/web/hooks/useToast';
+import { splitNodeOutputs, splitToolInputsByMode } from '@/web/core/workflow/utils';
+import { useIsToolNode } from './render/useWorkflowDocument';
+import { useField, useNode } from '@/web/core/workflow/editor';
 
 const NodeToolCall = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useTranslation();
   const { nodeId, inputs, outputs, catchError } = data;
   const { toast } = useToast();
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
-  const splitToolInputs = useContextSelector(WorkflowUtilsContext, (ctx) => ctx.splitToolInputs);
-  const splitOutput = useContextSelector(WorkflowUtilsContext, (ctx) => ctx.splitOutput);
+  const node = useNode(nodeId);
+  const sandboxField = useField(nodeId, NodeInputKeyEnum.useAgentSandbox, 'input');
+  const entrypointField = useField(nodeId, NodeInputKeyEnum.sandboxEntrypoint, 'input');
   const { feConfigs } = useSystemStore();
   const { teamPlanStatus } = useUserStore();
   const enableSandbox = !teamPlanStatus?.standard || !!teamPlanStatus?.standard?.enableSandbox;
   const showSandbox = feConfigs.show_agent_sandbox;
-  const { isTool, commonInputs } = useMemoEnhance(
-    () => splitToolInputs(inputs, nodeId),
-    [inputs, nodeId, splitToolInputs]
+  const isTool = useIsToolNode(nodeId);
+  const { commonInputs } = useMemoEnhance(
+    () => splitToolInputsByMode(inputs, isTool),
+    [inputs, isTool]
   );
   const { successOutputs, errorOutputs } = useMemoEnhance(
-    () => splitOutput(outputs),
-    [outputs, splitOutput]
+    () => splitNodeOutputs(outputs),
+    [outputs]
   );
   const sandboxInput = React.useMemo(
     () => inputs.find((input) => input.key === NodeInputKeyEnum.useAgentSandbox),
@@ -77,7 +78,7 @@ const NodeToolCall = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   }, [commonInputs]);
   const onChangeSandbox = React.useCallback(
     (checked: boolean) => {
-      if (!sandboxInput) return;
+      if (!sandboxField) return;
       if (checked) {
         if (!showSandbox) {
           toast({
@@ -95,17 +96,9 @@ const NodeToolCall = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         }
       }
 
-      onChangeNode({
-        nodeId,
-        key: NodeInputKeyEnum.useAgentSandbox,
-        type: 'updateInput',
-        value: {
-          ...sandboxInput,
-          value: checked
-        }
-      });
+      sandboxField.setValue(checked);
     },
-    [enableSandbox, nodeId, onChangeNode, sandboxInput, showSandbox, t, toast]
+    [enableSandbox, sandboxField, showSandbox, t, toast]
   );
 
   return (
@@ -122,16 +115,15 @@ const NodeToolCall = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
           isPlus={feConfigs?.isPlus}
           onChangeSandbox={onChangeSandbox}
           onChangeEntrypoint={(value) => {
-            onChangeNode({
-              nodeId,
-              key: NodeInputKeyEnum.sandboxEntrypoint,
-              type: 'replaceInput',
-              value: sandboxEntrypointInput
-                ? {
-                    ...sandboxEntrypointInput,
-                    value
-                  }
-                : createSandboxEntrypointInput(value)
+            // 已有入口字段只改值；字段缺失时按模板补一条记录（记录级变更走 updateNode）。
+            if (entrypointField) {
+              entrypointField.setValue(value);
+              return;
+            }
+            const documentInputs = node?.data.inputs;
+            if (!documentInputs) return;
+            node?.updateNode({
+              inputs: [...documentInputs, createSandboxEntrypointInput(value)]
             });
           }}
         />

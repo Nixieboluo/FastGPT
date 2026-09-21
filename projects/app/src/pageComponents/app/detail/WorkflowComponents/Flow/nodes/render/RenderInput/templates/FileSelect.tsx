@@ -2,9 +2,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import type { RenderInputProps } from '../type';
 import { Box, HStack, Input, InputGroup, VStack } from '@chakra-ui/react';
 import { useTranslation } from 'next-i18next';
-import { useContextSelector } from 'use-context-selector';
-import { getAppDetailById } from '@/web/core/app/api';
-import { WorkflowActionsContext } from '@/pageComponents/app/detail/WorkflowComponents/context/workflowActionsContext';
+import { useField } from '@/web/core/workflow/editor';
 import MyIcon from '@fastgpt/web/components/common/Icon';
 import MyDivider from '@fastgpt/web/components/common/MyDivider';
 import { getFileIcon } from '@fastgpt/global/common/file/icon';
@@ -16,7 +14,7 @@ import { getFileAmountLimit } from '@fastgpt/global/core/workflow/fileLimit';
 
 const FileSelectRender = ({ item, nodeId }: RenderInputProps) => {
   const { t } = useTranslation();
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const field = useField(nodeId, item.key, 'input');
   const { feConfigs } = useSystemStore();
   const { teamPlanStatus } = useUserStore();
 
@@ -40,32 +38,16 @@ const FileSelectRender = ({ item, nodeId }: RenderInputProps) => {
     (value: string) => {
       if (!value.trim()) return;
 
-      onChangeNode({
-        nodeId,
-        type: 'updateInput',
-        key: item.key,
-        value: {
-          ...item,
-          value: [value.trim(), ...values]
-        }
-      });
+      field?.setValue([value.trim(), ...values]);
       setUrlInput('');
     },
-    [item, nodeId, onChangeNode, values]
+    [field, values]
   );
   const handleDeleteUrl = useCallback(
     (index: number) => {
-      onChangeNode({
-        nodeId,
-        type: 'updateInput',
-        key: item.key,
-        value: {
-          ...item,
-          value: values.filter((_, i) => i !== index)
-        }
-      });
+      field?.setValue(values.filter((_, i) => i !== index));
     },
-    [item, nodeId, onChangeNode, values]
+    [field, values]
   );
 
   return (

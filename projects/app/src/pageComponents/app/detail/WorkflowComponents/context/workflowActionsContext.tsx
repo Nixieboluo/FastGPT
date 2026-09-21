@@ -8,8 +8,7 @@ import { collectWorkflowStartAutoFillRevertPatches } from '@/web/core/workflow/w
 import type { FlowNodeTemplateType } from '@fastgpt/global/core/workflow/type/node';
 import { useToast } from '@fastgpt/web/hooks/useToast';
 import { useTranslation } from 'next-i18next';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { OnConnectStartParams } from 'reactflow';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { createContext, useContextSelector } from 'use-context-selector';
 import { useMemoizedFn } from 'ahooks';
 import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
@@ -32,12 +31,6 @@ type WorkflowActionsContextValue = {
 
   /** 删除边 */
   onDelEdge: (e: { nodeId: string; sourceHandle?: string; targetHandle?: string }) => void;
-
-  /** 连接中的边 */
-  connectingEdge?: OnConnectStartParams;
-
-  /** 设置连接中的边 */
-  setConnectingEdge: React.Dispatch<React.SetStateAction<OnConnectStartParams | undefined>>;
 };
 export const WorkflowActionsContext = createContext<WorkflowActionsContextValue>({
   onResetNode: (...args: Parameters<WorkflowActionsContextValue['onResetNode']>) => {
@@ -49,10 +42,6 @@ export const WorkflowActionsContext = createContext<WorkflowActionsContextValue>
     throw new Error('Function not implemented.');
   },
   onDelEdge: (...args: Parameters<WorkflowActionsContextValue['onDelEdge']>) => {
-    void args;
-    throw new Error('Function not implemented.');
-  },
-  setConnectingEdge: (...args: Parameters<WorkflowActionsContextValue['setConnectingEdge']>) => {
     void args;
     throw new Error('Function not implemented.');
   }
@@ -87,9 +76,6 @@ export const WorkflowActionsProvider = ({ children }: { children: React.ReactNod
 
   const isFirstEdgesEffectRef = useRef(true);
   const prevEdgesRef = useRef(edges);
-
-  // 连接状态
-  const [connectingEdge, setConnectingEdge] = useState<OnConnectStartParams>();
 
   const isRuntimeActive = useMemoizedFn(() => !!runtime && !runtime.isDisposed());
 
@@ -202,11 +188,9 @@ export const WorkflowActionsProvider = ({ children }: { children: React.ReactNod
     return {
       onResetNode,
       onChangeNode,
-      onDelEdge,
-      connectingEdge,
-      setConnectingEdge
+      onDelEdge
     };
-  }, [onResetNode, onChangeNode, onDelEdge, connectingEdge]);
+  }, [onResetNode, onChangeNode, onDelEdge]);
 
   return (
     <WorkflowActionsContext.Provider value={contextValue}>

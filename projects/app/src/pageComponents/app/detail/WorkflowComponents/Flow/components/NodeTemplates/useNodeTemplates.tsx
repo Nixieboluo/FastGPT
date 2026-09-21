@@ -8,7 +8,6 @@ import { isTemplateVisible } from '@fastgpt/global/core/workflow/template/contex
 import { getTeamAppTemplatesV2, getAppToolTemplates } from '@/web/core/app/api/tool';
 import { TemplateTypeEnum } from './header';
 import { useContextSelector } from 'use-context-selector';
-import { WorkflowBufferDataContext } from '../../../context/workflowInitContext';
 import type { ParentIdType } from '@fastgpt/global/common/parentFolder/type';
 import { useDebounceEffect } from 'ahooks';
 import { AppContext } from '@/pageComponents/app/detail/context';
@@ -16,7 +15,12 @@ import { getPluginToolTags } from '@/web/core/plugin/toolTag/api';
 import { AppTypeEnum } from '@fastgpt/global/core/app/constants';
 import { NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
+import {
+  appSystemModuleTemplates,
+  pluginSystemModuleTemplates
+} from '@fastgpt/global/core/workflow/template/constants';
 import { useScrollPagination } from '@fastgpt/web/hooks/useScrollPagination';
+import { useWorkflowDocument } from '../../nodes/render/useWorkflowDocument';
 
 export const useNodeTemplates = (context: NodeTemplateContext | null = null) => {
   const [templateType, setTemplateType] = useState(TemplateTypeEnum.basic);
@@ -31,10 +35,13 @@ export const useNodeTemplates = (context: NodeTemplateContext | null = null) => 
   const [parentType, setParentType] = useState<AppTypeEnum>();
 
   const appId = useContextSelector(AppContext, (v) => v.appDetail._id);
-  const { basicNodeTemplates, getNodeList, nodeAmount } = useContextSelector(
-    WorkflowBufferDataContext,
-    (v) => v
-  );
+  const appType = useContextSelector(AppContext, (v) => v.appDetail.type);
+  // 基础模板目录按 host 区分：工具（Plugin host）与工作流（Workflow host）各用自己的系统模板常量，
+  // 不再从数据层 Context 透传。
+  const basicNodeTemplates =
+    appType === AppTypeEnum.workflowTool ? pluginSystemModuleTemplates : appSystemModuleTemplates;
+  const nodeList = useWorkflowDocument().reader?.nodes;
+  const nodeAmount = nodeList?.length ?? 0;
 
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const { data: toolTags = [] } = useRequest(getPluginToolTags, {
@@ -86,9 +93,7 @@ export const useNodeTemplates = (context: NodeTemplateContext | null = null) => 
             if (item.flowNodeType === FlowNodeTypeEnum.queryExtension) return false;
             // unique node filter
             if (item.unique) {
-              const nodeExist = getNodeList().some(
-                (node) => node.flowNodeType === item.flowNodeType
-              );
+              const nodeExist = nodeList?.some((node) => node.flowNodeType === item.flowNodeType);
               if (nodeExist) {
                 return false;
               }

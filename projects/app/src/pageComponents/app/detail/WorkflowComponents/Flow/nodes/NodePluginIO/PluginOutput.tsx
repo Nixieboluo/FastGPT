@@ -11,7 +11,6 @@ import {
 } from '@fastgpt/global/core/workflow/type/io';
 import { WorkflowIOValueTypeEnum } from '@fastgpt/global/core/workflow/constants';
 import { useTranslation } from 'next-i18next';
-import { useContextSelector } from 'use-context-selector';
 import IOTitle from '../../components/IOTitle';
 import { ReferSelector, useReference } from '../render/RenderInput/templates/Reference';
 import MyIcon from '@fastgpt/web/components/common/Icon';
@@ -22,7 +21,7 @@ import PluginOutputEditModal, { defaultOutput } from './PluginOutputEditModal';
 import MyTooltip from '@fastgpt/web/components/common/MyTooltip';
 import PopoverConfirm from '@fastgpt/web/components/common/MyPopover/PopoverConfirm';
 import MyIconButton from '@fastgpt/web/components/common/Icon/button';
-import { WorkflowActionsContext } from '../../../context/workflowActionsContext';
+import { useField, useNode } from '@/web/core/workflow/editor';
 
 const customOutputConfig = {
   selectValueTypeList: Object.values(WorkflowIOValueTypeEnum),
@@ -33,7 +32,7 @@ const customOutputConfig = {
 const NodePluginOutput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useTranslation();
   const { nodeId, inputs } = data;
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const node = useNode(nodeId);
 
   const [editField, setEditField] = useState<FlowNodeInputItemType>();
 
@@ -79,11 +78,10 @@ const NodePluginOutput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
           keys={inputs.map((input) => input.key)}
           onClose={() => setEditField(undefined)}
           onSubmit={({ data }) => {
-            onChangeNode({
-              nodeId,
-              type: 'addInput',
-              value: data
-            });
+            const documentInputs = node?.data.inputs;
+            if (!documentInputs) return;
+            // 新增插件输出等于追加一条 input 记录，整表提交保持单条历史。
+            node?.updateNode({ inputs: documentInputs.concat(data) });
           }}
         />
       )}
@@ -104,24 +102,17 @@ function Reference({
 }) {
   const { t } = useTranslation();
 
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const node = useNode(nodeId);
+  const field = useField(nodeId, input.key, 'input');
 
   const [editField, setEditField] = useState<FlowNodeInputItemType>();
 
   const onSelect = useCallback(
     (e?: ReferenceValueType) => {
       if (!e) return;
-      onChangeNode({
-        nodeId,
-        type: 'updateInput',
-        key: input.key,
-        value: {
-          ...input,
-          value: e
-        }
-      });
+      field?.setValue(e);
     },
-    [input, nodeId, onChangeNode]
+    [field]
   );
 
   const { referenceList } = useReference({
@@ -133,22 +124,22 @@ function Reference({
     ({ data }: { data: FlowNodeInputItemType }) => {
       if (!data.key) return;
 
-      onChangeNode({
-        nodeId,
-        type: 'replaceInput',
-        key: input.key,
-        value: data
+      const documentInputs = node?.data.inputs;
+      if (!documentInputs) return;
+      // 改名等结构性编辑整条替换记录，仍按旧 key 定位。
+      node?.updateNode({
+        inputs: documentInputs.map((item) => (item.key === input.key ? data : item))
       });
     },
-    [input.key, nodeId, onChangeNode]
+    [input.key, node]
   );
   const onDel = useCallback(() => {
-    onChangeNode({
-      nodeId,
-      type: 'delInput',
-      key: input.key
+    const documentInputs = node?.data.inputs;
+    if (!documentInputs) return;
+    node?.updateNode({
+      inputs: documentInputs.filter((item) => item.key !== input.key)
     });
-  }, [input.key, nodeId, onChangeNode]);
+  }, [input.key, node]);
 
   return (
     <>

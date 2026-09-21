@@ -6,10 +6,9 @@ import { useTranslation } from 'next-i18next';
 import { DatasetSearchModeEnum } from '@fastgpt/global/core/dataset/constants';
 import dynamic from 'next/dynamic';
 import MyIcon from '@fastgpt/web/components/common/Icon';
-import { useContextSelector } from 'use-context-selector';
 import QuestionTip from '@fastgpt/web/components/common/MyTooltip/QuestionTip';
 import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
-import { WorkflowActionsContext } from '@/pageComponents/app/detail/WorkflowComponents/context/workflowActionsContext';
+import { useField } from '@/web/core/workflow/editor';
 import DatasetCard from '@/components/core/app/DatasetCard';
 import { useSystemStore } from '@/web/common/system/useSystemStore';
 
@@ -21,7 +20,7 @@ export const SelectDatasetRender = React.memo(function SelectDatasetRender({
   nodeId
 }: RenderInputProps) {
   const { t } = useTranslation();
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const field = useField(nodeId, item.key, 'input');
 
   const [data, setData] = useState({
     searchMode: DatasetSearchModeEnum.embedding,
@@ -55,17 +54,9 @@ export const SelectDatasetRender = React.memo(function SelectDatasetRender({
 
   const onDeleteDataset = useCallback(
     (datasetId: string) => {
-      onChangeNode({
-        nodeId,
-        key: item.key,
-        type: 'updateInput',
-        value: {
-          ...item,
-          value: selectedDatasets.filter((dataset) => dataset.datasetId !== datasetId)
-        }
-      });
+      field?.setValue(selectedDatasets.filter((dataset) => dataset.datasetId !== datasetId));
     },
-    [item, nodeId, onChangeNode, selectedDatasets]
+    [field, selectedDatasets]
   );
 
   const Render = useMemo(() => {
@@ -98,15 +89,7 @@ export const SelectDatasetRender = React.memo(function SelectDatasetRender({
               isDeleted: item.isDeleted
             }))}
             onChange={(e) => {
-              onChangeNode({
-                nodeId,
-                key: item.key,
-                type: 'updateInput',
-                value: {
-                  ...item,
-                  value: e
-                }
-              });
+              field?.setValue(e);
             }}
             onClose={onCloseDatasetSelect}
           />
@@ -114,10 +97,8 @@ export const SelectDatasetRender = React.memo(function SelectDatasetRender({
       </>
     );
   }, [
+    field,
     isOpenDatasetSelect,
-    item,
-    nodeId,
-    onChangeNode,
     onCloseDatasetSelect,
     onOpenDatasetSelect,
     onDeleteDataset,
@@ -135,7 +116,8 @@ export const SwitchAuthTmb = React.memo(function SwitchAuthTmb({
 }: RenderInputProps) {
   const { t } = useTranslation();
   const { feConfigs } = useSystemStore();
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  // 权限开关写的是同节点的 authTmbId 字段，不是当前渲染字段，因此单独取句柄。
+  const authTmbField = useField(nodeId, NodeInputKeyEnum.authTmbId, 'input');
 
   const authTmbIdInput = useMemo(
     () => inputs.find((v) => v.key === NodeInputKeyEnum.authTmbId),
@@ -151,15 +133,7 @@ export const SwitchAuthTmb = React.memo(function SwitchAuthTmb({
         size={'sm'}
         isChecked={!!authTmbIdInput.value}
         onChange={(e) => {
-          onChangeNode({
-            nodeId,
-            key: NodeInputKeyEnum.authTmbId,
-            type: 'updateInput',
-            value: {
-              ...authTmbIdInput,
-              value: e.target.checked
-            }
-          });
+          authTmbField?.setValue(e.target.checked);
         }}
       />
     </Flex>

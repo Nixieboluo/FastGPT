@@ -11,12 +11,12 @@ import {
 } from '@fastgpt/global/core/workflow/constants';
 import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import { useContextSelector } from 'use-context-selector';
-import { WorkflowBufferDataContext } from '../../../context/workflowInitContext';
 import { AppContext } from '../../../../context';
 import { useTranslation } from 'next-i18next';
 import { getGlobalVariableNode } from '@/web/core/workflow/adapt';
-import { WorkflowActionsContext } from '../../../context/workflowActionsContext';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
+import { useDocumentGetNodeById } from '../render/useWorkflowDocument';
+import { useNode } from '@/web/core/workflow/editor';
 
 const typeMap = {
   [WorkflowIOValueTypeEnum.string]: WorkflowIOValueTypeEnum.arrayString,
@@ -28,8 +28,9 @@ const typeMap = {
 
 const NodeLoopEnd = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { nodeId, inputs, parentNodeId } = data;
-  const { getNodeById } = useContextSelector(WorkflowBufferDataContext, (v) => v);
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  // 引用目标的输出类型要跨节点查询：读走文档图查询面，父容器输出用 adapter 句柄写。
+  const getNodeById = useDocumentGetNodeById();
+  const parentNode = useNode(parentNodeId ?? '');
   const { appDetail } = useContextSelector(AppContext, (v) => v);
   const { t } = useTranslation();
 
@@ -39,11 +40,10 @@ const NodeLoopEnd = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   );
 
   const parallelRunIntro = useMemoEnhance(() => {
-    const parentNode = getNodeById(parentNodeId);
-    return parentNode?.flowNodeType === FlowNodeTypeEnum.parallelRun
+    return parentNode?.data.flowNodeType === FlowNodeTypeEnum.parallelRun
       ? t('workflow:parallel_run_end_intro')
       : undefined;
-  }, [getNodeById, parentNodeId, t]);
+  }, [parentNode, t]);
 
   // Get loopEnd input value type
   const valueType = useMemo(() => {
@@ -67,39 +67,24 @@ const NodeLoopEnd = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   useEffect(() => {
     if (!valueType) return;
 
-    const parentNode = getNodeById(parentNodeId);
-    if (!parentNode) return;
+    const parentOutputs = parentNode?.data.outputs;
+    if (!parentOutputs) return;
 
+    // 父容器是并行运行还是循环，决定同步哪一个聚合输出的类型。
+    const outputKey =
+      parentNode?.data.flowNodeType === FlowNodeTypeEnum.parallelRun
+        ? NodeOutputKeyEnum.parallelSuccessResults
+        : NodeOutputKeyEnum.nestedArrayResult;
+    const targetOutput = parentOutputs.find((output) => output.key === outputKey);
     const newArrayType = typeMap[valueType] ?? WorkflowIOValueTypeEnum.arrayAny;
+    if (!targetOutput || targetOutput.valueType === newArrayType) return;
 
-    if (parentNode.flowNodeType === FlowNodeTypeEnum.parallelRun) {
-      // For parallelRun parent: update parallelSuccessResults output type
-      const successOutput = parentNode.outputs.find(
-        (output) => output.key === NodeOutputKeyEnum.parallelSuccessResults
-      );
-      if (successOutput && successOutput.valueType !== newArrayType) {
-        onChangeNode({
-          nodeId: parentNode.nodeId,
-          type: 'updateOutput',
-          key: NodeOutputKeyEnum.parallelSuccessResults,
-          value: { ...successOutput, valueType: newArrayType }
-        });
-      }
-    } else {
-      // For loop parent: update nestedArrayResult output type
-      const parentNodeOutput = parentNode.outputs.find(
-        (output) => output.key === NodeOutputKeyEnum.nestedArrayResult
-      );
-      if (parentNodeOutput && parentNodeOutput.valueType !== newArrayType) {
-        onChangeNode({
-          nodeId: parentNode.nodeId,
-          type: 'updateOutput',
-          key: NodeOutputKeyEnum.nestedArrayResult,
-          value: { ...parentNodeOutput, valueType: newArrayType }
-        });
-      }
-    }
-  }, [valueType, nodeId, onChangeNode, parentNodeId, getNodeById]);
+    parentNode?.updateNode({
+      outputs: parentOutputs.map((output) =>
+        output.key === outputKey ? { ...output, valueType: newArrayType } : output
+      )
+    });
+  }, [parentNode, valueType]);
 
   return (
     <NodeCard

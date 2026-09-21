@@ -8,14 +8,13 @@ import NodeInputSelect, {
 } from '@fastgpt/web/components/core/workflow/NodeInputSelect';
 import { FlowNodeInputTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import ValueTypeLabel from '../ValueTypeLabel';
-import { useContextSelector } from 'use-context-selector';
 import QuestionTip from '@fastgpt/web/components/common/MyTooltip/QuestionTip';
 import FormLabel from '@fastgpt/web/components/common/MyBox/FormLabel';
 import MyIcon from '@fastgpt/web/components/common/Icon';
 import MyTooltip from '@fastgpt/web/components/common/MyTooltip';
-import { WorkflowActionsContext } from '../../../../context/workflowActionsContext';
 import { getToolInputDisplayRenderTypeList } from '@fastgpt/global/core/app/formEdit/utils';
 import { getSelectedInputRenderType } from '@fastgpt/global/core/workflow/utils';
+import { useNode } from '@/web/core/workflow/editor';
 
 type Props = {
   nodeId: string;
@@ -27,11 +26,10 @@ type Props = {
 
 const InputLabel = ({ nodeId, input, RightComponent, rightInline, isTool }: Props) => {
   const { t } = useSafeTranslation();
+  const node = useNode(nodeId);
 
   const labelText = t(input.label as any);
   const descriptionText = input.description ? t(input.description as any) : undefined;
-
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
 
   const { required, renderTypeList, valueType, valueDesc } = input;
   const renderType =
@@ -48,6 +46,8 @@ const InputLabel = ({ nodeId, input, RightComponent, rightInline, isTool }: Prop
   );
   const onChangeRenderType = useCallback(
     (e: string) => {
+      const documentInputs = node?.data.inputs;
+      if (!documentInputs) return;
       const nextInput = {
         ...input,
         ...getSelectedRenderTypeState({
@@ -57,14 +57,12 @@ const InputLabel = ({ nodeId, input, RightComponent, rightInline, isTool }: Prop
         value: undefined
       };
 
-      onChangeNode({
-        nodeId,
-        type: 'updateInput',
-        key: input.key,
-        value: nextInput
+      // 切换渲染类型整条替换输入记录（含清空 value），属于记录级变更。
+      node?.updateNode({
+        inputs: documentInputs.map((item) => (item.key === input.key ? nextInput : item))
       });
     },
-    [displayRenderTypeList, input, nodeId, onChangeNode]
+    [displayRenderTypeList, input, node]
   );
 
   return (
@@ -111,10 +109,10 @@ const InputLabel = ({ nodeId, input, RightComponent, rightInline, isTool }: Prop
                 bg: 'adora.100'
               }}
               onClick={() => {
-                onChangeNode({
-                  nodeId,
-                  type: 'delInput',
-                  key: input.key
+                const documentInputs = node?.data.inputs;
+                if (!documentInputs) return;
+                node?.updateNode({
+                  inputs: documentInputs.filter((item) => item.key !== input.key)
                 });
               }}
             >

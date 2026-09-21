@@ -48,13 +48,13 @@ import QuestionTip from '@fastgpt/web/components/common/MyTooltip/QuestionTip';
 import { FlowNodeInputTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import { getEditorVariables } from '../../../utils';
 import PromptEditor from '@fastgpt/web/components/common/Textarea/PromptEditor';
-import { WorkflowBufferDataContext } from '../../../context/workflowInitContext';
 import { useSystemStore } from '@/web/common/system/useSystemStore';
 import CatchError from '../render/RenderOutput/CatchError';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
-import { WorkflowUtilsContext } from '../../../context/workflowUtilsContext';
-import { WorkflowActionsContext } from '../../../context/workflowActionsContext';
 import FormLabel from '@fastgpt/web/components/common/MyBox/FormLabel';
+import { splitNodeOutputs, splitToolInputsByMode } from '@/web/core/workflow/utils';
+import { useIsToolNode, useWorkflowDocument } from '../render/useWorkflowDocument';
+import { useField, useNode } from '@/web/core/workflow/editor';
 
 const CurlImportModal = dynamic(() => import('./CurlImportModal'));
 const HeaderAuthConfig = dynamic(() => import('@/components/common/secret/HeaderAuthConfig'));
@@ -93,8 +93,11 @@ const RenderHttpMethodAndUrl = React.memo(function RenderHttpMethodAndUrl({
   const { t } = useTranslation();
   const { toast } = useToast();
 
-  const { edges, getNodeById } = useContextSelector(WorkflowBufferDataContext, (v) => v);
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  // 变量列表要按 id 查任意节点：统一读文档图查询面，不再依赖画布薄壳。
+  const { reader } = useWorkflowDocument();
+  const node = useNode(nodeId);
+  const urlField = useField(nodeId, NodeInputKeyEnum.httpReqUrl, 'input');
+  const methodField = useField(nodeId, NodeInputKeyEnum.httpMethod, 'input');
   const { appDetail } = useContextSelector(AppContext, (v) => v);
 
   const { feConfigs } = useSystemStore();
@@ -108,16 +111,10 @@ const RenderHttpMethodAndUrl = React.memo(function RenderHttpMethodAndUrl({
   ) as FlowNodeInputItemType;
 
   const onChangeUrl = (value: string) => {
-    onChangeNode({
-      nodeId,
-      type: 'updateInput',
-      key: NodeInputKeyEnum.httpReqUrl,
-      value: {
-        ...requestUrl,
-        value
-      }
-    });
+    urlField?.setValue(value);
   };
+
+  /** 失焦时把 url 上的 query 拆进 params：两个字段同一事务提交，撤销一步回到拆分前。 */
   const onBlurUrl = (val: string) => {
     // 拆分params和url
     const url = val.split('?')[0];
@@ -142,24 +139,16 @@ const RenderHttpMethodAndUrl = React.memo(function RenderHttpMethodAndUrl({
         }
       });
 
-      onChangeNode({
-        nodeId,
-        type: 'updateInput',
-        key: NodeInputKeyEnum.httpParams,
-        value: {
-          ...inputParams,
-          value: concatParams
-        }
-      });
-
-      onChangeNode({
-        nodeId,
-        type: 'updateInput',
-        key: NodeInputKeyEnum.httpReqUrl,
-        value: {
-          ...requestUrl,
-          value: url
-        }
+      const documentInputs = node?.data.inputs;
+      if (!documentInputs) return;
+      node?.updateNode({
+        inputs: documentInputs.map((input) => {
+          if (input.key === NodeInputKeyEnum.httpParams) {
+            return { ...input, value: concatParams };
+          }
+          if (input.key === NodeInputKeyEnum.httpReqUrl) return { ...input, value: url };
+          return input;
+        })
       });
 
       toast({
@@ -170,14 +159,15 @@ const RenderHttpMethodAndUrl = React.memo(function RenderHttpMethodAndUrl({
   };
 
   const variables = useMemoEnhance(() => {
+    if (!reader) return [];
     return getEditorVariables({
       nodeId,
-      getNodeById,
-      edges,
+      getNodeById: reader.getNodeById,
+      edges: reader.edges,
       appDetail,
       t
     });
-  }, [nodeId, getNodeById, edges, appDetail, t]);
+  }, [nodeId, reader, appDetail, t]);
 
   const externalProviderWorkflowVariables = useMemo(() => {
     return (
@@ -207,15 +197,7 @@ const RenderHttpMethodAndUrl = React.memo(function RenderHttpMethodAndUrl({
           value={requestMethods?.value}
           list={HTTP_METHODS.map((method) => ({ label: method, value: method }))}
           onChange={(e) => {
-            onChangeNode({
-              nodeId,
-              type: 'updateInput',
-              key: NodeInputKeyEnum.httpMethod,
-              value: {
-                ...requestMethods,
-                value: e
-              }
-            });
+            methodField?.setValue(e);
           }}
         />
         <Box
@@ -243,7 +225,7 @@ const RenderHttpMethodAndUrl = React.memo(function RenderHttpMethodAndUrl({
         </Box>
       </Flex>
 
-      {isOpenCurl && <CurlImportModal nodeId={nodeId} inputs={inputs} onClose={onCloseCurl} />}
+      {isOpenCurl && <CurlImportModal nodeId={nodeId} onClose={onCloseCurl} />}
     </Box>
   );
 });
@@ -258,10 +240,8 @@ export function RenderHttpProps({
   const { t } = useTranslation();
   const [selectedTab, setSelectedTab] = useState(TabEnum.params);
 
-  const edges = useContextSelector(WorkflowBufferDataContext, (v) => v.edges);
-  const { getNodeById } = useContextSelector(WorkflowBufferDataContext, (v) => v);
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
-
+  const { reader } = useWorkflowDocument();
+  const headerSecretField = useField(nodeId, NodeInputKeyEnum.headerSecret, 'input');
   const { appDetail } = useContextSelector(AppContext, (v) => v);
   const { feConfigs } = useSystemStore();
 
@@ -288,14 +268,15 @@ export function RenderHttpProps({
   }, [feConfigs?.externalProviderWorkflowVariables]);
 
   const variables = useMemoEnhance(() => {
+    if (!reader) return [];
     return getEditorVariables({
       nodeId,
-      getNodeById,
-      edges,
+      getNodeById: reader.getNodeById,
+      edges: reader.edges,
       appDetail,
       t
     });
-  }, [nodeId, getNodeById, edges, appDetail, t]);
+  }, [nodeId, reader, appDetail, t]);
 
   const variableText = useMemo(() => {
     return variables
@@ -330,15 +311,7 @@ export function RenderHttpProps({
           <HeaderAuthConfig
             storeHeaderSecretConfig={headerSecret?.value}
             onUpdate={(data) => {
-              onChangeNode({
-                nodeId,
-                type: 'updateInput',
-                key: NodeInputKeyEnum.headerSecret,
-                value: {
-                  ...headerSecret,
-                  value: data
-                }
-              });
+              headerSecretField?.setValue(data);
             }}
           />
         </Flex>
@@ -410,8 +383,8 @@ export function RenderHttpProps({
     formBody,
     headersLength,
     headerSecret,
+    headerSecretField,
     nodeId,
-    onChangeNode,
     paramsLength,
     requestMethods,
     selectedTab,
@@ -432,7 +405,7 @@ const RenderHttpTimeout = ({
   const { t } = useTranslation();
   const timeout = inputs.find((item) => item.key === NodeInputKeyEnum.httpTimeout)!;
   const [isEditTimeout, setIsEditTimeout] = useState(false);
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const timeoutField = useField(nodeId, NodeInputKeyEnum.httpTimeout, 'input');
 
   return (
     <Flex alignItems={'center'} justifyContent={'space-between'}>
@@ -448,15 +421,7 @@ const RenderHttpTimeout = ({
             bg={'white'}
             onBlur={() => setIsEditTimeout(false)}
             onChange={(e) => {
-              onChangeNode({
-                nodeId,
-                type: 'updateInput',
-                key: NodeInputKeyEnum.httpTimeout,
-                value: {
-                  ...timeout,
-                  value: Number(e)
-                }
-              });
+              timeoutField?.setValue(Number(e));
             }}
           >
             <NumberInputField autoFocus bg={'white'} px={3} borderRadius={'sm'} />
@@ -492,12 +457,11 @@ const RenderForm = ({
 }) => {
   const { t } = useTranslation();
   const { toast } = useToast();
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const field = useField(nodeId, input.key, 'input');
   const draftValuesRef = React.useRef<Record<number, PropsArrType>>({});
 
   const list = useMemo(() => (input.value || []) as PropsArrType[], [input.value]);
   const latestListRef = useRef(list);
-  const inputRef = useRef(input);
   const pendingListRef = useRef<PropsArrType[] | undefined>();
   const pendingFrameRef = useRef<number | undefined>(undefined);
   const [rowKeys, setRowKeys] = useState<string[]>(() =>
@@ -507,8 +471,7 @@ const RenderForm = ({
   useEffect(() => {
     draftValuesRef.current = {};
     latestListRef.current = list;
-    inputRef.current = input;
-  }, [input, list]);
+  }, [list]);
 
   useEffect(
     () => () => {
@@ -523,17 +486,10 @@ const RenderForm = ({
 
   const updateListAndNode = useCallback(
     (nextList: PropsArrType[]) => {
-      onChangeNode({
-        nodeId,
-        type: 'updateInput',
-        key: inputRef.current.key,
-        value: {
-          ...inputRef.current,
-          value: nextList
-        }
-      });
+      // params / headers 整表就是一个字段的值：整体提交，一次交互一条历史。
+      field?.setValue(nextList);
     },
-    [nodeId, onChangeNode]
+    [field]
   );
 
   const scheduleListUpdate = useCallback(
@@ -764,24 +720,26 @@ const RenderBody = ({
   }[];
 }) => {
   const { t } = useTranslation();
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const node = useNode(nodeId);
+  const contentTypeField = useField(nodeId, NodeInputKeyEnum.httpContentType, 'input');
+  const jsonBodyField = useField(nodeId, jsonBody.key, 'input');
 
   useEffect(() => {
-    if (typeInput === undefined) {
-      onChangeNode({
-        nodeId,
-        type: 'addInput',
-        value: {
-          key: NodeInputKeyEnum.httpContentType,
-          renderTypeList: [FlowNodeInputTypeEnum.hidden],
-          valueType: WorkflowIOValueTypeEnum.string,
-          value: ContentTypes.json,
-          label: '',
-          required: false
-        }
-      });
-    }
-  }, [nodeId, onChangeNode, typeInput]);
+    if (typeInput !== undefined) return;
+    const documentInputs = node?.data.inputs;
+    if (!documentInputs) return;
+    // 旧文档缺少 contentType 字段时补齐：整表提交，写入后 typeInput 有值，effect 不再重入。
+    node?.updateNode({
+      inputs: documentInputs.concat({
+        key: NodeInputKeyEnum.httpContentType,
+        renderTypeList: [FlowNodeInputTypeEnum.hidden],
+        valueType: WorkflowIOValueTypeEnum.string,
+        value: ContentTypes.json,
+        label: '',
+        required: false
+      })
+    });
+  }, [node, typeInput]);
 
   const Render = useMemo(() => {
     return (
@@ -809,19 +767,7 @@ const RenderBody = ({
                   })}
               _hover={{ bg: 'white', borderColor: 'myGray.200', color: 'primary.700' }}
               onClick={() => {
-                onChangeNode({
-                  nodeId,
-                  type: 'updateInput',
-                  key: NodeInputKeyEnum.httpContentType,
-                  value: {
-                    key: NodeInputKeyEnum.httpContentType,
-                    renderTypeList: [FlowNodeInputTypeEnum.hidden],
-                    valueType: WorkflowIOValueTypeEnum.string,
-                    value: item,
-                    label: '',
-                    required: false
-                  }
-                });
+                contentTypeField?.setValue(item);
               }}
               cursor={'pointer'}
               whiteSpace={'nowrap'}
@@ -848,15 +794,7 @@ const RenderBody = ({
             value={jsonBody.value}
             placeholder={t('workflow:http_body_placeholder')}
             onChange={(e) => {
-              onChangeNode({
-                nodeId,
-                type: 'updateInput',
-                key: jsonBody.key,
-                value: {
-                  ...jsonBody,
-                  value: e
-                }
-              });
+              jsonBodyField?.setValue(e);
             }}
           />
         )}
@@ -865,15 +803,7 @@ const RenderBody = ({
             value={jsonBody.value}
             placeholder={t('common:textarea_variable_picker_tip')}
             onChange={(e) => {
-              onChangeNode({
-                nodeId,
-                type: 'updateInput',
-                key: jsonBody.key,
-                value: {
-                  ...jsonBody,
-                  value: e
-                }
-              });
+              jsonBodyField?.setValue(e);
             }}
             showOpenModal={false}
             variableLabels={variables}
@@ -890,7 +820,8 @@ const RenderBody = ({
     externalProviderWorkflowVariables,
     jsonBody,
     t,
-    onChangeNode
+    contentTypeField,
+    jsonBodyField
   ]);
   return Render;
 };
@@ -911,14 +842,14 @@ const RenderPropsItem = ({ text, num }: { text: string; num: number }) => {
 const NodeHttp = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useTranslation();
   const { nodeId, inputs, outputs, catchError } = data;
-  const { splitToolInputs, splitOutput } = useContextSelector(WorkflowUtilsContext, (v) => v);
-  const { commonInputs, isTool } = useMemoEnhance(
-    () => splitToolInputs(inputs, nodeId),
-    [inputs, nodeId, splitToolInputs]
+  const isTool = useIsToolNode(nodeId);
+  const { commonInputs } = useMemoEnhance(
+    () => splitToolInputsByMode(inputs, isTool),
+    [inputs, isTool]
   );
   const { successOutputs, errorOutputs } = useMemoEnhance(
-    () => splitOutput(outputs),
-    [splitOutput, outputs]
+    () => splitNodeOutputs(outputs),
+    [outputs]
   );
 
   const HttpMethodAndUrl = useMemoizedFn(() => (

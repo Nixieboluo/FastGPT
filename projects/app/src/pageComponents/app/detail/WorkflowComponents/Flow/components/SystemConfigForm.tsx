@@ -1,5 +1,5 @@
-import React, { type Dispatch, useCallback } from 'react';
-import { useViewport } from 'reactflow';
+import React, { type Dispatch, useCallback, useMemo } from 'react';
+import { useReactFlow, useViewport } from 'reactflow';
 import { Box } from '@chakra-ui/react';
 
 import QGConfig from '@/components/core/app/QGConfig';
@@ -9,7 +9,6 @@ import InputGuideConfig from '@/components/core/app/InputGuideConfig';
 import { TTSTypeEnum } from '@/web/core/app/constants';
 import ScheduledTriggerConfig from '@/components/core/app/ScheduledTriggerConfig';
 import { useContextSelector } from 'use-context-selector';
-import { WorkflowBufferDataContext, WorkflowInitContext } from '../../context/workflowInitContext';
 import { type AppChatConfigType, type AppDetailType } from '@fastgpt/global/core/app/type';
 import type { VariableItemType } from '@fastgpt/global/core/app/variable/type';
 import VariableEdit from '@/components/core/app/VariableEdit';
@@ -24,6 +23,8 @@ import {
   collectWorkflowStartOutputAutoFillRevertPatches
 } from '@/web/core/workflow/workflowStartAutoFill';
 import WelcomeQuestionsConfig from '@/components/core/app/WelcomeQuestionsConfig';
+import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
+import { useWorkflowDocument } from '../nodes/render/useWorkflowDocument';
 
 type ComponentProps = {
   chatConfig: AppChatConfigType;
@@ -341,13 +342,17 @@ function QuestionInputGuide({ chatConfig: { chatInputGuide }, setAppDetail }: Co
 }
 
 function FileSelectConfig({ chatConfig: { fileSelectConfig }, setAppDetail }: ComponentProps) {
+  // 文件上传开关要同时改「流程开始」的输出与全部下游节点的自动填充引用：一次交互跨多个节点，
+  // adapter 只有单节点 updateNode，逐节点提交会把撤销拆成 N 步，
+  // 因此这里保留 Actions 的批量翻译入口（收尾票随翻译层一起处理）。
   const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
-  const workflowStartNode = useContextSelector(
-    WorkflowBufferDataContext,
-    (v) => v.workflowStartNode
+  const { getNodes, getEdges } = useReactFlow();
+  const nodeList = useWorkflowDocument().reader?.nodes;
+  // 工具（Plugin host）没有流程开始节点，此时整段配置不渲染。
+  const workflowStartNode = useMemo(
+    () => nodeList?.find((node) => node.flowNodeType === FlowNodeTypeEnum.workflowStart),
+    [nodeList]
   );
-  const nodes = useContextSelector(WorkflowInitContext, (v) => v.nodes);
-  const edges = useContextSelector(WorkflowBufferDataContext, (v) => v.edges);
 
   if (!workflowStartNode) return null;
 
@@ -363,6 +368,9 @@ function FileSelectConfig({ chatConfig: { fileSelectConfig }, setAppDetail }: Co
           }
         }));
 
+        // 自动填充按当前画布整体扫描；读取时机在点击回调内，取 store 最新值即可。
+        const nodes = getNodes();
+        const edges = getEdges();
         // Dynamic add or delete userFilesInput
         const canUploadFiles =
           e.canSelectFile ||

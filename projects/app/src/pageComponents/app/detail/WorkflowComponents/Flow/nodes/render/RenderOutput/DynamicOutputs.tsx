@@ -7,12 +7,12 @@ import {
 } from '@fastgpt/global/core/workflow/node/constant';
 import { WorkflowIOValueTypeEnum } from '@fastgpt/global/core/workflow/constants';
 import { useTranslation } from 'next-i18next';
-import { useContextSelector } from 'use-context-selector';
 import QuestionTip from '@fastgpt/web/components/common/MyTooltip/QuestionTip';
 import MyIconButton from '@fastgpt/web/components/common/Icon/button';
 import MySelect from '@fastgpt/web/components/common/MySelect';
 import { getNanoid } from '@fastgpt/global/common/string/tools';
-import { WorkflowActionsContext } from '../../../../context/workflowActionsContext';
+import { useNode, useWorkflow } from '@/web/core/workflow/editor';
+import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
 
 type DynamicOutputsProps = {
   nodeId: string;
@@ -32,40 +32,46 @@ const defaultOutput: FlowNodeOutputItemType = {
 
 const DynamicOutputs = ({ nodeId, outputs, addOutput }: DynamicOutputsProps) => {
   const { t } = useTranslation();
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const node = useNode(nodeId);
+  const { edges } = useWorkflow();
 
+  // 输出字段的增删改都是记录级变更：读文档当前 outputs、拼完整数组后走 updateNode。
+  // 替换与删除会让旧 source handle 失效，连线必须同事务断开，否则撤销要按两下。
   const handleUpdateOutput = useCallback(
     (originalKey: string, updatedOutput: FlowNodeOutputItemType) => {
-      onChangeNode({
-        nodeId,
-        type: 'replaceOutput',
-        key: originalKey,
-        value: updatedOutput
-      });
+      const documentOutputs = node?.data.outputs;
+      if (!documentOutputs) return;
+      node?.updateNode(
+        {
+          outputs: documentOutputs.map((item) => (item.key === originalKey ? updatedOutput : item))
+        },
+        {
+          disconnectEdges: getOutputDisconnectCommands({ edges, nodeId, outputKey: originalKey })
+        }
+      );
     },
-    [nodeId, onChangeNode]
+    [edges, node, nodeId]
   );
 
   const handleDeleteOutput = useCallback(
     (key: string) => {
-      onChangeNode({
-        nodeId,
-        type: 'delOutput',
-        key
-      });
+      const documentOutputs = node?.data.outputs;
+      if (!documentOutputs) return;
+      node?.updateNode(
+        { outputs: documentOutputs.filter((item) => item.key !== key) },
+        { disconnectEdges: getOutputDisconnectCommands({ edges, nodeId, outputKey: key }) }
+      );
     },
-    [nodeId, onChangeNode]
+    [edges, node, nodeId]
   );
 
   const handleAddOutput = useCallback(
     (newOutput: FlowNodeOutputItemType) => {
-      onChangeNode({
-        nodeId,
-        type: 'addOutput',
-        value: newOutput
-      });
+      const documentOutputs = node?.data.outputs;
+      if (!documentOutputs) return;
+      node?.updateNode({ outputs: [...documentOutputs, newOutput] });
     },
-    [nodeId, onChangeNode]
+    [node]
   );
 
   const Render = useMemo(() => {

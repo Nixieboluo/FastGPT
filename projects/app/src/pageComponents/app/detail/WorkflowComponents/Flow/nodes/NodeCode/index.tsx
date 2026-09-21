@@ -26,27 +26,29 @@ import CatchError from '../render/RenderOutput/CatchError';
 import MyIcon from '@fastgpt/web/components/common/Icon';
 import NodeCopilot from './Copilot';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
-import { WorkflowUtilsContext } from '../../../context/workflowUtilsContext';
-import { WorkflowActionsContext } from '../../../context/workflowActionsContext';
 import { WorkflowUIContext } from '../../context/workflowUIContext';
 import { useRequest } from '@fastgpt/web/hooks/useRequest';
 import { getSandboxPackages } from './api';
 import MyTooltip from '@fastgpt/web/components/common/MyTooltip';
+import { splitNodeOutputs, splitToolInputsByMode } from '@/web/core/workflow/utils';
+import { useIsToolNode } from '../render/useWorkflowDocument';
+import { useField, useNode } from '@/web/core/workflow/editor';
 
 const NodeCode = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useTranslation();
   const { nodeId, inputs, outputs, catchError } = data;
-  const { splitToolInputs, splitOutput } = useContextSelector(WorkflowUtilsContext, (ctx) => ctx);
   const { successOutputs, errorOutputs } = useMemoEnhance(
-    () => splitOutput(outputs),
-    [splitOutput, outputs]
+    () => splitNodeOutputs(outputs),
+    [outputs]
   );
 
   const codeType = inputs.find(
     (item) => item.key === NodeInputKeyEnum.codeType
   ) as FlowNodeInputItemType;
 
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (ctx) => ctx.onChangeNode);
+  // CustomComponent 由 RenderInput 以普通函数调用，hooks 只能取在组件顶层。
+  const node = useNode(nodeId);
+  const codeField = useField(nodeId, NodeInputKeyEnum.code, 'input');
   const presentationMode = useContextSelector(WorkflowUIContext, (ctx) => ctx.presentationMode);
 
   const { ConfirmModal: SwitchLangConfirm, openConfirm: openSwitchLangConfirm } = useConfirm({
@@ -86,21 +88,19 @@ const NodeCode = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                 onChange={(newLang) => {
                   openSwitchLangConfirm({
                     onConfirm: () => {
-                      onChangeNode({
-                        nodeId,
-                        type: 'updateInput',
-                        key: NodeInputKeyEnum.codeType,
-                        value: { ...codeType, value: newLang }
-                      });
-
-                      onChangeNode({
-                        nodeId,
-                        type: 'updateInput',
-                        key: item.key,
-                        value: {
-                          ...item,
-                          value: SANDBOX_CODE_TEMPLATE[newLang]
-                        }
+                      const documentInputs = node?.data.inputs;
+                      if (!documentInputs) return;
+                      // 语言与模板代码必须一起换：同一事务提交，撤销一次回到旧语言。
+                      node?.updateNode({
+                        inputs: documentInputs.map((input) => {
+                          if (input.key === NodeInputKeyEnum.codeType) {
+                            return { ...input, value: newLang };
+                          }
+                          if (input.key === item.key) {
+                            return { ...input, value: SANDBOX_CODE_TEMPLATE[newLang] };
+                          }
+                          return input;
+                        })
                       });
                     }
                   })();
@@ -125,15 +125,7 @@ const NodeCode = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                 content={t('workflow:code.Reset template confirm')}
                 placement={'top-end'}
                 onConfirm={() =>
-                  onChangeNode({
-                    nodeId,
-                    type: 'updateInput',
-                    key: item.key,
-                    value: {
-                      ...item,
-                      value: codeType.value === 'js' ? JS_TEMPLATE : PY_TEMPLATE
-                    }
-                  })
+                  codeField?.setValue(codeType.value === 'js' ? JS_TEMPLATE : PY_TEMPLATE)
                 }
               />
             </Flex>
@@ -145,12 +137,7 @@ const NodeCode = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                 borderRadius={'sm'}
                 value={item.value}
                 onChange={(e) => {
-                  onChangeNode({
-                    nodeId,
-                    type: 'updateInput',
-                    key: item.key,
-                    value: { ...item, value: e }
-                  });
+                  codeField?.setValue(e);
                 }}
                 language={codeType.value}
               />
@@ -159,11 +146,12 @@ const NodeCode = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         );
       }
     };
-  }, [packageText, codeType, nodeId, t, presentationMode, onChangeNode]);
+  }, [packageText, codeType, nodeId, t, presentationMode, node, codeField]);
 
-  const { isTool, commonInputs } = useMemoEnhance(
-    () => splitToolInputs(inputs, nodeId),
-    [inputs, nodeId, splitToolInputs]
+  const isTool = useIsToolNode(nodeId);
+  const { commonInputs } = useMemoEnhance(
+    () => splitToolInputsByMode(inputs, isTool),
+    [inputs, isTool]
   );
 
   const rtDoms = useMemo(() => {

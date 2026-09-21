@@ -21,7 +21,6 @@ import MyIcon from '@fastgpt/web/components/common/Icon';
 import Reference from './Reference';
 import ValueTypeLabel from '../../ValueTypeLabel';
 import { useContextSelector } from 'use-context-selector';
-import { WorkflowBufferDataContext } from '../../../../../context/workflowInitContext';
 import { getWorkflowGlobalVariables } from '@/web/core/workflow/utils';
 import { AppContext } from '@/pageComponents/app/detail/context';
 import QuestionTip from '@fastgpt/web/components/common/MyTooltip/QuestionTip';
@@ -35,7 +34,7 @@ import {
 } from '@fastgpt/global/core/workflow/template/system/aiChat';
 import MySelect from '@fastgpt/web/components/common/MySelect';
 import LightTip from '@fastgpt/web/components/common/LightTip';
-import { WorkflowActionsContext } from '@/pageComponents/app/detail/WorkflowComponents/context/workflowActionsContext';
+import { useNode } from '@/web/core/workflow/editor';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
 
 const LabelStyles: BoxProps = {
@@ -49,9 +48,8 @@ const selectTemplateBtn: BoxProps = {
 const EditModal = ({ onClose, ...props }: RenderInputProps & { onClose: () => void }) => {
   const { inputs = [], nodeId } = props;
   const { t } = useSafeTranslation();
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
-  const node = useContextSelector(WorkflowBufferDataContext, (v) => v.getNodeById(nodeId));
-  const nodeVersion = node?.version;
+  const node = useNode(nodeId);
+  const nodeVersion = node?.data.version;
 
   const { watch, setValue, handleSubmit } = useForm({
     defaultValues: {
@@ -147,37 +145,27 @@ const EditModal = ({ onClose, ...props }: RenderInputProps & { onClose: () => vo
 
   const onSubmit = useCallback(
     (data: { quoteTemplate: string; quotePrompt: string; quoteRole: AiChatQuoteRoleType }) => {
-      onChangeNode({
-        nodeId,
-        type: 'replaceInput',
-        key: NodeInputKeyEnum.aiChatQuoteRole,
-        value: {
-          ...AiChatQuoteRole,
-          value: data.quoteRole || 'system'
-        }
+      const documentInputs = node?.data.inputs;
+      if (!documentInputs) return;
+
+      // 三条引用配置记录一次提交：已存在的按模板整条替换，缺失的追加，与旧 replaceInput 一致。
+      const nextInputs = [...documentInputs];
+      (
+        [
+          { record: AiChatQuoteRole, value: data.quoteRole || 'system' },
+          { record: AiChatQuoteTemplate, value: data.quoteTemplate },
+          { record: AiChatQuotePrompt, value: data.quotePrompt }
+        ] as const
+      ).forEach(({ record, value }) => {
+        const index = nextInputs.findIndex((input) => input.key === record.key);
+        if (index >= 0) nextInputs[index] = { ...record, value };
+        else nextInputs.push({ ...record, value });
       });
-      onChangeNode({
-        nodeId,
-        type: 'replaceInput',
-        key: NodeInputKeyEnum.aiChatQuoteTemplate,
-        value: {
-          ...AiChatQuoteTemplate,
-          value: data.quoteTemplate
-        }
-      });
-      onChangeNode({
-        nodeId,
-        type: 'replaceInput',
-        key: NodeInputKeyEnum.aiChatQuotePrompt,
-        value: {
-          ...AiChatQuotePrompt,
-          value: data.quotePrompt
-        }
-      });
+      node?.updateNode({ inputs: nextInputs });
 
       onClose();
     },
-    [nodeId, onChangeNode, onClose]
+    [node, onClose]
   );
 
   const quotePromptTemplates =

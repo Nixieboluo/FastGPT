@@ -1,45 +1,51 @@
 import { useModelDetail } from '@/web/core/ai/model/useModelDetail';
 import { ModelTypeEnum } from '@fastgpt/global/core/ai/constants';
 import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
+import type {
+  FlowNodeInputItemType,
+  FlowNodeOutputItemType
+} from '@fastgpt/global/core/workflow/type/io';
 import { useEffect } from 'react';
-import { useContextSelector } from 'use-context-selector';
-import { WorkflowBufferDataContext, WorkflowInitContext } from '../../context/workflowInitContext';
+import { useNode } from '@/web/core/workflow/editor';
 
-/** 节点折叠时仍同步输出能力；加载或失败时保留原状态，只将结果应用到未变化的输入。 */
+/**
+ * 按当前模型能力刷新节点输出的 `invalid` 派生标记，结果写回文档（节点折叠时也照常同步）。
+ *
+ * 模型详情加载或失败时保留原状态不回写；标记全部相等时不提交，避免每次重渲染都推一条历史。
+ * 读取基准是节点 scoped snapshot：等待期间节点被删除时 useNode 返回 undefined，
+ * 输入被改过时 snapshot 身份变化会带着新值重跑，旧详情不会写回过期结论。
+ */
 export const useNodeOutputValidity = (nodeId: string) => {
-  const node = useContextSelector(
-    WorkflowInitContext,
-    (state) => state.nodes.find((item) => item.id === nodeId)?.data
-  );
-  const setNodes = useContextSelector(WorkflowBufferDataContext, (state) => state.setNodes);
-  const needsModel = node?.outputs.some((output) => !!output.invalidCondition);
+  const node = useNode(nodeId);
+  const inputs = node?.data.inputs;
+  const outputs = node?.data.outputs;
+  const needsModel = outputs?.some((output) => !!output.invalidCondition);
   const { model, loading, error } = useModelDetail({
     modelType: ModelTypeEnum.llm,
     modelId: needsModel
-      ? node?.inputs.find((input) => input.key === NodeInputKeyEnum.aiModelId)?.value
+      ? inputs?.find((input) => input.key === NodeInputKeyEnum.aiModelId)?.value
       : undefined,
     model: needsModel
-      ? node?.inputs.find((input) => input.key === NodeInputKeyEnum.aiModel)?.value
+      ? inputs?.find((input) => input.key === NodeInputKeyEnum.aiModel)?.value
       : undefined
   });
 
   useEffect(() => {
-    if (!node || !needsModel || loading || error) return;
+    if (!node || !inputs || !outputs || !needsModel || loading || error) return;
     const llmModelMap = model ? { [model.modelId]: model, [model.model]: model } : {};
-    setNodes((nodes) => {
-      const current = nodes.find((item) => item.id === nodeId);
-      // 等待期间删除节点或修改输入后，旧详情不能回写；输出从最新状态计算以保留其他编辑。
-      if (!current || current.data.inputs !== node.inputs) return nodes;
-      const outputs = current.data.outputs.map((output) =>
-        output.invalidCondition
-          ? { ...output, invalid: output.invalidCondition({ inputs: node.inputs, llmModelMap }) }
-          : output
-      );
-      if (outputs.every((output, index) => output.invalid === current.data.outputs[index].invalid))
-        return nodes;
-      return nodes.map((item) =>
-        item === current ? { ...item, data: { ...item.data, outputs } } : item
-      );
-    });
-  }, [node, nodeId, needsModel, model, loading, error, setNodes]);
+    const nextOutputs = outputs.map((output) =>
+      output.invalidCondition
+        ? {
+            ...output,
+            invalid: output.invalidCondition({
+              // 只读快照与 invalidCondition 入参只差 readonly 修饰，这里不改内容。
+              inputs: inputs as unknown as FlowNodeInputItemType[],
+              llmModelMap
+            })
+          }
+        : output
+    );
+    if (nextOutputs.every((output, index) => output.invalid === outputs[index].invalid)) return;
+    node.updateNode({ outputs: nextOutputs as FlowNodeOutputItemType[] });
+  }, [node, inputs, outputs, needsModel, model, loading, error]);
 };

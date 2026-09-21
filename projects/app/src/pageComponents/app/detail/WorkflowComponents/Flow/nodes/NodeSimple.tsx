@@ -8,10 +8,10 @@ import RenderOutput from './render/RenderOutput';
 import RenderToolInput, { hasDynamicToolInput } from './render/RenderToolInput';
 import { useTranslation } from 'next-i18next';
 import IOTitle from '../components/IOTitle';
-import { useContextSelector } from 'use-context-selector';
 import CatchError from './render/RenderOutput/CatchError';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
-import { WorkflowUtilsContext } from '../../context/workflowUtilsContext';
+import { splitNodeOutputs, splitToolInputsByMode } from '@/web/core/workflow/utils';
+import { useIsToolNode } from './render/useWorkflowDocument';
 
 const NodeSimple = ({
   data,
@@ -21,14 +21,14 @@ const NodeSimple = ({
 }: NodeProps<FlowNodeItemType> & { minW?: string | number; maxW?: string | number }) => {
   const { t } = useTranslation();
   const { nodeId, catchError, inputs, outputs } = data;
-  const { splitToolInputs, splitOutput } = useContextSelector(WorkflowUtilsContext, (ctx) => ctx);
-  const { isTool, commonInputs } = useMemoEnhance(
-    () => splitToolInputs(inputs, nodeId),
-    [inputs, nodeId, splitToolInputs]
+  const isTool = useIsToolNode(nodeId);
+  const { commonInputs } = useMemoEnhance(
+    () => splitToolInputsByMode(inputs, isTool),
+    [inputs, isTool]
   );
   const { successOutputs, errorOutputs } = useMemoEnhance(
-    () => splitOutput(outputs),
-    [splitOutput, outputs]
+    () => splitNodeOutputs(outputs),
+    [outputs]
   );
   const Render = useMemo(() => {
     return (

@@ -30,10 +30,11 @@ import { useTranslation } from 'next-i18next';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useContextSelector } from 'use-context-selector';
 import { AppContext } from '../../../../context';
-import { WorkflowActionsContext } from '../../../context/workflowActionsContext';
-import { WorkflowBufferDataContext } from '../../../context/workflowInitContext';
 import { getEditorVariables } from '../../../utils';
 import { extractCodeFromMarkdown } from './parser';
+import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
+import { useDocumentGetNodeById, useWorkflowDocument } from '../render/useWorkflowDocument';
+import { useNode, useWorkflow } from '@/web/core/workflow/editor';
 
 export type OnOptimizeCodeProps = {
   optimizerInput: string;
@@ -56,8 +57,11 @@ const NodeCopilot = ({
 }) => {
   const { t } = useTranslation();
   const { toast } = useToast();
-  const { edges, getNodeById } = useContextSelector(WorkflowBufferDataContext, (v) => v);
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  // 变量列表与引用解析都要按 id 查任意节点：统一读文档图查询面，不再依赖画布薄壳。
+  const { reader } = useWorkflowDocument();
+  const getNodeById = useDocumentGetNodeById();
+  const node = useNode(nodeId);
+  const { edges } = useWorkflow();
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
 
   const [optimizerInput, setOptimizerInput] = useState('');
@@ -70,14 +74,15 @@ const NodeCopilot = ({
   const isInputEmpty = !optimizerInput.trim();
 
   const editorVariables = useMemoEnhance(() => {
+    if (!reader) return [];
     return getEditorVariables({
       nodeId,
       getNodeById,
-      edges,
+      edges: reader.edges,
       appDetail,
       t
     }).filter((item) => item.parent.id !== nodeId);
-  }, [nodeId, getNodeById, edges, appDetail, t]);
+  }, [nodeId, getNodeById, reader, appDetail, t]);
 
   const { codeType, code, dynamicInputs, dynamicOutputs } = useMemo(() => {
     const codeTypeInput = realTimeInputs?.find((input) => input.key === NodeInputKeyEnum.codeType);
@@ -197,81 +202,75 @@ const NodeCopilot = ({
     }
     setAbortController(null);
   });
+  /**
+   * 应用 Copilot 生成的代码：代码、动态入参、动态出参一次改写。
+   * 全部字段同一事务提交（被删出参的连线同事务断开），撤销一次回到应用前。
+   */
   const handleApplyCode = () => {
     try {
       const extractedResult = extractCodeFromMarkdown(codeResult);
       const { code, inputs, outputs } = extractedResult;
-      const codeInput = realTimeInputs?.find((input) => input.key === NodeInputKeyEnum.code);
-      if (!codeInput) return;
-      onChangeNode({
-        nodeId,
-        type: 'updateInput',
-        key: NodeInputKeyEnum.code,
-        value: { ...codeInput, value: code }
-      });
+      const documentInputs = node?.data.inputs;
+      const documentOutputs = node?.data.outputs;
+      if (!documentInputs || !documentOutputs) return;
 
-      dynamicInputs.forEach((input) => {
-        onChangeNode({ nodeId, type: 'delInput', key: input.key });
-      });
-      inputs.forEach((input) => {
-        const referenceValue = (() => {
-          if (input.reference) {
-            const [sourceNodeId, outputKey] = input.reference.split('.');
-            if (sourceNodeId && outputKey) {
-              return [sourceNodeId, outputKey];
-            }
-          }
-          return [];
-        })();
+      // 动态入参整体重建：先剔除旧的动态入参，再按生成结果追加，保留固定字段的位置。
+      const dynamicInputKeys = new Set(dynamicInputs.map((input) => input.key));
+      const nextInputs = documentInputs
+        .filter((input) => !dynamicInputKeys.has(input.key))
+        .map((input) => (input.key === NodeInputKeyEnum.code ? { ...input, value: code } : input))
+        .concat(
+          inputs.map((input) => {
+            const referenceValue = (() => {
+              if (input.reference) {
+                const [sourceNodeId, outputKey] = input.reference.split('.');
+                if (sourceNodeId && outputKey) {
+                  return [sourceNodeId, outputKey];
+                }
+              }
+              return [];
+            })();
 
-        onChangeNode({
-          nodeId,
-          type: 'addInput',
-          value: {
-            renderTypeList: [FlowNodeInputTypeEnum.reference],
-            valueType: input.type as WorkflowIOValueTypeEnum,
-            canEdit: true,
-            key: input.label,
-            label: input.label,
-            value: referenceValue,
-            customInputConfig: {
-              selectValueTypeList: Object.values(ArrayTypeMap),
-              showDescription: false,
-              showDefaultValue: true
-            },
-            required: true
-          }
-        });
-      });
-      const existingOutputIdMap = new Map(dynamicOutputs.map((output) => [output.key, output.id]));
-      const nextOutputKeys = new Set(outputs.map((output) => output.label));
-      dynamicOutputs.forEach((output) => {
-        if (!nextOutputKeys.has(output.key)) {
-          onChangeNode({ nodeId, type: 'delOutput', key: output.key });
-        }
-      });
-      outputs.forEach((output) => {
-        const existingId = existingOutputIdMap.get(output.label);
-        if (existingId) {
-          onChangeNode({
-            nodeId,
-            type: 'updateOutput',
-            key: output.label,
-            value: {
-              id: existingId,
-              type: FlowNodeOutputTypeEnum.dynamic,
-              key: output.label,
-              valueType: output.type as WorkflowIOValueTypeEnum,
-              label: output.label,
-              valueDesc: '',
-              description: ''
-            }
-          });
-        } else {
-          onChangeNode({
-            nodeId,
-            type: 'addOutput',
-            value: {
+            return {
+              renderTypeList: [FlowNodeInputTypeEnum.reference],
+              valueType: input.type as WorkflowIOValueTypeEnum,
+              canEdit: true,
+              key: input.label,
+              label: input.label,
+              value: referenceValue,
+              customInputConfig: {
+                selectValueTypeList: Object.values(ArrayTypeMap),
+                showDescription: false,
+                showDefaultValue: true
+              },
+              required: true
+            };
+          })
+        );
+
+      // 出参按 key 复用原 id 与位置，生成结果里没有的旧出参删除并断开其 handle 连线。
+      const existingOutputKeys = new Set(dynamicOutputs.map((output) => output.key));
+      const removedOutputKeys = dynamicOutputs
+        .filter((output) => !outputs.some((item) => item.label === output.key))
+        .map((output) => output.key);
+      const nextOutputs = documentOutputs
+        .filter((output) => !removedOutputKeys.includes(output.key))
+        .map((output) => {
+          const extracted = outputs.find((item) => item.label === output.key);
+          if (!extracted) return output;
+          return {
+            ...output,
+            type: FlowNodeOutputTypeEnum.dynamic,
+            valueType: extracted.type as WorkflowIOValueTypeEnum,
+            label: extracted.label,
+            valueDesc: '',
+            description: ''
+          };
+        })
+        .concat(
+          outputs
+            .filter((output) => !existingOutputKeys.has(output.label))
+            .map((output) => ({
               id: nanoid(),
               type: FlowNodeOutputTypeEnum.dynamic,
               key: output.label,
@@ -279,10 +278,15 @@ const NodeCopilot = ({
               label: output.label,
               valueDesc: '',
               description: ''
-            }
-          });
-        }
-      });
+            }))
+        );
+
+      // 同一事务内逐条删边会移动后续下标，合并后统一按降序给出。
+      const disconnectEdges = removedOutputKeys
+        .flatMap((outputKey) => getOutputDisconnectCommands({ edges, nodeId, outputKey }))
+        .sort((a, b) => b.index - a.index);
+
+      node?.updateNode({ inputs: nextInputs, outputs: nextOutputs }, { disconnectEdges });
       setOptimizerInput('');
 
       toast({

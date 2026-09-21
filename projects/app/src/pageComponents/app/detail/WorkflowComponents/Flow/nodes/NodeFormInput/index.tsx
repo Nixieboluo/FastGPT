@@ -22,7 +22,6 @@ import {
 import MyIcon from '@fastgpt/web/components/common/Icon';
 import { SmallAddIcon } from '@chakra-ui/icons';
 import IOTitle from '../../components/IOTitle';
-import { useContextSelector } from 'use-context-selector';
 import InputFormEditModal, { defaultFormInput } from './InputFormEditModal';
 import RenderOutput from '../render/RenderOutput';
 import FormLabel from '@fastgpt/web/components/common/MyBox/FormLabel';
@@ -32,86 +31,98 @@ import DndDrag, {
   type DraggableProvided,
   type DraggableStateSnapshot
 } from '@fastgpt/web/components/common/DndDrag';
-import { WorkflowActionsContext } from '../../../context/workflowActionsContext';
+import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
+import { useNode, useWorkflow } from '@/web/core/workflow/editor';
 
 const NodeFormInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { nodeId, inputs, outputs } = data;
   const { t } = useTranslation();
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const node = useNode(nodeId);
+  const { edges } = useWorkflow();
   const { zoom } = useViewport();
 
   const [editField, setEditField] = useState<UserInputFormItemType>();
 
   const CustomComponent = useMemo(
     () => ({
-      [NodeInputKeyEnum.userInputForms]: ({ value, key, ...props }: FlowNodeInputItemType) => {
+      [NodeInputKeyEnum.userInputForms]: ({ value, key }: FlowNodeInputItemType) => {
         const inputs = value as UserInputFormItemType[];
 
+        /**
+         * 提交表单字段编辑：字段列表与其结果 output 必须同一事务写入，否则撤销会拆成两步。
+         * 新增走追加，编辑按原 key 定位；只有改名时旧 handle 上的连线才需要一起断开。
+         */
         const onSubmit = (data: UserInputFormItemType) => {
-          if (!editField?.key) {
-            onChangeNode({
-              nodeId,
-              type: 'updateInput',
-              key,
-              value: {
-                ...props,
-                key,
-                value: inputs.concat(data)
+          const documentInputs = node?.data.inputs;
+          const documentOutputs = node?.data.outputs;
+          if (!documentInputs || !documentOutputs) return;
+
+          const editKey = editField?.key;
+          const nextOutput: FlowNodeOutputItemType = editKey
+            ? {
+                // 编辑态必然能按原 key 找到 output；找不到时 map 不命中，等价于旧 replaceOutput 的空操作。
+                ...(documentOutputs.find(
+                  (output) => output.key === editKey
+                ) as FlowNodeOutputItemType),
+                valueType: data.valueType,
+                key: data.key,
+                label: data.label
               }
-            });
-            onChangeNode({
-              nodeId,
-              type: 'addOutput',
-              value: {
+            : {
                 id: data.key,
                 valueType: data.valueType,
                 key: data.key,
                 label: data.label,
                 type: FlowNodeOutputTypeEnum.static
-              }
-            });
-          } else {
-            const output = outputs.find((output) => output.key === editField.key);
-            onChangeNode({
-              nodeId,
-              type: 'updateInput',
-              key,
-              value: {
-                ...props,
-                key,
-                value: inputs.map((input) => (input.key === editField.key ? data : input))
-              }
-            });
-            onChangeNode({
-              nodeId,
-              type: 'replaceOutput',
-              key: editField.key,
-              value: {
-                ...(output as FlowNodeOutputItemType),
-                valueType: data.valueType,
-                key: data.key,
-                label: data.label
-              }
-            });
-          }
+              };
+
+          node?.updateNode(
+            {
+              inputs: documentInputs.map((input) =>
+                input.key === key
+                  ? {
+                      ...input,
+                      value: editKey
+                        ? inputs.map((item) => (item.key === editKey ? data : item))
+                        : inputs.concat(data)
+                    }
+                  : input
+              ),
+              outputs: editKey
+                ? documentOutputs.map((output) => (output.key === editKey ? nextOutput : output))
+                : documentOutputs.concat(nextOutput)
+            },
+            editKey && editKey !== data.key
+              ? {
+                  disconnectEdges: getOutputDisconnectCommands({
+                    edges,
+                    nodeId,
+                    outputKey: editKey
+                  })
+                }
+              : undefined
+          );
         };
 
         const onDelete = (valueKey: string) => {
-          onChangeNode({
-            nodeId,
-            type: 'updateInput',
-            key,
-            value: {
-              ...props,
-              key,
-              value: inputs.filter((input) => input.key !== valueKey)
+          const documentInputs = node?.data.inputs;
+          const documentOutputs = node?.data.outputs;
+          if (!documentInputs || !documentOutputs) return;
+
+          // 删除字段时其 output 与 handle 连线同事务消失，撤销一步恢复。
+          node.updateNode(
+            {
+              inputs: documentInputs.map((input) =>
+                input.key === key
+                  ? { ...input, value: inputs.filter((item) => item.key !== valueKey) }
+                  : input
+              ),
+              outputs: documentOutputs.filter((output) => output.key !== valueKey)
+            },
+            {
+              disconnectEdges: getOutputDisconnectCommands({ edges, nodeId, outputKey: valueKey })
             }
-          });
-          onChangeNode({
-            nodeId,
-            type: 'delOutput',
-            key: valueKey
-          });
+          );
         };
 
         return (
@@ -163,30 +174,25 @@ const NodeFormInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                 </Thead>
                 <DndDrag<UserInputFormItemType>
                   onDragEndCb={(list) => {
+                    const documentInputs = node?.data.inputs;
+                    const documentOutputs = node?.data.outputs;
+                    if (!documentInputs || !documentOutputs) return;
+
                     const sortedOutputs = [
-                      outputs[0],
-                      ...outputs.slice(1).sort((a, b) => {
+                      documentOutputs[0],
+                      ...documentOutputs.slice(1).sort((a, b) => {
                         const aIndex = list.findIndex((item) => item.key === a.key);
                         const bIndex = list.findIndex((item) => item.key === b.key);
                         return aIndex - bIndex;
                       })
                     ];
 
-                    onChangeNode({
-                      nodeId,
-                      type: 'updateInput',
-                      key,
-                      value: {
-                        ...props,
-                        key,
-                        value: list
-                      }
-                    });
-                    onChangeNode({
-                      nodeId,
-                      type: 'attr',
-                      key: 'outputs',
-                      value: sortedOutputs
+                    // 拖拽排序：字段顺序与 output 顺序同事务写入，撤销一步回到旧顺序。
+                    node.updateNode({
+                      inputs: documentInputs.map((input) =>
+                        input.key === key ? { ...input, value: list } : input
+                      ),
+                      outputs: sortedOutputs
                     });
                   }}
                   dataList={inputs}
@@ -236,7 +242,7 @@ const NodeFormInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         );
       }
     }),
-    [t, editField, zoom, onChangeNode, nodeId, outputs]
+    [t, editField, zoom, node, edges, nodeId]
   );
 
   return (

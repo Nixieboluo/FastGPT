@@ -6,11 +6,12 @@ import { NodeInputKeyEnum, NodeOutputKeyEnum } from '@fastgpt/global/core/workfl
 import { moduleTemplatesFlat } from '@fastgpt/global/core/workflow/template/constants';
 import { isNodeConnectionAllowed } from '@fastgpt/global/core/workflow/template/context';
 import { useContextSelector } from 'use-context-selector';
-import { WorkflowBufferDataContext } from '../../../../context/workflowInitContext';
-import { WorkflowActionsContext } from '../../../../context/workflowActionsContext';
 import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import type { IfElseListItemType } from '@fastgpt/global/core/workflow/template/system/ifElse/type';
 import { getIfElseBranchHandleKey } from '@fastgpt/global/core/workflow/template/system/ifElse/utils';
+import { useNode, useWorkflow } from '@/web/core/workflow/editor';
+import { WorkflowUIContext } from '../../../context/workflowUIContext';
+import { useWorkflowDocument } from '../useWorkflowDocument';
 
 export const ConnectionSourceHandle = ({
   nodeId,
@@ -19,11 +20,12 @@ export const ConnectionSourceHandle = ({
   nodeId: string;
   sourceType?: 'source' | 'source_catch';
 }) => {
-  const { edges, getNodeById } = useContextSelector(WorkflowBufferDataContext, (v) => v);
-  const connectingEdge = useContextSelector(WorkflowActionsContext, (v) => v.connectingEdge);
+  const nodeHandle = useNode(nodeId);
+  const { edges } = useWorkflow();
+  const connectingEdge = useContextSelector(WorkflowUIContext, (v) => v.connectingEdge);
 
   const { showSourceHandle, RightHandle } = useMemo(() => {
-    const node = getNodeById(nodeId);
+    const node = nodeHandle?.data;
 
     /* not node/not connecting node, hidden */
     const showSourceHandle = (() => {
@@ -34,7 +36,7 @@ export const ConnectionSourceHandle = ({
 
     const RightHandle = (() => {
       // When the node is folded and has multiple branches, only render the first output.
-      if (node?.isFolded) {
+      if (node && nodeHandle?.view.isFolded) {
         const firstHandleId = (() => {
           if (node.flowNodeType === FlowNodeTypeEnum.userSelect) {
             const options = node?.inputs?.find(
@@ -78,7 +80,12 @@ export const ConnectionSourceHandle = ({
         (edge) => edge.targetHandle === getHandleId(nodeId, 'target', Position.Right)
       );
 
-      if (!node || !node?.showSourceHandle || rightTargetConnected) {
+      // 连接柄显隐由当前模板决定：文档节点不携带模板展示字段。
+      const templateShowSourceHandle = node
+        ? moduleTemplatesFlat.find((item) => item.flowNodeType === node.flowNodeType)
+            ?.showSourceHandle
+        : undefined;
+      if (!node || !templateShowSourceHandle || rightTargetConnected) {
         return null;
       }
 
@@ -96,7 +103,7 @@ export const ConnectionSourceHandle = ({
       showSourceHandle,
       RightHandle
     };
-  }, [getNodeById, nodeId, connectingEdge, sourceType, edges]);
+  }, [nodeHandle, nodeId, connectingEdge, sourceType, edges]);
 
   return showSourceHandle ? <>{RightHandle}</> : null;
 };
@@ -106,11 +113,13 @@ export const ConnectionTargetHandle = React.memo(function ConnectionTargetHandle
 }: {
   nodeId: string;
 }) {
-  const edges = useContextSelector(WorkflowBufferDataContext, (v) => v.edges);
-  const getNodeById = useContextSelector(WorkflowBufferDataContext, (v) => v.getNodeById);
-  const connectingEdge = useContextSelector(WorkflowActionsContext, (v) => v.connectingEdge);
+  // 目标柄要按任意父节点判定容器上下文，用文档图 reader 一次取全，不逐个 useNode。
+  const { reader } = useWorkflowDocument();
+  const connectingEdge = useContextSelector(WorkflowUIContext, (v) => v.connectingEdge);
 
   const { LeftHandle } = useMemo(() => {
+    if (!reader) return { LeftHandle: null };
+    const { edges, getNodeById } = reader;
     const node = getNodeById(nodeId);
     const connectingNode = getNodeById(connectingEdge?.nodeId);
 
@@ -171,7 +180,12 @@ export const ConnectionTargetHandle = React.memo(function ConnectionTargetHandle
     })();
 
     const LeftHandle = (() => {
-      if (!node || !node?.showTargetHandle) return null;
+      // 同 source 柄：显隐看当前模板，文档节点不携带模板展示字段。
+      const showTargetHandle = node
+        ? moduleTemplatesFlat.find((item) => item.flowNodeType === node.flowNodeType)
+            ?.showTargetHandle
+        : undefined;
+      if (!node || !showTargetHandle) return null;
 
       const handleId = getHandleId(nodeId, 'target', Position.Left);
 
@@ -190,7 +204,7 @@ export const ConnectionTargetHandle = React.memo(function ConnectionTargetHandle
       showHandle,
       LeftHandle
     };
-  }, [connectingEdge, edges, nodeId, getNodeById]);
+  }, [connectingEdge, nodeId, reader]);
 
   return <>{LeftHandle}</>;
 });

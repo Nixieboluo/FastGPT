@@ -3,13 +3,12 @@ import { Handle, Position } from 'reactflow';
 import { NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { useContextSelector } from 'use-context-selector';
 import MyIcon from '@fastgpt/web/components/common/Icon';
-import { WorkflowBufferDataContext } from '../../../../context/workflowInitContext';
 import MyTooltip from '@fastgpt/web/components/common/MyTooltip';
 import { useTranslation } from 'next-i18next';
 import { Box, Flex } from '@chakra-ui/react';
-import { WorkflowActionsContext } from '../../../../context/workflowActionsContext';
 import { WorkflowUIContext } from '../../../context/workflowUIContext';
 import { WorkflowSelectionContext } from '../../../context/workflowSelectionContext';
+import { useWorkflow } from '@/web/core/workflow/editor';
 
 const handleSizeConnected = 24;
 const handleSizeConnecting = 32;
@@ -56,17 +55,17 @@ export const MySourceHandle = React.memo(function MySourceHandle({
 }: Props) {
   const { t } = useTranslation();
 
-  const node = useContextSelector(WorkflowBufferDataContext, (v) => v.getNodeById(nodeId));
+  // 结构 handle 同时给出节点 identity 与连线：存在性判定和 connected 都从这里读，不再订阅薄壳。
+  const { nodes, edges } = useWorkflow();
   const selected = useContextSelector(WorkflowSelectionContext, (v) => v.selectedNodesMap[nodeId]);
-  const connectingEdge = useContextSelector(WorkflowActionsContext, (ctx) => ctx.connectingEdge);
+  const connectingEdge = useContextSelector(WorkflowUIContext, (ctx) => ctx.connectingEdge);
   const hoverNodeId = useContextSelector(WorkflowUIContext, (v) => v.hoverNodeId);
 
-  const edgesData = useContextSelector(WorkflowBufferDataContext, (v) => {
-    return {
-      connected: v.edges.some((edge) => edge.sourceHandle === handleId)
-    };
-  });
-  const connected = edgesData.connected;
+  const nodeExists = useMemo(() => nodes.some((node) => node.nodeId === nodeId), [nodes, nodeId]);
+  const connected = useMemo(
+    () => edges.some((edge) => edge.sourceHandle === handleId),
+    [edges, handleId]
+  );
 
   const nodeIsHover = hoverNodeId === nodeId;
   const active = useMemo(
@@ -111,7 +110,7 @@ export const MySourceHandle = React.memo(function MySourceHandle({
     };
   }, [active, connected, translateStr]);
 
-  if (!node) return null;
+  if (!nodeExists) return null;
   if (connectingEdge?.handleId === NodeOutputKeyEnum.selectedTools) return null;
 
   return (
@@ -160,10 +159,12 @@ export const MyTargetHandle = React.memo(function MyTargetHandle({
 }: Props & {
   showHandle: boolean;
 }) {
-  const connected = useContextSelector(WorkflowBufferDataContext, (v) =>
-    v.edges.some((edge) => edge.targetHandle === handleId)
+  const { edges } = useWorkflow();
+  const connected = useMemo(
+    () => edges.some((edge) => edge.targetHandle === handleId),
+    [edges, handleId]
   );
-  const connectingEdge = useContextSelector(WorkflowActionsContext, (ctx) => ctx.connectingEdge);
+  const connectingEdge = useContextSelector(WorkflowUIContext, (ctx) => ctx.connectingEdge);
 
   const translateStr = useMemo(() => {
     if (!translate) return '';

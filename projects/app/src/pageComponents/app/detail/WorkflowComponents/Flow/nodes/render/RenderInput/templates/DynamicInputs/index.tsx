@@ -7,9 +7,8 @@ import {
   type FlowNodeInputItemType,
   type ReferenceValueType
 } from '@fastgpt/global/core/workflow/type/io';
-import { useContextSelector } from 'use-context-selector';
 import { getInputComponentProps } from '@/web/core/workflow/utils';
-import { ReferSelector, useReference } from '../Reference';
+import { ReferSelector, useLazyReferenceList } from '../Reference';
 import MyIconButton from '@fastgpt/web/components/common/Icon/button';
 import { useToast } from '@fastgpt/web/hooks/useToast';
 import {
@@ -20,7 +19,7 @@ import { WorkflowIOValueTypeEnum } from '@fastgpt/global/core/workflow/constants
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
 import MyTooltip from '@fastgpt/web/components/common/MyTooltip';
 import MyIcon from '@fastgpt/web/components/common/Icon';
-import { WorkflowActionsContext } from '@/pageComponents/app/detail/WorkflowComponents/context/workflowActionsContext';
+import { useField, useNode } from '@/web/core/workflow/editor';
 
 const defaultInput: FlowNodeInputItemType = {
   renderTypeList: [FlowNodeInputTypeEnum.reference],
@@ -31,10 +30,13 @@ const defaultInput: FlowNodeInputItemType = {
   label: ''
 };
 
+/**
+ * 自定义输入（动态输入）模板：整块字段的增删改都是记录级变更，
+ * 统一读文档当前 inputs、拼完整数组后走 updateNode，一次交互只产生一条历史。
+ */
 const DynamicInputs = ({ item, inputs = [], nodeId }: RenderInputProps) => {
   const { t } = useSafeTranslation();
-
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const node = useNode(nodeId);
 
   const dynamicInputs = useMemoEnhance(() => inputs.filter((item) => item.canEdit), [inputs]);
   const existsKeys = useMemoEnhance(() => inputs.map((item) => item.key), [inputs]);
@@ -64,10 +66,10 @@ const DynamicInputs = ({ item, inputs = [], nodeId }: RenderInputProps) => {
                     bg: 'adora.100'
                   }}
                   onClick={() => {
-                    onChangeNode({
-                      nodeId,
-                      type: 'delInput',
-                      key: item.key
+                    const documentInputs = node?.data.inputs;
+                    if (!documentInputs) return;
+                    node?.updateNode({
+                      inputs: documentInputs.filter((input) => input.key !== item.key)
                     });
                   }}
                 >
@@ -128,14 +130,16 @@ const Reference = ({
 }) => {
   const { t } = useSafeTranslation();
   const { toast } = useToast();
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const node = useNode(nodeId);
+  // 已选内容的展示读字段引用状态，因此可选列表可以等到打开选择器时再计算。
+  const field = useField(nodeId, inputChildren.key, 'input');
 
   const isEmptyItem = !inputChildren.key;
 
   const [tempLabel, setTempLabel] = useState('');
   const [isEditing, setIsEditing] = useState(false);
 
-  const { referenceList } = useReference({
+  const { referenceList, loadReferenceList } = useLazyReferenceList({
     nodeId,
     valueType: WorkflowIOValueTypeEnum.any,
     // Container nodes (loopRun) need to reference outputs from their sub-workflow.
@@ -155,6 +159,9 @@ const Reference = ({
       }
 
       setTimeout(() => {
+        const documentInputs = node?.data.inputs;
+        if (!documentInputs) return;
+
         if (isEmptyItem && label) {
           const newInput: FlowNodeInputItemType = {
             ...defaultInput,
@@ -164,27 +171,18 @@ const Reference = ({
             valueType: WorkflowIOValueTypeEnum.any,
             required: true
           };
-          onChangeNode({
-            nodeId,
-            type: 'addInput',
-            value: newInput
-          });
+          node?.updateNode({ inputs: [...documentInputs, newInput] });
         } else if (!isEmptyItem) {
-          onChangeNode({
-            nodeId,
-            type: 'replaceInput',
-            key: inputChildren.key,
-            value: {
-              ...inputChildren,
-              label: label,
-              key: label || inputChildren.key
-            }
+          node?.updateNode({
+            inputs: documentInputs.map((input) =>
+              input.key === inputChildren.key ? { ...input, label, key: label || input.key } : input
+            )
           });
         }
       }, 50);
       setTempLabel('');
     },
-    [existsKeys, toast, t, isEmptyItem, item, onChangeNode, nodeId, inputChildren]
+    [existsKeys, toast, t, isEmptyItem, item, node, inputChildren.key]
   );
   const onSelectReference = useCallback(
     (e?: ReferenceValueType) => {
@@ -194,26 +192,30 @@ const Reference = ({
         .find((item) => item.value === e[0])
         ?.children.find((item) => item.value === e[1]);
 
-      onChangeNode({
-        nodeId,
-        type: 'replaceInput',
-        key: inputChildren.key,
-        value: {
-          ...inputChildren,
-          value: e,
-          valueType: referenceItem?.valueType || WorkflowIOValueTypeEnum.any
-        }
+      const documentInputs = node?.data.inputs;
+      if (!documentInputs) return;
+
+      node?.updateNode({
+        inputs: documentInputs.map((input) =>
+          input.key === inputChildren.key
+            ? {
+                ...input,
+                value: e,
+                valueType: referenceItem?.valueType || WorkflowIOValueTypeEnum.any
+              }
+            : input
+        )
       });
     },
-    [inputChildren, nodeId, onChangeNode, referenceList]
+    [inputChildren.key, node, referenceList]
   );
   const onDeleteInput = useCallback(() => {
-    onChangeNode({
-      nodeId,
-      type: 'delInput',
-      key: inputChildren.key
+    const documentInputs = node?.data.inputs;
+    if (!documentInputs) return;
+    node?.updateNode({
+      inputs: documentInputs.filter((input) => input.key !== inputChildren.key)
     });
-  }, [inputChildren.key, nodeId, onChangeNode]);
+  }, [inputChildren.key, node]);
 
   return (
     <Flex alignItems={'center'} mb={1} gap={2}>
@@ -235,6 +237,8 @@ const Reference = ({
           list={referenceList}
           value={inputChildren.value}
           onSelect={onSelectReference}
+          onOpenList={loadReferenceList}
+          reference={field?.reference}
           ButtonProps={{
             bg: 'none',
             borderRadius: 'none',

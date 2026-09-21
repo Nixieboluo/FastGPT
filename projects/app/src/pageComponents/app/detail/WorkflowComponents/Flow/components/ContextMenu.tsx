@@ -1,12 +1,11 @@
 import { Box, HStack, type StackProps } from '@chakra-ui/react';
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import MyIcon from '@fastgpt/web/components/common/Icon';
 import { useTranslation } from 'next-i18next';
 import { nodeTemplate2FlowNode } from '@/web/core/workflow/utils';
 import { CommentNode } from '@fastgpt/global/core/workflow/template/system/comment';
 import { useContextSelector } from 'use-context-selector';
 import { type Node, useReactFlow } from 'reactflow';
-import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
 import dagre from '@dagrejs/dagre';
 import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import { cloneDeep } from 'lodash-es';
@@ -16,6 +15,8 @@ import { getHandleIndex } from '../utils/edge';
 import { getParentNodeSizeAndPosition } from '../utils/layout';
 import { useCanvas, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
 import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/cutover/translate';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
+import { useWorkflowDocument } from '../nodes/render/useWorkflowDocument';
 
 /** 右键菜单单项：执行动作后关闭菜单。不依赖父组件状态，放模块级避免每次渲染重建组件。 */
 const ContextMenuItem = ({
@@ -54,14 +55,29 @@ const ContextMenuItem = ({
 const ContextMenu = () => {
   const { t } = useTranslation();
   const menu = useContextSelector(WorkflowUIContext, (v) => v.menu!);
-  const { setNodes, getNodes, edges, allNodeFolded } = useContextSelector(
-    WorkflowBufferDataContext,
-    (v) => v
-  );
   const workflow = useWorkflowAdapter();
   const canvas = useCanvas();
 
-  const { fitView, screenToFlowPosition } = useReactFlow();
+  // 自动对齐与折叠都只碰 renderer 交互状态（位置、测量尺寸），直接读写 reactflow store。
+  const { fitView, screenToFlowPosition, getNodes, setNodes, getEdges } = useReactFlow();
+  const { reader } = useWorkflowDocument();
+  const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
+  const runtimeTick = useContextSelector(WorkflowHostContext, (v) => v.runtimeTick);
+
+  /**
+   * 是否全部节点已折叠：折叠存在 Node View 上，语义快照不含，
+   * 因此 runtimeTick 是刻意的缓存 key（纯几何事务不 bump 语义版本）。
+   * comment 节点不参与判定，空文档视为已全部折叠，与旧派生索引一致。
+   */
+  const allNodeFolded = useMemo(() => {
+    const nodes = reader?.nodes ?? [];
+    return nodes.every(
+      (node) =>
+        node.flowNodeType === FlowNodeTypeEnum.comment ||
+        !!runtime?.getNodeView(node.nodeId)?.isFolded
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reader, runtime, runtimeTick]);
 
   const onLayout = useCallback(() => {
     const updateChildNodesPosition = ({
@@ -294,7 +310,8 @@ const ContextMenu = () => {
       });
     };
 
-    const newNodes = cloneDeep(getNodes());
+    const newNodes = cloneDeep(getNodes()) as Node<FlowNodeItemType>[];
+    const edges = getEdges();
     const previousPositions = new Map(
       newNodes.map((node) => [node.id, { x: node.position.x, y: node.position.y }])
     );
@@ -353,7 +370,7 @@ const ContextMenu = () => {
       const validNodes = newNodes.filter((node) => node.width && node.height);
       fitView({ nodes: validNodes, padding: 0.3 });
     });
-  }, [canvas, edges, fitView, getNodes, setNodes]);
+  }, [canvas, fitView, getEdges, getNodes, setNodes]);
 
   const onAddComment = useCallback(() => {
     // Compensate for menu position offset (set in onPaneContextMenu)
@@ -373,11 +390,11 @@ const ContextMenu = () => {
 
   const onFold = useCallback(() => {
     canvas.commitGeometry(
-      getNodes()
-        .filter((node) => node.data.flowNodeType !== FlowNodeTypeEnum.comment)
-        .map((node) => ({ nodeId: node.data.nodeId, isFolded: !allNodeFolded }))
+      (reader?.nodes ?? [])
+        .filter((node) => node.flowNodeType !== FlowNodeTypeEnum.comment)
+        .map((node) => ({ nodeId: node.nodeId, isFolded: !allNodeFolded }))
     );
-  }, [allNodeFolded, canvas, getNodes]);
+  }, [allNodeFolded, canvas, reader]);
 
   return (
     <Box>

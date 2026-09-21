@@ -10,21 +10,19 @@ import { useTranslation } from 'next-i18next';
 import { useCallback } from 'react';
 import { type Node, useKeyPress, useReactFlow } from 'reactflow';
 import { useContextSelector } from 'use-context-selector';
-import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
 import { WorkflowUIContext } from '../context/workflowUIContext';
 import { isWorkflowShortcutInputtingTarget } from './keyboard';
 import { useWorkflowUtils } from './useUtils';
 
 export const useKeyboard = () => {
   const { t } = useTranslation();
-  const getNodes = useContextSelector(WorkflowBufferDataContext, (v) => v.getNodes);
-  const setNodes = useContextSelector(WorkflowBufferDataContext, (v) => v.setNodes);
   const mouseInCanvas = useContextSelector(WorkflowUIContext, (v) => v.mouseInCanvas);
   const getMousePosition = useContextSelector(WorkflowUIContext, (v) => v.getMousePosition);
 
   const { copyData } = useCopyData();
   const { computedNewNodeName } = useWorkflowUtils();
-  const { screenToFlowPosition } = useReactFlow();
+  // 复制/粘贴只碰 renderer 交互状态（选中、位置），直接读写 reactflow store。
+  const { screenToFlowPosition, getNodes, setNodes } = useReactFlow();
   const workflow = useWorkflowAdapter();
 
   const isDowningCtrl = useKeyPress(['Meta', 'Control']);

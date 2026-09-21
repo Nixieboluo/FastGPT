@@ -3,11 +3,10 @@ import { Box } from '@chakra-ui/react';
 import InputRender from '@/components/core/app/formRender';
 import { InputTypeEnum } from '@/components/core/app/formRender/constant';
 import { nodeInputTypeToInputType } from '@/components/core/app/formRender/utils';
-import { WorkflowActionsContext } from '@/pageComponents/app/detail/WorkflowComponents/context/workflowActionsContext';
-import { WorkflowBufferDataContext } from '@/pageComponents/app/detail/WorkflowComponents/context/workflowInitContext';
 import { getEditorVariables } from '@/pageComponents/app/detail/WorkflowComponents/utils';
 import { AppContext } from '@/pageComponents/app/detail/context';
 import { useSystemStore } from '@/web/common/system/useSystemStore';
+import { useField, useNode } from '@/web/core/workflow/editor';
 import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { isNestedParentNodeType } from '@fastgpt/global/core/workflow/node/constant';
 import {
@@ -20,11 +19,20 @@ import { useTranslation } from 'next-i18next';
 import React, { useCallback, useMemo } from 'react';
 import { useContextSelector } from 'use-context-selector';
 import type { RenderInputProps } from '../type';
+import { useWorkflowDocument } from '../../useWorkflowDocument';
 
+/**
+ * 通用输入模板：文本/多行文本/数字/开关/单选多选/JSON/模型选择等渲染类型共用。
+ *
+ * 字段值写入走字段句柄（updateField）；只有「旧 aiModel 改名为 aiModelId」这类记录级变更
+ * 才读文档当前 inputs、整份替换后走 updateNode。外层 data-workflow-history 标记必须保留：
+ * 画布快捷键靠它在捕获阶段接管撤销重做，避免编辑器本地历史与工作流历史互相覆盖。
+ */
 const CommonInputForm = ({ item, nodeId }: RenderInputProps) => {
   const { t } = useTranslation();
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
-  const { getNodeById, edges } = useContextSelector(WorkflowBufferDataContext, (v) => v);
+  const node = useNode(nodeId);
+  const field = useField(nodeId, item.key, 'input');
+  const { reader } = useWorkflowDocument();
   const { appDetail } = useContextSelector(AppContext, (v) => v);
   const { feConfigs } = useSystemStore();
 
@@ -38,14 +46,15 @@ const CommonInputForm = ({ item, nodeId }: RenderInputProps) => {
   );
 
   const editorVariables = useMemoEnhance(() => {
+    if (!reader) return [];
     return getEditorVariables({
       nodeId,
-      getNodeById,
-      edges,
+      getNodeById: reader.getNodeById,
+      edges: reader.edges,
       appDetail,
       t
     });
-  }, [nodeId, getNodeById, edges, appDetail, t]);
+  }, [nodeId, reader, appDetail, t]);
 
   const externalVariables = useMemo(() => {
     return (
@@ -73,31 +82,28 @@ const CommonInputForm = ({ item, nodeId }: RenderInputProps) => {
         ([legacyKey]) => legacyKey === item.key
       )?.[1];
       if (inputType === InputTypeEnum.selectLLMModel && modelIdKey) {
-        onChangeNode({
-          nodeId,
-          type: 'replaceInput',
-          key: item.key,
-          value: { ...item, key: modelIdKey, value }
+        // 记录级改名：以文档当前 inputs 为基准整份替换，避免用 props 里的过滤后数组覆盖文档。
+        const inputs = node?.data.inputs;
+        if (!inputs) return;
+        node.updateNode({
+          inputs: inputs.map((input) =>
+            input.key === item.key ? { ...input, key: modelIdKey, value } : input
+          )
         });
         return;
       }
 
-      onChangeNode({
-        nodeId,
-        type: 'updateInput',
-        key: item.key,
-        value: { ...item, value }
-      });
+      field?.setValue(value);
     },
-    [inputType, item, nodeId, onChangeNode, setDefaultModel]
+    [field, inputType, item.key, node, setDefaultModel]
   );
 
   // 嵌套容器节点（loop/parallelRun/loopRun）里的 select 下拉向上展开，避免被子节点覆盖。
+  const flowNodeType = node?.data.flowNodeType;
   const menuPlacement = useMemo(() => {
-    const node = getNodeById(nodeId);
-    if (!node) return undefined;
-    return isNestedParentNodeType(node.flowNodeType) ? ('top-start' as const) : undefined;
-  }, [getNodeById, nodeId]);
+    if (!flowNodeType) return undefined;
+    return isNestedParentNodeType(flowNodeType) ? ('top-start' as const) : undefined;
+  }, [flowNodeType]);
 
   const canOptimizePrompt = item.key === NodeInputKeyEnum.aiSystemPrompt;
   const OptimizerPopverComponent = useCallback(

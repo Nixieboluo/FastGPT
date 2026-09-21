@@ -22,32 +22,35 @@ import {
 import { LoopRunModeEnum } from '@fastgpt/global/core/workflow/template/system/loopRun/loopRun';
 import { LoopRunBreakNode as LoopRunBreakTemplate } from '@fastgpt/global/core/workflow/template/system/loopRun/loopRunBreak';
 import { useNestedNode } from '../../hooks/useNestedNode';
-import { useContextSelector } from 'use-context-selector';
-import { WorkflowActionsContext } from '../../../context/workflowActionsContext';
-import { WorkflowUtilsContext } from '../../../context/workflowUtilsContext';
-import { WorkflowBufferDataContext } from '../../../context/workflowInitContext';
-import { WorkflowInitContext } from '../../../context/workflowInitContext';
-import { nodeTemplate2FlowNode } from '@/web/core/workflow/utils';
+import {
+  getOutputDisconnectCommands,
+  nodeTemplate2FlowNode,
+  splitNodeOutputs
+} from '@/web/core/workflow/utils';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
 import { i18nT } from '@fastgpt/global/common/i18n/utils';
-import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { useNode, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
 import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/cutover/translate';
+import { useWorkflowDocument } from '../render/useWorkflowDocument';
+import isEqual from 'lodash-es/isEqual';
 
 const NodeLoopRun = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useTranslation();
   const { nodeId, inputs, outputs, isFolded, catchError } = data;
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
-  const splitOutput = useContextSelector(WorkflowUtilsContext, (v) => v.splitOutput);
-  const { getNodeById, childrenNodeIdListMap } = useContextSelector(
-    WorkflowBufferDataContext,
-    (v) => v
-  );
+  // 容器要按类型找子节点（起始/中断）：结构快照没有 flowNodeType，统一读文档图查询面。
+  const { reader } = useWorkflowDocument();
+  const node = useNode(nodeId);
   const workflow = useWorkflowAdapter();
-  const childNodeIds = useMemo(
-    () => childrenNodeIdListMap[nodeId] ?? [],
-    [childrenNodeIdListMap, nodeId]
+  const childNodeIds = useMemo(() => reader?.childrenNodeIdListMap[nodeId] ?? [], [reader, nodeId]);
+  const startChildId = useMemo(
+    () =>
+      childNodeIds.find(
+        (id) => reader?.getNodeById(id)?.flowNodeType === FlowNodeTypeEnum.loopRunStart
+      ),
+    [childNodeIds, reader]
   );
-  const getRawNodeById = useContextSelector(WorkflowInitContext, (v) => v.getRawNodeById);
+  // 起始节点的输出集合与位置都由容器代管：位置读 node view，不再取画布原始节点。
+  const startChildNode = useNode(startChildId ?? '');
 
   const mode =
     (inputs.find((i) => i.key === NodeInputKeyEnum.loopRunMode)?.value as
@@ -79,8 +82,8 @@ const NodeLoopRun = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   );
 
   const { successOutputs, errorOutputs } = useMemoEnhance(
-    () => splitOutput(outputs),
-    [splitOutput, outputs]
+    () => splitNodeOutputs(outputs),
+    [outputs]
   );
 
   // Mode sync is owned by the container, not the start node, because the start
@@ -90,96 +93,84 @@ const NodeLoopRun = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
     const prevMode = prevModeRef.current;
     prevModeRef.current = mode;
 
-    const startChildId = childNodeIds.find(
-      (id) => getNodeById(id)?.flowNodeType === FlowNodeTypeEnum.loopRunStart
-    );
-    const startNode = startChildId ? getNodeById(startChildId) : undefined;
-
-    if (startNode) {
-      const hasIndex = startNode.outputs.some((o) => o.key === NodeOutputKeyEnum.currentIndex);
-      const hasItem = startNode.outputs.some((o) => o.key === NodeOutputKeyEnum.currentItem);
-      const hasIteration = startNode.outputs.some(
-        (o) => o.key === NodeOutputKeyEnum.currentIteration
-      );
+    const startOutputs = startChildNode?.data.outputs;
+    if (startChildId && startOutputs) {
+      const hasKey = (key: NodeOutputKeyEnum) => startOutputs.some((o) => o.key === key);
 
       // Store i18n keys so downstream `t(label)` stays reactive.
-      if (mode === LoopRunModeEnum.array) {
-        if (hasIteration) {
-          onChangeNode({
-            nodeId: startNode.nodeId,
-            type: 'delOutput',
-            key: NodeOutputKeyEnum.currentIteration
-          });
-        }
-        if (!hasIndex) {
-          onChangeNode({
-            nodeId: startNode.nodeId,
-            type: 'addOutput',
-            value: {
-              id: NodeOutputKeyEnum.currentIndex,
-              key: NodeOutputKeyEnum.currentIndex,
-              label: i18nT('workflow:current_index'),
-              description: i18nT('workflow:current_index_desc'),
-              type: FlowNodeOutputTypeEnum.static,
-              valueType: WorkflowIOValueTypeEnum.number
-            }
-          });
-        }
-        if (!hasItem) {
-          onChangeNode({
-            nodeId: startNode.nodeId,
-            type: 'addOutput',
-            value: {
-              id: NodeOutputKeyEnum.currentItem,
-              key: NodeOutputKeyEnum.currentItem,
-              label: i18nT('workflow:current_item'),
-              description: i18nT('workflow:current_item_desc'),
-              type: FlowNodeOutputTypeEnum.static,
-              valueType: WorkflowIOValueTypeEnum.any
-            }
-          });
-        }
-      } else {
-        if (hasIndex) {
-          onChangeNode({
-            nodeId: startNode.nodeId,
-            type: 'delOutput',
-            key: NodeOutputKeyEnum.currentIndex
-          });
-        }
-        if (hasItem) {
-          onChangeNode({
-            nodeId: startNode.nodeId,
-            type: 'delOutput',
-            key: NodeOutputKeyEnum.currentItem
-          });
-        }
-        if (!hasIteration) {
-          onChangeNode({
-            nodeId: startNode.nodeId,
-            type: 'addOutput',
-            value: {
-              id: NodeOutputKeyEnum.currentIteration,
-              key: NodeOutputKeyEnum.currentIteration,
-              label: i18nT('workflow:current_iteration'),
-              description: i18nT('workflow:current_iteration_desc'),
-              type: FlowNodeOutputTypeEnum.static,
-              valueType: WorkflowIOValueTypeEnum.number
-            }
-          });
-        }
+      const indexOutput = {
+        id: NodeOutputKeyEnum.currentIndex,
+        key: NodeOutputKeyEnum.currentIndex,
+        label: i18nT('workflow:current_index'),
+        description: i18nT('workflow:current_index_desc'),
+        type: FlowNodeOutputTypeEnum.static,
+        valueType: WorkflowIOValueTypeEnum.number
+      };
+      const itemOutput = {
+        id: NodeOutputKeyEnum.currentItem,
+        key: NodeOutputKeyEnum.currentItem,
+        label: i18nT('workflow:current_item'),
+        description: i18nT('workflow:current_item_desc'),
+        type: FlowNodeOutputTypeEnum.static,
+        valueType: WorkflowIOValueTypeEnum.any
+      };
+      const iterationOutput = {
+        id: NodeOutputKeyEnum.currentIteration,
+        key: NodeOutputKeyEnum.currentIteration,
+        label: i18nT('workflow:current_iteration'),
+        description: i18nT('workflow:current_iteration_desc'),
+        type: FlowNodeOutputTypeEnum.static,
+        valueType: WorkflowIOValueTypeEnum.number
+      };
+
+      // 一次算出目标输出集合：逐条增删会把一次模式切换拆成多条历史。
+      const nextOutputs =
+        mode === LoopRunModeEnum.array
+          ? [
+              ...startOutputs.filter((o) => o.key !== NodeOutputKeyEnum.currentIteration),
+              ...(hasKey(NodeOutputKeyEnum.currentIndex) ? [] : [indexOutput]),
+              ...(hasKey(NodeOutputKeyEnum.currentItem) ? [] : [itemOutput])
+            ]
+          : [
+              ...startOutputs.filter(
+                (o) =>
+                  o.key !== NodeOutputKeyEnum.currentIndex &&
+                  o.key !== NodeOutputKeyEnum.currentItem
+              ),
+              ...(hasKey(NodeOutputKeyEnum.currentIteration) ? [] : [iterationOutput])
+            ];
+
+      if (!isEqual(nextOutputs, startOutputs)) {
+        // 被删输出 handle 上的连线同事务断开；同一事务内逐条删边要按降序下标。
+        const removedKeys = startOutputs
+          .map((o) => o.key)
+          .filter((key) => !nextOutputs.some((o) => o.key === key));
+        startChildNode?.updateNode(
+          { outputs: nextOutputs },
+          {
+            disconnectEdges: removedKeys
+              .flatMap((outputKey) =>
+                getOutputDisconnectCommands({
+                  edges: workflow.edges,
+                  nodeId: startChildId,
+                  outputKey
+                })
+              )
+              .sort((a, b) => b.index - a.index)
+          }
+        );
       }
     }
 
     // Transition-only, so a user-deleted break node isn't re-created.
     if (mode === LoopRunModeEnum.conditional && prevMode !== LoopRunModeEnum.conditional) {
       const hasBreak = childNodeIds.some(
-        (id) => getNodeById(id)?.flowNodeType === FlowNodeTypeEnum.loopRunBreak
+        (id) => reader?.getNodeById(id)?.flowNodeType === FlowNodeTypeEnum.loopRunBreak
       );
       if (!hasBreak) {
-        const startRaw = startChildId ? getRawNodeById(startChildId) : undefined;
-        const position = startRaw?.position
-          ? { x: startRaw.position.x + 500, y: startRaw.position.y + 150 }
+        const startPosition = startChildNode?.view.position;
+        const position = startPosition
+          ? { x: startPosition.x + 500, y: startPosition.y + 150 }
           : { x: 500, y: 400 };
         const breakNode = nodeTemplate2FlowNode({
           template: LoopRunBreakTemplate,
@@ -190,50 +181,57 @@ const NodeLoopRun = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         workflow.addNode(canvasNodeToStoreNode(breakNode));
       }
     }
-  }, [mode, childNodeIds, nodeId, getNodeById, getRawNodeById, onChangeNode, t, workflow]);
+  }, [childNodeIds, mode, nodeId, reader, startChildId, startChildNode, t, workflow]);
 
   useEffect(() => {
-    const declared = inputs.filter((i) => i.canEdit === true);
-    const currentDynamic = outputs.filter((o) => o.type === FlowNodeOutputTypeEnum.dynamic);
+    // 声明的动态出参要与 outputs 对齐：一次算出目标数组单事务提交，被删出参的连线一起断开。
+    const documentInputs = node?.data.inputs;
+    const documentOutputs = node?.data.outputs;
+    if (!documentInputs || !documentOutputs) return;
+
+    const declared = documentInputs.filter((i) => i.canEdit === true);
     const declaredKeys = new Set(declared.map((i) => i.key));
+    const removedKeys = documentOutputs
+      .filter((o) => o.type === FlowNodeOutputTypeEnum.dynamic && !declaredKeys.has(o.key))
+      .map((o) => o.key);
 
-    currentDynamic.forEach((o) => {
-      if (!declaredKeys.has(o.key)) {
-        onChangeNode({ nodeId, type: 'delOutput', key: o.key });
-      }
+    const keptOutputs = documentOutputs.filter((o) => !removedKeys.includes(o.key));
+    const updatedOutputs = keptOutputs.map((o) => {
+      const input = declared.find((i) => i.key === o.key);
+      if (!input) return o;
+      const label = input.label || input.key;
+      // 只在真有差异时改写，避免与 Runtime 归一化后的记录反复互写。
+      return o.label === label && o.valueType === input.valueType
+        ? o
+        : { ...o, label, valueType: input.valueType };
     });
+    const addedOutputs = declared
+      .filter((input) => !keptOutputs.some((o) => o.key === input.key))
+      .map((input) => ({
+        id: input.key,
+        key: input.key,
+        label: input.label || input.key,
+        type: FlowNodeOutputTypeEnum.dynamic,
+        valueType: input.valueType
+      }));
 
-    declared.forEach((input) => {
-      const existing = currentDynamic.find((o) => o.key === input.key);
-      if (!existing) {
-        onChangeNode({
-          nodeId,
-          type: 'addOutput',
-          value: {
-            id: input.key,
-            key: input.key,
-            label: input.label || input.key,
-            type: FlowNodeOutputTypeEnum.dynamic,
-            valueType: input.valueType
-          }
-        });
-      } else if (
-        existing.valueType !== input.valueType ||
-        existing.label !== (input.label || input.key)
-      ) {
-        onChangeNode({
-          nodeId,
-          type: 'updateOutput',
-          key: input.key,
-          value: {
-            ...existing,
-            label: input.label || input.key,
-            valueType: input.valueType
-          }
-        });
+    const changed =
+      removedKeys.length > 0 ||
+      addedOutputs.length > 0 ||
+      updatedOutputs.some((o, index) => o !== keptOutputs[index]);
+    if (!changed) return;
+
+    node?.updateNode(
+      { outputs: [...updatedOutputs, ...addedOutputs] },
+      {
+        disconnectEdges: removedKeys
+          .flatMap((outputKey) =>
+            getOutputDisconnectCommands({ edges: workflow.edges, nodeId, outputKey })
+          )
+          .sort((a, b) => b.index - a.index)
       }
-    });
-  }, [inputs, outputs, nodeId, onChangeNode]);
+    );
+  }, [node, nodeId, workflow.edges]);
 
   return (
     <NodeCard selected={selected} maxW="full" menuForbid={{ copy: true }} {...data}>

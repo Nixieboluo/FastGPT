@@ -9,16 +9,16 @@ import React, { useCallback, useMemo, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { useTranslation } from 'next-i18next';
 import { useRequest } from '@fastgpt/web/hooks/useRequest';
-import { useContextSelector } from 'use-context-selector';
 import { useToast } from '@fastgpt/web/hooks/useToast';
 import { FlowNodeOutputTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import FormLabel from '@fastgpt/web/components/common/MyBox/FormLabel';
 import QuestionTip from '@fastgpt/web/components/common/MyTooltip/QuestionTip';
 import { WorkflowIOValueTypeEnum } from '@fastgpt/global/core/workflow/constants';
-import { WorkflowActionsContext } from '../../../../context/workflowActionsContext';
 import { z } from 'zod';
 import { toolParamKeyReg } from './utils';
 import { defaultToolParamFormData } from './constants';
+import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
+import { useNode, useWorkflow } from '@/web/core/workflow/editor';
 
 const customValueType = 'custom' as const;
 
@@ -46,7 +46,8 @@ const ToolParamsEditModal = ({
 }: ToolParamsEditModalProps) => {
   const { t } = useTranslation();
   const { toast } = useToast();
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const node = useNode(nodeId);
+  const { edges } = useWorkflow();
 
   const { register, setValue, handleSubmit, control, getValues, trigger } =
     useForm<FlowNodeInputItemType>({
@@ -119,48 +120,49 @@ const ToolParamsEditModal = ({
         customJsonSchema: customParam?.schema
       };
       const { customJsonSchema: _customJsonSchema, ...outputConfig } = inputConfig;
+      const documentInputs = node?.data.inputs;
+      const documentOutputs = node?.data.outputs;
+      if (!node || !documentInputs || !documentOutputs) return;
+      const outputValue = {
+        ...outputConfig,
+        id: key,
+        label: key,
+        type: FlowNodeOutputTypeEnum.static
+      };
+
+      // 参数记录与同名 output 必须同一事务落库：拆成两次提交会让撤销需要按两下。
       if (defaultValue.key) {
-        // edit
-        onChangeNode({
-          nodeId,
-          type: 'replaceInput',
-          key: defaultValue.key,
-          value: inputConfig
-        });
-        if (syncOutput) {
-          onChangeNode({
-            nodeId,
-            type: 'replaceOutput',
-            key: defaultValue.key,
-            value: {
-              ...outputConfig,
-              id: key,
-              label: key,
-              type: FlowNodeOutputTypeEnum.static
-            }
-          });
-        }
+        // edit：output 记录被替换，旧 handle 上的连线随本次提交一起断开（与旧 replaceOutput 一致）。
+        const originalKey = defaultValue.key;
+        node.updateNode(
+          {
+            inputs: documentInputs.map((input) =>
+              input.key === originalKey ? inputConfig : input
+            ),
+            ...(syncOutput
+              ? {
+                  outputs: documentOutputs.map((output) =>
+                    output.key === originalKey ? outputValue : output
+                  )
+                }
+              : {})
+          },
+          syncOutput
+            ? {
+                disconnectEdges: getOutputDisconnectCommands({
+                  edges,
+                  nodeId,
+                  outputKey: originalKey
+                })
+              }
+            : undefined
+        );
       } else {
         // create
-        onChangeNode({
-          nodeId,
-          type: 'addInput',
-          value: {
-            ...inputConfig
-          }
+        node.updateNode({
+          inputs: [...documentInputs, inputConfig],
+          ...(syncOutput ? { outputs: [...documentOutputs, outputValue] } : {})
         });
-        if (syncOutput) {
-          onChangeNode({
-            nodeId,
-            type: 'addOutput',
-            value: {
-              ...outputConfig,
-              id: key,
-              label: key,
-              type: FlowNodeOutputTypeEnum.static
-            }
-          });
-        }
       }
     },
     {

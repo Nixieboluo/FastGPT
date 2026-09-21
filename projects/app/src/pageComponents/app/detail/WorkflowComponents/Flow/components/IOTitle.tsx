@@ -3,12 +3,9 @@ import { Box, type StackProps, HStack, Switch, Text } from '@chakra-ui/react';
 import type { FlowNodeInputItemType } from '@fastgpt/global/core/workflow/type/io';
 import ToolParamConfig from './ToolParamConfig';
 import { useTranslation } from 'next-i18next';
-import { useContextSelector } from 'use-context-selector';
-import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
 import { getHandleId } from '@fastgpt/global/core/workflow/utils';
 import { Position } from 'reactflow';
-import { WorkflowActionsContext } from '../../context/workflowActionsContext';
-import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { useNode, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
 
 const IOTitle = ({
   text,
@@ -23,33 +20,34 @@ const IOTitle = ({
   catchError?: boolean;
 } & StackProps) => {
   const { t } = useTranslation();
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
-  const edges = useContextSelector(WorkflowBufferDataContext, (v) => v.edges);
   const workflow = useWorkflowAdapter();
+  // nodeId 是可选 prop：hook 必须无条件调用，空 id 时 useNode 返回 undefined。
+  const node = useNode(nodeId ?? '');
 
+  /**
+   * 切换异常捕获开关：catchError 与 catch 输出上的连线必须一起消失。
+   * 走 updateNode 的 disconnectEdges 同事务提交，撤销一步还原（旧实现是两次 dispatch，要按两下）。
+   * 断连按端点值匹配，不依赖投影边 id。
+   */
   const handleCatchErrorChange = (checked: boolean) => {
-    if (!nodeId) return;
+    if (!nodeId || !node) return;
 
-    onChangeNode({
-      nodeId,
-      type: 'attr',
-      key: 'catchError',
-      value: checked
-    });
-
-    const edge = edges.find(
-      (item) => item.sourceHandle === getHandleId(nodeId, 'source_catch', Position.Right)
+    const catchHandle = getHandleId(nodeId, 'source_catch', Position.Right);
+    node.updateNode(
+      { catchError: checked },
+      {
+        disconnectEdges: workflow.edges
+          .filter((edge) => edge.sourceHandle === catchHandle)
+          .map((edge) => ({
+            edge: {
+              source: edge.source,
+              target: edge.target,
+              sourceHandle: edge.sourceHandle || '',
+              targetHandle: edge.targetHandle || ''
+            }
+          }))
+      }
     );
-    if (edge) {
-      workflow.disconnectEdge({
-        edge: {
-          source: edge.source,
-          target: edge.target,
-          sourceHandle: edge.sourceHandle || '',
-          targetHandle: edge.targetHandle || ''
-        }
-      });
-    }
   };
 
   return (

@@ -25,9 +25,9 @@ import CatchError from '../render/RenderOutput/CatchError';
 import RenderToolInput, { hasDynamicToolInput } from '../render/RenderToolInput';
 
 import { AppContext } from '@/pageComponents/app/detail/context';
-import { WorkflowActionsContext } from '../../../context/workflowActionsContext';
-import { WorkflowBufferDataContext } from '../../../context/workflowInitContext';
-import { WorkflowUtilsContext } from '../../../context/workflowUtilsContext';
+import { splitNodeOutputs, splitToolInputsByMode } from '@/web/core/workflow/utils';
+import { useIsToolNode, useWorkflowDocument } from '../render/useWorkflowDocument';
+import { useField, useNode } from '@/web/core/workflow/editor';
 
 import { useSystemStore } from '@/web/common/system/useSystemStore';
 import { useModelDetail } from '@/web/core/ai/model/useModelDetail';
@@ -99,9 +99,14 @@ const NodeAgent = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useTranslation();
   const { toast } = useToast();
 
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
-  const { splitToolInputs, splitOutput } = useContextSelector(WorkflowUtilsContext, (ctx) => ctx);
-  const { getNodeById, edges } = useContextSelector(WorkflowBufferDataContext, (v) => v);
+  // 变量列表要按 id 查任意节点：统一读文档图查询面；写入统一走 adapter 的 scoped hooks。
+  const { reader } = useWorkflowDocument();
+  const node = useNode(nodeId);
+  const promptField = useField(nodeId, NodeInputKeyEnum.aiSystemPrompt, 'input');
+  const skillsField = useField(nodeId, NodeInputKeyEnum.skills, 'input');
+  const sandboxField = useField(nodeId, NodeInputKeyEnum.useAgentSandbox, 'input');
+  const authTmbIdField = useField(nodeId, NodeInputKeyEnum.authTmbId, 'input');
+  const datasetSelectField = useField(nodeId, NodeInputKeyEnum.datasetSelectList, 'input');
   const { appDetail } = useContextSelector(AppContext, (v) => v);
   const { feConfigs } = useSystemStore();
   const llmMaxQuoteContext = useWorkflowQuoteLimit();
@@ -112,27 +117,27 @@ const NodeAgent = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { openConfirm, ConfirmModal } = useConfirm();
 
   // Split tool/common inputs and outputs
-  const { isTool, commonInputs } = useMemoEnhance(
-    () => splitToolInputs(inputs, nodeId),
-    [inputs, nodeId, splitToolInputs]
+  const isTool = useIsToolNode(nodeId);
+  const { commonInputs } = useMemoEnhance(
+    () => splitToolInputsByMode(inputs, isTool),
+    [inputs, isTool]
   );
   const { successOutputs, errorOutputs } = useMemoEnhance(
-    () => splitOutput(outputs),
-    [splitOutput, outputs]
+    () => splitNodeOutputs(outputs),
+    [outputs]
   );
 
   // Editor variables for PromptEditor
-  const editorVariables = useMemoEnhance(
-    () =>
-      getEditorVariables({
-        nodeId,
-        getNodeById,
-        edges,
-        appDetail,
-        t
-      }),
-    [nodeId, getNodeById, edges, appDetail, t]
-  );
+  const editorVariables = useMemoEnhance(() => {
+    if (!reader) return [];
+    return getEditorVariables({
+      nodeId,
+      getNodeById: reader.getNodeById,
+      edges: reader.edges,
+      appDetail,
+      t
+    });
+  }, [nodeId, reader, appDetail, t]);
   const externalVariables = useMemo(
     () =>
       externalProviderWorkflowVariables?.map((item) => ({
@@ -285,32 +290,17 @@ const NodeAgent = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
 
   const onChangeAuthTmbId = useCallback(
     (checked: boolean) => {
-      if (!authTmbIdInput) return;
-      onChangeNode({
-        nodeId,
-        type: 'updateInput',
-        key: NodeInputKeyEnum.authTmbId,
-        value: {
-          ...authTmbIdInput,
-          value: checked
-        }
-      });
+      authTmbIdField?.setValue(checked);
     },
-    [authTmbIdInput, nodeId, onChangeNode]
+    [authTmbIdField]
   );
 
   // ---- Prompt ----
   const onPromptChange = useCallback(
     (text: string) => {
-      if (!promptInput) return;
-      onChangeNode({
-        nodeId,
-        key: NodeInputKeyEnum.aiSystemPrompt,
-        type: 'updateInput',
-        value: { ...promptInput, value: text }
-      });
+      promptField?.setValue(text);
     },
-    [promptInput, nodeId, onChangeNode]
+    [promptField]
   );
   const promptRenderType = useMemo(() => {
     if (!promptInput) return FlowNodeInputTypeEnum.textarea;
@@ -409,26 +399,9 @@ const NodeAgent = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         return;
       }
 
-      onChangeNode({
-        nodeId,
-        key: NodeInputKeyEnum.useAgentSandbox,
-        type: 'updateInput',
-        value: {
-          ...sandboxInput,
-          value: checked
-        }
-      });
+      sandboxField?.setValue(checked);
     },
-    [
-      enableSandbox,
-      nodeId,
-      onChangeNode,
-      sandboxInput,
-      selectedAgentSkills.length,
-      showSandbox,
-      t,
-      toast
-    ]
+    [enableSandbox, sandboxField, sandboxInput, selectedAgentSkills.length, showSandbox, t, toast]
   );
   // ---- Tools ----
   const {
@@ -506,16 +479,15 @@ const NodeAgent = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
           isPlus={feConfigs?.isPlus}
           onChangeSandbox={onChangeAgentSandbox}
           onChangeEntrypoint={(value) => {
-            onChangeNode({
-              nodeId,
-              key: NodeInputKeyEnum.sandboxEntrypoint,
-              type: 'replaceInput',
-              value: sandboxEntrypointInput
-                ? {
-                    ...sandboxEntrypointInput,
-                    value
-                  }
-                : createSandboxEntrypointInput(value)
+            const documentInputs = node?.data.inputs;
+            if (!documentInputs) return;
+            // 入口字段可能尚未创建：存在则改值，不存在则整条追加。
+            node?.updateNode({
+              inputs: sandboxEntrypointInput
+                ? documentInputs.map((input) =>
+                    input.key === NodeInputKeyEnum.sandboxEntrypoint ? { ...input, value } : input
+                  )
+                : documentInputs.concat(createSandboxEntrypointInput(value))
             });
           }}
         />
@@ -593,18 +565,9 @@ const NodeAgent = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                             hoverColor="red.600"
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (!skillsInput) return;
-                              onChangeNode({
-                                nodeId,
-                                key: NodeInputKeyEnum.skills,
-                                type: 'updateInput',
-                                value: {
-                                  ...skillsInput,
-                                  value: selectedAgentSkills.filter(
-                                    (s) => s.skillId !== item.skillId
-                                  )
-                                }
-                              });
+                              skillsField?.setValue(
+                                selectedAgentSkills.filter((s) => s.skillId !== item.skillId)
+                              );
                             }}
                           />
                         </Box>
@@ -617,31 +580,20 @@ const NodeAgent = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                 <SkillSelectModal
                   selectedSkills={selectedAgentSkills}
                   onAddSkill={(skill: SelectedAgentSkillItemType) => {
-                    if (!skillsInput) return;
-                    onChangeNode([
-                      {
-                        nodeId,
-                        key: NodeInputKeyEnum.skills,
-                        type: 'updateInput',
-                        value: {
-                          ...skillsInput,
-                          value: [skill, ...selectedAgentSkills]
+                    const documentInputs = node?.data.inputs;
+                    if (!documentInputs) return;
+                    // 添加技能会顺带打开沙箱：两个字段同一事务提交，撤销一次回到添加前。
+                    node?.updateNode({
+                      inputs: documentInputs.map((input) => {
+                        if (input.key === NodeInputKeyEnum.skills) {
+                          return { ...input, value: [skill, ...selectedAgentSkills] };
                         }
-                      },
-                      ...(sandboxInput
-                        ? [
-                            {
-                              nodeId,
-                              key: NodeInputKeyEnum.useAgentSandbox,
-                              type: 'updateInput' as const,
-                              value: {
-                                ...sandboxInput,
-                                value: true
-                              }
-                            }
-                          ]
-                        : [])
-                    ]);
+                        if (input.key === NodeInputKeyEnum.useAgentSandbox) {
+                          return { ...input, value: true };
+                        }
+                        return input;
+                      })
+                    });
                     if (sandboxInput && !sandboxInput.value) {
                       toast({
                         status: 'success',
@@ -650,16 +602,7 @@ const NodeAgent = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                     }
                   }}
                   onRemoveSkill={(skillId: string) => {
-                    if (!skillsInput) return;
-                    onChangeNode({
-                      nodeId,
-                      key: NodeInputKeyEnum.skills,
-                      type: 'updateInput',
-                      value: {
-                        ...skillsInput,
-                        value: selectedAgentSkills.filter((s) => s.skillId !== skillId)
-                      }
-                    });
+                    skillsField?.setValue(selectedAgentSkills.filter((s) => s.skillId !== skillId));
                   }}
                   onClose={onCloseSkillSelect}
                 />
@@ -821,12 +764,7 @@ const NodeAgent = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                   }))}
                   onChange={(e) => {
                     if (!datasetSelectInput) return;
-                    onChangeNode({
-                      nodeId,
-                      key: NodeInputKeyEnum.datasetSelectList,
-                      type: 'updateInput',
-                      value: { ...datasetSelectInput, value: e }
-                    });
+                    datasetSelectField?.setValue(e);
                   }}
                   onClose={onCloseDatasetSelect}
                 />
@@ -865,16 +803,15 @@ const NodeAgent = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
           maxTokens={llmMaxQuoteContext}
           onClose={onCloseDatasetParams}
           onSuccess={(e) => {
-            for (const key in e) {
-              const item = inputs.find((input) => input.key === key);
-              if (!item) continue;
-              onChangeNode({
-                nodeId,
-                type: 'updateInput',
-                key,
-                value: { ...item, value: (e as any)[key] }
-              });
-            }
+            const documentInputs = node?.data.inputs;
+            if (!documentInputs) return;
+            // 参数弹窗一次提交多个字段：整表写入，撤销一步回到旧参数。
+            const nextValues = e as Record<string, unknown>;
+            node?.updateNode({
+              inputs: documentInputs.map((input) =>
+                input.key in nextValues ? { ...input, value: nextValues[input.key] } : input
+              )
+            });
           }}
         />
       )}

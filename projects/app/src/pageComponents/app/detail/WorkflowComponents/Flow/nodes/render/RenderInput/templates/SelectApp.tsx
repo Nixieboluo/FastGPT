@@ -8,13 +8,13 @@ import { useTranslation } from 'next-i18next';
 import { useContextSelector } from 'use-context-selector';
 import { useRequest } from '@fastgpt/web/hooks/useRequest';
 import { getAppDetailById } from '@/web/core/app/api';
-import { WorkflowActionsContext } from '@/pageComponents/app/detail/WorkflowComponents/context/workflowActionsContext';
+import { useField } from '@/web/core/workflow/editor';
 import { AppContext } from '@/pageComponents/app/detail/context';
 
 const SelectAppRender = ({ item, nodeId }: RenderInputProps) => {
   const { t } = useTranslation();
   const currentAppId = useContextSelector(AppContext, (ctx) => ctx.appDetail._id);
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const field = useField(nodeId, item.key, 'input');
 
   const {
     isOpen: isOpenSelectApp,
@@ -33,15 +33,7 @@ const SelectAppRender = ({ item, nodeId }: RenderInputProps) => {
       refreshDeps: [value?.id],
       errorToast: 'Error',
       onError() {
-        onChangeNode({
-          nodeId,
-          type: 'updateInput',
-          key: 'app',
-          value: {
-            ...item,
-            value: undefined
-          }
-        });
+        field?.setValue(undefined);
       }
     }
   );
@@ -73,15 +65,7 @@ const SelectAppRender = ({ item, nodeId }: RenderInputProps) => {
             filterAppIds={[currentAppId]}
             onClose={onCloseSelectApp}
             onSuccess={(e) => {
-              onChangeNode({
-                nodeId,
-                type: 'updateInput',
-                key: 'app',
-                value: {
-                  ...item,
-                  value: e
-                }
-              });
+              field?.setValue(e);
             }}
           />
         )}
@@ -91,11 +75,10 @@ const SelectAppRender = ({ item, nodeId }: RenderInputProps) => {
     appDetail?.avatar,
     appDetail?.name,
     currentAppId,
+    field,
     isOpenSelectApp,
     item,
     loading,
-    nodeId,
-    onChangeNode,
     onCloseSelectApp,
     onOpenSelectApp,
     t,

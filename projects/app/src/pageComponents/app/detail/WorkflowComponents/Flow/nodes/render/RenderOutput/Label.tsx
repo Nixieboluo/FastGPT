@@ -10,14 +10,15 @@ import QuestionTip from '@fastgpt/web/components/common/MyTooltip/QuestionTip';
 import ValueTypeLabel from '../ValueTypeLabel';
 import MyIcon from '@fastgpt/web/components/common/Icon';
 import MyTooltip from '@fastgpt/web/components/common/MyTooltip';
-import { useContextSelector } from 'use-context-selector';
-import { WorkflowActionsContext } from '../../../../context/workflowActionsContext';
+import { useNode, useWorkflow } from '@/web/core/workflow/editor';
+import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
 
 const OutputLabel = ({ nodeId, output }: { nodeId: string; output: FlowNodeOutputItemType }) => {
   const { t } = useSafeTranslation();
   const { label = '', description, valueType, valueDesc } = output;
 
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const node = useNode(nodeId);
+  const { edges } = useWorkflow();
 
   return (
     <Box position={'relative'}>
@@ -59,11 +60,19 @@ const OutputLabel = ({ nodeId, output }: { nodeId: string; output: FlowNodeOutpu
                   bg: 'adora.100'
                 }}
                 onClick={() => {
-                  onChangeNode({
-                    nodeId,
-                    type: 'delOutput',
-                    key: output.key
-                  });
+                  const documentOutputs = node?.data.outputs;
+                  if (!documentOutputs) return;
+                  // 输出字段删除是记录级变更；其 source handle 上的连线必须同事务断开。
+                  node?.updateNode(
+                    { outputs: documentOutputs.filter((item) => item.key !== output.key) },
+                    {
+                      disconnectEdges: getOutputDisconnectCommands({
+                        edges,
+                        nodeId,
+                        outputKey: output.key
+                      })
+                    }
+                  );
                 }}
               >
                 <MyIcon name={'common/info'} color={'adora.600'} w={4} mr={1} />

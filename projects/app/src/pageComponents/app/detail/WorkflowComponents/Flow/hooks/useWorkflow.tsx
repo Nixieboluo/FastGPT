@@ -28,12 +28,12 @@ import { useCanvas, useWorkflow as useWorkflowAdapter } from '@/web/core/workflo
 import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { useMemoizedFn } from 'ahooks';
 import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
-import { WorkflowBufferDataContext, WorkflowInitContext } from '../../context/workflowInitContext';
-import { WorkflowActionsContext } from '../../context/workflowActionsContext';
+import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
 import { WorkflowUIContext } from '../context/workflowUIContext';
 import { WorkflowModalContext } from '../context/workflowModalContext';
 import { WorkflowSelectionContext } from '../context/workflowSelectionContext';
 import { type HelperLinesController } from '../components/HelperLines';
+import { useDocumentGetNodeById } from '../nodes/render/useWorkflowDocument';
 import {
   buildNodeTemplateContext,
   getNodeContainerCheckError,
@@ -384,20 +384,29 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
   const { toast } = useToast();
   const { t } = useTranslation();
 
-  const { nodes, getRawNodeById } = useContextSelector(WorkflowInitContext, (state) => state);
-  const { onNodesChange, onEdgesChange, setNodes, getNodeById, getNodes, edges } =
-    useContextSelector(WorkflowBufferDataContext, (state) => state);
+  // 画布本地交互数组（拖拽帧、选中、测量尺寸）仍读 renderer 数组：handleNodesChange 要在
+  // 应用变更后同步读回最终位置提交几何，reactflow store 得等下一次 commit 才刷新。
+  const { onNodesChange, onEdgesChange, setNodes, getNodes } = useContextSelector(
+    WorkflowBufferDataContext,
+    (state) => state
+  );
   const selectedNodesMap = useContextSelector(WorkflowSelectionContext, (v) => v.selectedNodesMap);
   const workflow = useWorkflowAdapter();
   const canvas = useCanvas();
+  // 跨节点语义读取走文档 reader；按 id 取画布节点（位置、尺寸、选中）走 reactflow store。
+  const getNodeById = useDocumentGetNodeById();
 
-  const { setConnectingEdge } = useContextSelector(WorkflowActionsContext, (v) => v);
   /** 标红焦点归 host：取消选中标红节点时清除焦点，画布不再自己维护错误标记。 */
   const focusIssueNode = useContextSelector(WorkflowHostContext, (v) => v.focusIssueNode);
-  const { setHoverEdgeId, setMenu } = useContextSelector(WorkflowUIContext, (v) => v);
+  const issueFocusRef = useContextSelector(WorkflowHostContext, (v) => v.issueFocusRef);
+  const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
+  const { setHoverEdgeId, setMenu, setConnectingEdge } = useContextSelector(
+    WorkflowUIContext,
+    (v) => v
+  );
   const setHandleParams = useContextSelector(WorkflowModalContext, (v) => v.setHandleParams);
 
-  const { getIntersectingNodes, flowToScreenPosition, getZoom } = useReactFlow();
+  const { getIntersectingNodes, flowToScreenPosition, getZoom, getNode, getEdge } = useReactFlow();
   const { isDowningCtrl } = useKeyboard();
 
   /** 同步应用吸附结果，并命令式绘制当前帧辅助线。 */
@@ -425,12 +434,12 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
     );
 
     if (parentNode) {
-      const containerChildNodes = nodes.filter(
+      const containerChildNodes = getNodes().filter(
         (item) => item.data.parentNodeId === parentNode.data.nodeId
       );
       const containerContext = buildNodeTemplateContext({
         sourceNode: undefined,
-        edges,
+        edges: workflow.edges,
         getNodeById,
         isSidebar: true,
         targetParentType: parentNode.data.flowNodeType,
@@ -457,7 +466,7 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
       const result = workflow.attachToContainer(node.id, parentNode.id);
       if (!result.ok) return;
       // 旧行为是落入容器后删除该节点全部连线，按值断连避免投影 id 重排失效。
-      edges
+      workflow.edges
         .filter((edge) => edge.source === node.id || edge.target === node.id)
         .forEach((edge) =>
           workflow.disconnectEdge({
@@ -473,7 +482,7 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
   });
 
   const getTemplatesListPopoverPosition = useMemoizedFn(({ nodeId }: { nodeId: string | null }) => {
-    const node = getRawNodeById(nodeId);
+    const node = nodeId ? getNode(nodeId) : undefined;
     if (!node) return { x: 0, y: 0 };
 
     const position = flowToScreenPosition({
@@ -510,7 +519,7 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
   });
   const getAddNodePosition = useMemoizedFn(
     ({ nodeId, handleId }: { nodeId: string | null; handleId: string | null }) => {
-      const node = getRawNodeById(nodeId);
+      const node = nodeId ? getNode(nodeId) : undefined;
       if (!node) return { x: 0, y: 0 };
 
       if (handleId === 'selectedTools') {
@@ -535,16 +544,14 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
     }
 
     // 错误节点失焦（取消选中）时清除标红，与原版点击节点取消标红行为一致。
+    // 标红焦点的权威在 host，直接比焦点 id，不再从投影塞进 data 的 isError 反推。
     if (!change.selected) {
-      const node = getRawNodeById(change.id);
-      if (node?.data.isError) {
-        focusIssueNode(undefined);
-      }
+      if (issueFocusRef.current === change.id) focusIssueNode(undefined);
       return;
     }
 
     // 父子互斥(后操作优先): 选父则取消其已选 children;选子则取消已选父。
-    const node = getRawNodeById(change.id);
+    const node = getNode(change.id);
     if (!node) return;
 
     if (isNestedParentNodeType(node.data.flowNodeType)) {
@@ -554,7 +561,7 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
         )
       );
     } else if (node.data.parentNodeId) {
-      const parent = getRawNodeById(node.data.parentNodeId);
+      const parent = getNode(node.data.parentNodeId);
       if (parent?.selected) {
         setNodes((curr) => curr.map((n) => (n.id === parent.id ? { ...n, selected: false } : n)));
       }
@@ -562,6 +569,9 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
   });
   const handlePositionNode = useMemoizedFn(
     (change: NodePositionChange, node: Node<FlowNodeItemType>) => {
+      // 拖拽热路径按帧读画布数组：吸附候选与容器子节点都属于 renderer 交互状态。
+      const nodes = getNodes();
+
       // 场景1: 子节点拖拽 - 在父节点内移动
       if (node.data.parentNodeId) {
         const parentId = node.data.parentNodeId;
@@ -659,7 +669,7 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
 
     for (const change of changes) {
       if (change.type === 'remove') {
-        const node = getRawNodeById(change.id);
+        const node = getNode(change.id);
         if (!node) continue;
 
         const parentNodeDeleted = changes.find(
@@ -679,14 +689,15 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
           node.data.parentNodeId &&
           !parentNodeDeleted
         ) {
-          const parent = getRawNodeById(node.data.parentNodeId);
+          // store 返回的画布节点 data 是 any，显式收窄以便读取父容器的 loopRunMode 输入。
+          const parent = getNode(node.data.parentNodeId) as Node<FlowNodeItemType> | undefined;
           const parentMode = parent?.data.inputs.find((i) => i.key === NodeInputKeyEnum.loopRunMode)
             ?.value as LoopRunModeEnum | undefined;
           if (
             parent?.data.flowNodeType === FlowNodeTypeEnum.loopRun &&
             parentMode === LoopRunModeEnum.conditional
           ) {
-            const remainingBreak = nodes.some(
+            const remainingBreak = getNodes().some(
               (n) =>
                 n.data.parentNodeId === parent.id &&
                 n.data.flowNodeType === FlowNodeTypeEnum.loopRunBreak &&
@@ -706,7 +717,7 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
       } else if (change.type === 'select') {
         handleSelectNode(change);
       } else if (change.type === 'position') {
-        const node = getRawNodeById(change.id);
+        const node = getNode(change.id);
         if (node) {
           childChanges.push(...handlePositionNode(change, node));
         }
@@ -744,23 +755,25 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
         (change) => !(change.type === 'remove' && hasSelectedNode)
       );
 
-      onEdgesChange(changesFiltered);
-      changesFiltered
+      // 先从 store 解析被删的画布边，再按端点值断连：投影边 id 是投影内部细节，不进 adapter。
+      const removedEdges = changesFiltered
         .filter((change) => change.type === 'remove')
-        .map((change) => edges.find((edge) => edge.id === change.id))
-        .filter((edge): edge is Edge => !!edge)
-        .forEach((edge) =>
-          workflow.disconnectEdge({
-            edge: {
-              source: edge.source,
-              target: edge.target,
-              sourceHandle: edge.sourceHandle || '',
-              targetHandle: edge.targetHandle || ''
-            }
-          })
-        );
+        .map((change) => getEdge(change.id))
+        .filter((edge): edge is Edge => !!edge);
+
+      onEdgesChange(changesFiltered);
+      removedEdges.forEach((edge) =>
+        workflow.disconnectEdge({
+          edge: {
+            source: edge.source,
+            target: edge.target,
+            sourceHandle: edge.sourceHandle || '',
+            targetHandle: edge.targetHandle || ''
+          }
+        })
+      );
     },
-    [edges, selectedNodesMap, workflow, onEdgesChange]
+    [getEdge, selectedNodesMap, workflow, onEdgesChange]
   );
 
   const onNodeDragStop = useCallback(
@@ -778,8 +791,8 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
       if (!nodeId || params.handleType === 'target') return;
 
       // If node is folded, unfold it when connecting
-      const sourceNode = getNodeById(nodeId);
-      if (sourceNode?.isFolded) {
+      // 折叠存在 Node View 上，直接问 host runtime，不必经投影或文档 reader。
+      if (runtime?.getNodeView(nodeId)?.isFolded) {
         canvas.commitGeometry([{ nodeId, isFolded: false }]);
       }
       setConnectingEdge(params);
@@ -817,7 +830,7 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
       }
     },
     [
-      getNodeById,
+      runtime,
       setConnectingEdge,
       getTemplatesListPopoverPosition,
       getAddNodePosition,
@@ -864,7 +877,7 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
           targetTemplate,
           targetNode,
           sourceNode,
-          edges,
+          edges: workflow.edges,
           handleId: connect.sourceHandle,
           getNodeById
         })
@@ -876,7 +889,7 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
         connect
       });
     },
-    [edges, getNodeById, onConnect, t, toast]
+    [workflow.edges, getNodeById, onConnect, t, toast]
   );
 
   /* edge */

@@ -8,7 +8,6 @@ import {
   useReactFlow
 } from 'reactflow';
 import { useContextSelector } from 'use-context-selector';
-import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
 import MyTooltip from '@fastgpt/web/components/common/MyTooltip';
 import MyIcon from '@fastgpt/web/components/common/Icon';
 import { Box } from '@chakra-ui/react';
@@ -30,12 +29,11 @@ const buttonStyle = {
 };
 
 const FlowController = React.memo(function FlowController() {
-  const { fitView, zoomIn, zoomOut, getNodes } = useReactFlow();
+  const { fitView, zoomIn, zoomOut, getNodes, getNode } = useReactFlow();
   const undo = useContextSelector(WorkflowHostContext, (v) => v.undo);
   const redo = useContextSelector(WorkflowHostContext, (v) => v.redo);
   const canUndo = useContextSelector(WorkflowHostContext, (v) => v.canUndo);
   const canRedo = useContextSelector(WorkflowHostContext, (v) => v.canRedo);
-  const { getNodeById } = useContextSelector(WorkflowBufferDataContext, (v) => v);
   const {
     workflowControlMode,
     setWorkflowControlMode,
@@ -99,15 +97,15 @@ const FlowController = React.memo(function FlowController() {
   const MiniMapNode = useCallback(
     ({ x, y, width, height, color, id }: MiniMapNodeProps) => {
       // If the node parentNode is folded, the child node will not be displayed
-      const node = getNodeById(id);
-      const parentNode = node?.parentNodeId ? getNodeById(node?.parentNodeId) : undefined;
-      if (parentNode?.isFolded) {
+      // 小地图逐节点渲染，读 reactflow store 即可：折叠会触发重投影，store 随之刷新。
+      const parentNodeId = getNode(id)?.data.parentNodeId;
+      if (parentNodeId && getNode(parentNodeId)?.data.isFolded) {
         return null;
       }
 
       return <rect x={x} y={y} width={width} height={height} fill={color} />;
     },
-    [getNodeById]
+    [getNode]
   );
 
   const Render = useMemo(() => {

@@ -56,7 +56,11 @@ import React, { useCallback, useMemo } from 'react';
 import type { Node } from 'reactflow';
 import { useReactFlow } from 'reactflow';
 import { useContextSelector } from 'use-context-selector';
-import { WorkflowBufferDataContext } from '../../../context/workflowInitContext';
+import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import {
+  useDocumentGetNodeById,
+  useWorkflowDocument
+} from '../../nodes/render/useWorkflowDocument';
 import { WorkflowModalContext } from '../../context/workflowModalContext';
 import { useWorkflowUtils } from '../../hooks/useUtils';
 import { sliderWidth } from '../../NodeTemplatesModal';
@@ -251,10 +255,13 @@ const NodeTemplateList = ({
   const { t, i18n } = useTranslation();
   const { toast } = useToast();
   const { computedNewNodeName } = useWorkflowUtils();
-  const { edges, getNodeById, getNodes } = useContextSelector(WorkflowBufferDataContext, (v) => v);
   const handleParams = useContextSelector(WorkflowModalContext, (v) => v.handleParams);
   const isToolSelector = handleParams?.handleId === NodeOutputKeyEnum.selectedTools;
   const { getIntersectingNodes } = useReactFlow();
+  // 容器归属与嵌套限制校验读文档：结构快照给连线，reader 给节点类型与父子关系。
+  const { edges } = useWorkflowAdapter();
+  const getNodeById = useDocumentGetNodeById();
+  const nodeList = useWorkflowDocument().reader?.nodes;
   const [lastSelectedModelId] = useLocalStorageState<string>('workflow_default_llm_model', {
     defaultValue: ''
   });
@@ -331,7 +338,7 @@ const NodeTemplateList = ({
           : undefined;
 
         const containerChildNodes = effectiveParentNode
-          ? getNodes().filter((item) => item.data.parentNodeId === effectiveParentNode.nodeId)
+          ? (nodeList ?? []).filter((item) => item.parentNodeId === effectiveParentNode.nodeId)
           : [];
         const containerContext = buildNodeTemplateContext({
           sourceNode: handleParams ? currentNode : undefined,
@@ -341,10 +348,10 @@ const NodeTemplateList = ({
           isSidebar: !handleParams,
           targetParentType: effectiveParentNode?.flowNodeType,
           hasToolNode: containerChildNodes.some(
-            (item) => item.data.flowNodeType === FlowNodeTypeEnum.toolCall
+            (item) => item.flowNodeType === FlowNodeTypeEnum.toolCall
           ),
           hasLoopRunNode: containerChildNodes.some(
-            (item) => item.data.flowNodeType === FlowNodeTypeEnum.loopRun
+            (item) => item.flowNodeType === FlowNodeTypeEnum.loopRun
           )
         });
         if (containerContext) {
@@ -483,7 +490,7 @@ const NodeTemplateList = ({
     [
       computedNewNodeName,
       getNodeById,
-      getNodes,
+      nodeList,
       edges,
       handleParams,
       isToolSelector,

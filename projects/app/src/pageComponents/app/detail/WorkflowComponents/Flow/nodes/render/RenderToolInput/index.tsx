@@ -8,12 +8,12 @@ import { useTranslation } from 'next-i18next';
 import MyIcon from '@fastgpt/web/components/common/Icon';
 import dynamic from 'next/dynamic';
 import { defaultToolParamFormData } from '../../components/ToolParamsEditModal/constants';
-import { useContextSelector } from 'use-context-selector';
 import IOTitle from '../../../components/IOTitle';
 import { SmallAddIcon } from '@chakra-ui/icons';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
-import { WorkflowUtilsContext } from '../../../../context/workflowUtilsContext';
-import { WorkflowActionsContext } from '../../../../context/workflowActionsContext';
+import { useNode } from '@/web/core/workflow/editor';
+import { splitToolInputsByMode } from '@/web/core/workflow/utils';
+import { useIsToolNode } from '../useWorkflowDocument';
 const ToolParamsEditModal = dynamic(() => import('../../components/ToolParamsEditModal'));
 
 /** 仅 HTTP 和 Code 节点支持用户配置工具参数；旧版插件输入中的 addInputParam 不参与判定。 */
@@ -32,11 +32,11 @@ const RenderToolInput = ({
   inputs: FlowNodeInputItemType[];
 }) => {
   const { t } = useTranslation();
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
-  const splitToolInputs = useContextSelector(WorkflowUtilsContext, (ctx) => ctx.splitToolInputs);
+  const isTool = useIsToolNode(nodeId);
+  const node = useNode(nodeId);
   const { toolInputs } = useMemoEnhance(
-    () => splitToolInputs(inputs, nodeId),
-    [inputs, nodeId, splitToolInputs]
+    () => splitToolInputsByMode(inputs, isTool),
+    [inputs, isTool]
   );
 
   const [editField, setEditField] = useState<FlowNodeInputItemType>();
@@ -94,10 +94,11 @@ const RenderToolInput = ({
                         w={'16px'}
                         cursor={'pointer'}
                         onClick={() => {
-                          onChangeNode({
-                            nodeId,
-                            type: 'delInput',
-                            key: item.key
+                          // 删除工具参数是记录级变更：读文档当前 inputs 后整份提交。
+                          const documentInputs = node?.data.inputs;
+                          if (!documentInputs) return;
+                          node?.updateNode({
+                            inputs: documentInputs.filter((input) => input.key !== item.key)
                           });
                         }}
                       />

@@ -23,14 +23,12 @@ import type {
 import { getRefData } from '@/web/core/workflow/utils';
 import { AppContext } from '@/pageComponents/app/detail/context';
 import { getEditorVariables } from '../../../utils';
-import { WorkflowBufferDataContext } from '../../../context/workflowInitContext';
 import { useSystemStore } from '@/web/common/system/useSystemStore';
 import {
   valueTypeToInputType,
   variableInputTypeToInputType
 } from '@/components/core/app/formRender/utils';
 import { InputTypeEnum } from '@/components/core/app/formRender/constant';
-import { WorkflowActionsContext } from '../../../context/workflowActionsContext';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
 import { useMemoizedFn } from 'ahooks';
 import ValueTypeLabel from '../render/ValueTypeLabel';
@@ -38,6 +36,8 @@ import FormLabel from '@fastgpt/web/components/common/MyBox/FormLabel';
 import NodeInputSelect from '@fastgpt/web/components/core/workflow/NodeInputSelect';
 import VariableSelector from './VariableSelector';
 import ValueRenderer from './ValueRenderer';
+import { useDocumentGetNodeById, useWorkflowDocument } from '../render/useWorkflowDocument';
+import { useField } from '@/web/core/workflow/editor';
 
 // 切换目标变量时按新类型生成默认操作字段与初值，
 // 保证 UI 初始显示与 runtime 默认行为一致（否则 boolean 会出现 UI 显示"是" / runtime 写 false 的错配）
@@ -59,22 +59,22 @@ const NodeVariableUpdate = ({ data, selected }: NodeProps<FlowNodeItemType>) => 
   const { inputs = [], nodeId } = data;
   const { t } = useTranslation();
 
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
-  const { edges, getNodeById } = useContextSelector(
-    WorkflowBufferDataContext,
-    (v) => v
-  );
+  // 变量列表与引用类型都要按 id 查任意节点：统一读文档图查询面，不再依赖画布薄壳。
+  const { reader } = useWorkflowDocument();
+  const getNodeById = useDocumentGetNodeById();
+  const updateListField = useField(nodeId, NodeInputKeyEnum.updateList, 'input');
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
 
   const variables = useMemoEnhance(() => {
+    if (!reader) return [];
     return getEditorVariables({
       nodeId,
       getNodeById,
-      edges,
+      edges: reader.edges,
       appDetail,
       t
     });
-  }, [nodeId, getNodeById, edges, appDetail, t]);
+  }, [nodeId, getNodeById, reader, appDetail, t]);
   const { feConfigs } = useSystemStore();
   const externalProviderWorkflowVariables = useMemo(() => {
     return (
@@ -92,22 +92,12 @@ const NodeVariableUpdate = ({ data, selected }: NodeProps<FlowNodeItemType>) => 
     [inputs]
   );
 
+  /** 更新列表整体就是 updateList 字段的值：增删改都按完整数组提交，一次交互一条历史。 */
   const onUpdateList = useCallback(
     (value: TUpdateListItem[]) => {
-      const updateListInput = inputs.find((input) => input.key === NodeInputKeyEnum.updateList);
-      if (!updateListInput) return;
-
-      onChangeNode({
-        nodeId,
-        type: 'updateInput',
-        key: NodeInputKeyEnum.updateList,
-        value: {
-          ...updateListInput,
-          value
-        }
-      });
+      updateListField?.setValue(value);
     },
-    [inputs, nodeId, onChangeNode]
+    [updateListField]
   );
 
   const ValueRow = useMemoizedFn(

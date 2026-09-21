@@ -1,8 +1,13 @@
-import React, { useCallback, useEffect, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { RenderInputProps } from '../type';
 import { Flex, Box, type ButtonProps, Grid } from '@chakra-ui/react';
 import MyIcon from '@fastgpt/web/components/common/Icon';
-import { getNodeAllSource, filterSelectableWorkflowNodeOutputs } from '@/web/core/workflow/utils';
+import {
+  filterSelectableWorkflowNodeOutputs,
+  getNodeAllSource,
+  getWorkflowGraphReader,
+  type WorkflowGraphReader
+} from '@/web/core/workflow/utils';
 import { useSafeTranslation } from '@fastgpt/web/hooks/useSafeTranslation';
 import { WorkflowIOValueTypeEnum } from '@fastgpt/global/core/workflow/constants';
 import type {
@@ -10,13 +15,12 @@ import type {
   ReferenceItemValueType,
   ReferenceValueType
 } from '@fastgpt/global/core/workflow/type/io';
+import type { WorkflowFieldSnapshot } from '@fastgpt/global/core/workflow/editor/types';
+import type { TFunction } from 'next-i18next';
 import dynamic from 'next/dynamic';
-import { useContextSelector } from 'use-context-selector';
 import { isNestedParentNodeType } from '@fastgpt/global/core/workflow/node/constant';
-import { AppContext } from '@/pageComponents/app/detail/context';
-import { WorkflowBufferDataContext } from '../../../../../context/workflowInitContext';
-import { WorkflowActionsContext } from '@/pageComponents/app/detail/WorkflowComponents/context/workflowActionsContext';
-import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
+import { useField, useNode } from '@/web/core/workflow/editor';
+import { useWorkflowDocument, useWorkflowSnapshotGetter } from '../../useWorkflowDocument';
 
 const MultipleRowSelect = dynamic(() =>
   import('@fastgpt/web/components/common/MySelect/MultipleRowSelect').then(
@@ -30,21 +34,27 @@ const MultipleRowArraySelect = dynamic(() =>
 );
 const Avatar = dynamic(() => import('@fastgpt/web/components/common/Avatar'));
 
+export type ReferenceListItem = {
+  label: string | React.ReactNode;
+  value: string;
+  name?: string;
+  avatar?: string;
+  children: {
+    label: string;
+    value: string;
+    valueType?: WorkflowIOValueTypeEnum;
+  }[];
+};
+
 type CommonSelectProps = {
   placeholder?: string;
-  list: {
-    label: string | React.ReactNode;
-    value: string;
-    name?: string;
-    avatar?: string;
-    children: {
-      label: string;
-      value: string;
-      valueType?: WorkflowIOValueTypeEnum;
-    }[];
-  }[];
+  list: ReferenceListItem[];
   popDirection?: 'top' | 'bottom';
   ButtonProps?: ButtonProps;
+  /** 懒加载列表：打开选择器时计算一次。此时已选内容必须同时给 reference，否则打开前无法解析。 */
+  onOpenList?: () => void;
+  /** 当前字段的引用状态；给出后已选内容按状态里的来源/输出名展示，不再依赖 list。 */
+  reference?: WorkflowFieldSnapshot['references'];
 };
 type SelectProps<T extends boolean> = CommonSelectProps & {
   isArray?: T;
@@ -52,6 +62,65 @@ type SelectProps<T extends boolean> = CommonSelectProps & {
   onSelect: (val?: T extends true ? ReferenceArrayValueType : ReferenceItemValueType) => void;
 };
 
+/**
+ * 计算某节点当前可引用的来源列表：普通模块纯函数，只读文档图查询面。
+ * 不进 Context、不建订阅，由调用方决定何时计算（常驻派生列表或打开选择器时一次性计算）。
+ */
+export const getReferenceList = ({
+  reader,
+  nodeId,
+  valueType = WorkflowIOValueTypeEnum.any,
+  includeChildren,
+  t
+}: {
+  reader: WorkflowGraphReader;
+  nodeId: string;
+  valueType?: WorkflowIOValueTypeEnum;
+  /** 容器节点（loopRun）需要引用自身子工作流的输出时传 true。 */
+  includeChildren?: boolean;
+  t: TFunction;
+}): ReferenceListItem[] => {
+  const sourceNodes = getNodeAllSource({
+    nodeId,
+    getNodeById: reader.getNodeById,
+    edges: reader.edges,
+    chatConfig: reader.chatConfig,
+    t,
+    includeChildren,
+    childrenNodeIdListMap: reader.childrenNodeIdListMap
+  });
+
+  const isArray = valueType?.includes('array');
+
+  // 转换为 select 的数据结构
+  return sourceNodes
+    .map((node) => ({
+      label: (
+        <Flex alignItems={'center'}>
+          <Avatar src={node.avatar} w={isArray ? '1rem' : '1.05rem'} borderRadius={'xs'} />
+          <Box ml={1}>{node.name}</Box>
+        </Flex>
+      ),
+      value: node.nodeId,
+      name: node.name,
+      avatar: node.avatar,
+      children: filterSelectableWorkflowNodeOutputs({
+        outputs: node.outputs,
+        valueType,
+        catchError: node.catchError
+      }).map((output) => ({
+        label: t(output.label as any),
+        value: output.id,
+        valueType: output.valueType
+      }))
+    }))
+    .filter((item) => item.children.length > 0);
+};
+
+/**
+ * 常驻的可用引用列表：随文档变化重算（host runtimeTick 驱动），不订阅数据 Context。
+ * 已选内容按 list 解析展示，因此列表必须常驻；只在打开时计算的场景用 useLazyReferenceList。
+ */
 export const useReference = ({
   nodeId,
   valueType = WorkflowIOValueTypeEnum.any,
@@ -59,109 +128,81 @@ export const useReference = ({
 }: {
   nodeId: string;
   valueType?: WorkflowIOValueTypeEnum;
-  // Include the container's own children as reference sources.
   includeChildren?: boolean;
 }) => {
   const { t } = useSafeTranslation();
-  const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
-  const edges = useContextSelector(WorkflowBufferDataContext, (v) => v.edges);
-  const { getNodeById, childrenNodeIdListMap } = useContextSelector(
-    WorkflowBufferDataContext,
-    (v) => v
+  const { reader } = useWorkflowDocument();
+
+  const referenceList = useMemo(
+    () => (reader ? getReferenceList({ reader, nodeId, valueType, includeChildren, t }) : []),
+    [reader, nodeId, valueType, includeChildren, t]
   );
 
-  // 获取可选的变量列表
-  const referenceList = useMemoEnhance(() => {
-    const sourceNodes = getNodeAllSource({
-      nodeId,
-      getNodeById,
-      edges: edges,
-      chatConfig: appDetail.chatConfig,
-      t,
-      includeChildren,
-      childrenNodeIdListMap
-    });
-
-    const isArray = valueType?.includes('array');
-
-    // 转换为 select 的数据结构
-    const list: CommonSelectProps['list'] = sourceNodes
-      .map((node) => {
-        return {
-          label: (
-            <Flex alignItems={'center'}>
-              <Avatar src={node.avatar} w={isArray ? '1rem' : '1.05rem'} borderRadius={'xs'} />
-              <Box ml={1}>{node.name}</Box>
-            </Flex>
-          ),
-          value: node.nodeId,
-          name: node.name,
-          avatar: node.avatar,
-          children: filterSelectableWorkflowNodeOutputs({
-            outputs: node.outputs,
-            valueType,
-            catchError: node.catchError
-          }).map((output) => {
-            return {
-              label: t(output.label as any),
-              value: output.id,
-              valueType: output.valueType
-            };
-          })
-        };
-      })
-      .filter((item) => item.children.length > 0);
-
-    return list;
-  }, [
-    nodeId,
-    getNodeById,
-    edges,
-    appDetail.chatConfig,
-    t,
-    valueType,
-    includeChildren,
-    childrenNodeIdListMap
-  ]);
-
-  return {
-    referenceList
-  };
+  return { referenceList };
 };
 
+/**
+ * 懒加载的可用引用列表：打开选择器时从最新文档快照计算一次，不建订阅、不进 Context。
+ * 已选内容的展示由字段引用状态（useField().reference）提供，因此关闭期间列表可以保持为空。
+ */
+export const useLazyReferenceList = ({
+  nodeId,
+  valueType = WorkflowIOValueTypeEnum.any,
+  includeChildren
+}: {
+  nodeId: string;
+  valueType?: WorkflowIOValueTypeEnum;
+  includeChildren?: boolean;
+}) => {
+  const { t } = useSafeTranslation();
+  const getWorkflow = useWorkflowSnapshotGetter();
+  const [referenceList, setReferenceList] = useState<ReferenceListItem[]>([]);
+
+  const loadReferenceList = useCallback(() => {
+    const workflow = getWorkflow();
+    if (!workflow) return;
+    setReferenceList(
+      getReferenceList({
+        reader: getWorkflowGraphReader(workflow),
+        nodeId,
+        valueType,
+        includeChildren,
+        t
+      })
+    );
+  }, [getWorkflow, includeChildren, nodeId, t, valueType]);
+
+  return { referenceList, loadReferenceList };
+};
+
+/**
+ * 引用选择输入模板：写入只提交字段值（updateField），来源与已选内容都从字段句柄读，
+ * 因此编辑只刷新当前字段订阅，不触发全图重算。
+ */
 const Reference = ({ item, nodeId }: RenderInputProps) => {
   const { t } = useSafeTranslation();
-
-  const getNodeById = useContextSelector(WorkflowBufferDataContext, (v) => v.getNodeById);
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const node = useNode(nodeId);
+  const field = useField(nodeId, item.key, 'input');
+  const { referenceList, loadReferenceList } = useLazyReferenceList({
+    nodeId,
+    valueType: item.valueType
+  });
 
   const isArray = item.valueType?.includes('array') ?? false;
 
   const onSelect = useCallback(
     (e?: ReferenceValueType) => {
-      onChangeNode({
-        nodeId,
-        type: 'updateInput',
-        key: item.key,
-        value: {
-          ...item,
-          value: e
-        }
-      });
+      field?.setValue(e);
     },
-    [item, nodeId, onChangeNode]
+    [field]
   );
 
-  const { referenceList } = useReference({
-    nodeId,
-    valueType: item.valueType
-  });
-
-  const popDirection = useMemo(() => {
-    const node = getNodeById(nodeId);
-    if (!node) return 'bottom';
-    return isNestedParentNodeType(node.flowNodeType) ? 'top' : 'bottom';
-  }, [nodeId, getNodeById]);
+  const flowNodeType = node?.data.flowNodeType;
+  // 嵌套容器节点（loop/parallelRun/loopRun）里的下拉向上展开，避免被子节点覆盖。
+  const popDirection = useMemo(
+    () => (flowNodeType && isNestedParentNodeType(flowNodeType) ? 'top' : 'bottom'),
+    [flowNodeType]
+  );
 
   return (
     <ReferSelector
@@ -171,6 +212,8 @@ const Reference = ({ item, nodeId }: RenderInputProps) => {
       onSelect={onSelect}
       popDirection={popDirection}
       isArray={isArray}
+      onOpenList={loadReferenceList}
+      reference={field?.reference}
     />
   );
 };
@@ -183,11 +226,26 @@ const SingleReferenceSelector = ({
   list = [],
   onSelect,
   popDirection,
-  ButtonProps
+  ButtonProps,
+  onOpenList,
+  reference
 }: SelectProps<false>) => {
   const getSelectValue = useCallback(
     (value: ReferenceValueType) => {
       if (!value) return undefined;
+
+      // 给出字段引用状态时按状态展示：只有仍可选（valid）的引用显示名称，
+      // 失效或类型不匹配的引用与旧行为一致地回落到占位符。
+      if (reference) {
+        const status = reference[0];
+        if (status?.code !== 'valid') return undefined;
+        const nodeText = status.sourceLabel || '';
+        const outputText = status.outputLabel || '';
+        return {
+          avatar: status.icon,
+          text: nodeText && outputText ? `${nodeText} > ${outputText}` : nodeText || outputText
+        };
+      }
 
       const firstColumn = list.find((item) => item.value === value[0]);
       if (!firstColumn) {
@@ -204,7 +262,7 @@ const SingleReferenceSelector = ({
         text: nodeText && outputText ? `${nodeText} > ${outputText}` : nodeText || outputText
       };
     },
-    [list]
+    [list, reference]
   );
 
   // Adapt array type from old version
@@ -263,9 +321,10 @@ const SingleReferenceSelector = ({
         onSelect={onSelect as any}
         popDirection={popDirection}
         ButtonProps={ButtonProps}
+        onOpenFunc={onOpenList}
       />
     );
-  }, [ButtonProps, getSelectValue, list, onSelect, placeholder, popDirection, value]);
+  }, [ButtonProps, getSelectValue, list, onOpenList, onSelect, placeholder, popDirection, value]);
 
   return ItemSelector;
 };
@@ -274,7 +333,9 @@ const MultipleReferenceSelector = ({
   value,
   list = [],
   onSelect,
-  popDirection
+  popDirection,
+  onOpenList,
+  reference
 }: SelectProps<true>) => {
   const getSelectValue = useCallback(
     (value: ReferenceValueType) => {
@@ -295,6 +356,18 @@ const MultipleReferenceSelector = ({
 
   // Get valid item and remove invalid item
   const formatList = useMemo(() => {
+    // 给出字段引用状态时按状态解析展示名，此时 list 可以是懒加载的空数组。
+    if (reference) {
+      return reference.map((status) => {
+        const isValid = status.code === 'valid';
+        return {
+          rawValue: status.reference,
+          nodeName: isValid ? (status.sourceLabel ?? '') : '',
+          outputName: isValid ? (status.outputLabel ?? '') : ''
+        };
+      });
+    }
+
     if (!value || !Array.isArray(value)) return [];
 
     return value.map((item) => {
@@ -305,7 +378,7 @@ const MultipleReferenceSelector = ({
         outputName
       };
     });
-  }, [getSelectValue, value]);
+  }, [getSelectValue, reference, value]);
 
   const invalidList = useMemo(() => {
     return formatList.filter((item) => item.nodeName && item.outputName);
@@ -389,9 +462,10 @@ const MultipleReferenceSelector = ({
           onSelect(e as any);
         }}
         popDirection={popDirection}
+        onOpenFunc={onOpenList}
       />
     );
-  }, [invalidList, list, onSelect, placeholder, popDirection, value]);
+  }, [invalidList, list, onOpenList, onSelect, placeholder, popDirection, value]);
 
   return ArraySelector;
 };

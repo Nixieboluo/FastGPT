@@ -5,12 +5,11 @@ import { useTranslation } from 'next-i18next';
 import { type Connection, Handle, Position } from 'reactflow';
 import { useCallback, useMemo } from 'react';
 import { useContextSelector } from 'use-context-selector';
-import { WorkflowBufferDataContext } from '../../../../context/workflowInitContext';
-import { WorkflowActionsContext } from '../../../../context/workflowActionsContext';
 import { WorkflowUIContext } from '../../../context/workflowUIContext';
 import { moduleTemplatesFlat } from '@fastgpt/global/core/workflow/template/constants';
 import { isNodeConnectionAllowed } from '@fastgpt/global/core/workflow/template/context';
 import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { useWorkflowDocument } from '../useWorkflowDocument';
 
 const handleSize = '20px';
 const activeHandleSize = '24px';
@@ -21,15 +20,17 @@ type ToolHandleProps = BoxProps & {
   show: boolean;
 };
 export const ToolTargetHandle = ({ show, nodeId }: ToolHandleProps) => {
-  const connectingEdge = useContextSelector(WorkflowActionsContext, (ctx) => ctx.connectingEdge);
-  const edges = useContextSelector(WorkflowBufferDataContext, (v) => v.edges);
-  const getNodeById = useContextSelector(WorkflowBufferDataContext, (v) => v.getNodeById);
-  const connected = useContextSelector(WorkflowBufferDataContext, (v) =>
-    v.edges.some((edge) => edge.target === nodeId && edge.targetHandle === handleId)
+  // 工具柄的可连接判定要读任意源节点与父节点，走文档图 reader。
+  const { reader } = useWorkflowDocument();
+  const connectingEdge = useContextSelector(WorkflowUIContext, (ctx) => ctx.connectingEdge);
+  const connected = !!reader?.edges.some(
+    (edge) => edge.target === nodeId && edge.targetHandle === handleId
   );
 
   const active = useMemo(() => {
-    if (!show || connectingEdge?.handleId !== handleId) return false;
+    if (!show || !reader || connectingEdge?.handleId !== handleId) return false;
+
+    const { edges, getNodeById } = reader;
 
     const sourceNode = getNodeById(connectingEdge.nodeId);
     const targetNode = getNodeById(nodeId);
@@ -49,7 +50,7 @@ export const ToolTargetHandle = ({ show, nodeId }: ToolHandleProps) => {
         getNodeById
       })
     );
-  }, [connectingEdge, edges, getNodeById, nodeId, show]);
+  }, [connectingEdge, nodeId, reader, show]);
   // if top handle is connected, return null
   const showHandle = active || connected;
 
@@ -96,10 +97,10 @@ export const ToolTargetHandle = ({ show, nodeId }: ToolHandleProps) => {
 
 export const ToolSourceHandle = ({ nodeId }: { nodeId: string }) => {
   const { t } = useTranslation();
-  const edges = useContextSelector(WorkflowBufferDataContext, (v) => v.edges);
   const workflow = useWorkflowAdapter();
+  const { edges } = workflow;
   const connectingEdge = useContextSelector(
-    WorkflowActionsContext,
+    WorkflowUIContext,
     (ctx) => ctx.connectingEdge?.nodeId === nodeId
   );
   const nodeIsHover = useContextSelector(WorkflowUIContext, (v) => v.hoverNodeId === nodeId);

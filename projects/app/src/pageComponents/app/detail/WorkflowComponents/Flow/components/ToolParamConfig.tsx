@@ -4,20 +4,35 @@ import { useTranslation } from 'next-i18next';
 import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { Box, Button } from '@chakra-ui/react';
 import { useBoolean } from 'ahooks';
-import { useContextSelector } from 'use-context-selector';
-import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
 import { SystemToolSecretInputTypeMap } from '@fastgpt/global/core/app/tool/systemTool/constants';
 import SecretInputModal, {
   type ToolParamsFormType
 } from '@/pageComponents/app/tool/SecretInputModal';
-import { WorkflowActionsContext } from '../../context/workflowActionsContext';
+import { useContextSelector } from 'use-context-selector';
+import { useField, useNode } from '@/web/core/workflow/editor';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 
 const ToolConfig = ({ nodeId, inputs }: { nodeId?: string; inputs?: FlowNodeInputItemType[] }) => {
   const { t } = useTranslation();
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
-  const node = useContextSelector(WorkflowBufferDataContext, (v) => v.getNodeById(nodeId));
+  // nodeId 是可选 prop：hook 必须无条件调用，空 id 时 useNode / useField 返回 undefined。
+  const node = useNode(nodeId ?? '');
+  const nodeData = node?.data;
+  const inputField = useField({
+    nodeId: nodeId ?? '',
+    fieldKey: NodeInputKeyEnum.systemInputConfig,
+    kind: 'input'
+  });
+  // 教程地址是画布视图数据（不进文档），由 NodeCard 拉到工具详情后写进 host overlay；
+  // 选择器返回原始值，overlay 更新时 host 会 bump，这里随之刷新。
+  const courseUrl = useContextSelector(
+    WorkflowHostContext,
+    (v) => v.overlaysRef.current[nodeId ?? '']?.courseUrl as string | undefined
+  );
 
-  const inputConfig = inputs?.find((item) => item.key === NodeInputKeyEnum.systemInputConfig);
+  const inputConfig = useMemo(
+    () => inputs?.find((item) => item.key === NodeInputKeyEnum.systemInputConfig),
+    [inputs]
+  );
   const inputList = inputConfig?.inputList;
   const [isOpen, { setTrue, setFalse }] = useBoolean(false);
 
@@ -32,18 +47,11 @@ const ToolConfig = ({ nodeId, inputs }: { nodeId?: string; inputs?: FlowNodeInpu
     });
   }, [inputConfig?.value, t]);
 
+  /** 提交密钥配置：只改这一个输入记录的值，走字段句柄而不是整节点 patch。 */
   const onSubmit = (data: ToolParamsFormType) => {
-    if (!inputConfig) return;
+    if (!inputConfig || !inputField) return;
 
-    onChangeNode({
-      nodeId: nodeId as string,
-      type: 'updateInput',
-      key: inputConfig.key,
-      value: {
-        ...inputConfig,
-        value: data
-      }
-    });
+    inputField.setValue(data);
     setFalse();
   };
 
@@ -60,14 +68,14 @@ const ToolConfig = ({ nodeId, inputs }: { nodeId?: string; inputs?: FlowNodeInpu
       </Button>
       {isOpen && (
         <SecretInputModal
-          isFolder={node?.isFolder}
+          isFolder={nodeData?.isFolder}
           inputConfig={inputConfig}
-          hasSystemSecret={node?.hasSystemSecret}
-          secretCost={node?.systemKeyCost}
-          courseUrl={node?.courseUrl}
-          readmeUrl={node?.readmeUrl}
-          parentId={node?.pluginId}
-          source={node?.source}
+          hasSystemSecret={nodeData?.hasSystemSecret}
+          secretCost={nodeData?.systemKeyCost}
+          courseUrl={courseUrl}
+          readmeUrl={nodeData?.readmeUrl}
+          parentId={nodeData?.pluginId}
+          source={nodeData?.source}
           onClose={setFalse}
           onSubmit={onSubmit}
         />

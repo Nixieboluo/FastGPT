@@ -2,6 +2,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import {
   BaseEdge,
   EdgeLabelRenderer,
+  useReactFlow,
   type EdgeProps,
   type ConnectionLineComponentProps
 } from 'reactflow';
@@ -10,12 +11,11 @@ import MyIcon from '@fastgpt/web/components/common/Icon';
 import { NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { useContextSelector } from 'use-context-selector';
 import { useThrottleEffect } from 'ahooks';
-import { WorkflowBufferDataContext } from '../../context/workflowInitContext';
 import { WorkflowDebugContext } from '../../context/workflowDebugContext';
 import { WorkflowUIContext } from '../context/workflowUIContext';
 import { WorkflowSelectionContext } from '../context/workflowSelectionContext';
 import { getCustomStepPath } from '../utils/edge';
-import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { useNode, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
 
 export const CustomConnectionLine = ({
   fromX,
@@ -44,13 +44,12 @@ export const CustomConnectionLine = ({
 
 const ButtonEdge = (props: EdgeProps) => {
   const selectedNodesMap = useContextSelector(WorkflowSelectionContext, (v) => v.selectedNodesMap);
-  const { getNodeById, foldedNodesMap, edges, getNodes } = useContextSelector(
-    WorkflowBufferDataContext,
-    (v) => v
-  );
   const workflowDebugData = useContextSelector(WorkflowDebugContext, (v) => v.workflowDebugData);
   const hoverEdgeId = useContextSelector(WorkflowUIContext, (v) => v.hoverEdgeId);
   const workflow = useWorkflowAdapter();
+  // 同源边的横向错开与断连都按端点值工作，画布边数组只从 reactflow store 取，
+  // 投影边 id 不进 adapter；workflow.edges 只作为「结构变了要重算」的依赖。
+  const { getNodes, getEdges, getEdge } = useReactFlow();
 
   const {
     id,
@@ -68,27 +67,17 @@ const ButtonEdge = (props: EdgeProps) => {
     style
   } = props;
 
-  // If parentNode is folded, the edge will not be displayed
-  const isFolded = useMemo(() => {
-    const sourceNode = getNodeById(source);
-    const targetNode = getNodeById(target);
-    if (sourceNode?.parentNodeId) {
-      return foldedNodesMap[sourceNode.parentNodeId];
-    }
-    if (targetNode?.parentNodeId) {
-      return foldedNodesMap[targetNode.parentNodeId];
-    }
-    return false;
-  }, [foldedNodesMap, getNodeById, source, target]);
+  // 端点所在容器折叠时隐藏整条边；容器 id 优先取 source，与旧实现一致。
+  const sourceParentId = useNode(source)?.data.parentNodeId;
+  const targetParentId = useNode(target)?.data.parentNodeId;
+  const foldParentId = sourceParentId ?? targetParentId;
+  const isFolded = !!useNode(foldParentId ?? '')?.view.isFolded;
 
-  const defaultZIndex = useMemo(() => {
-    const node = getNodeById(source, (node) => !!node.parentNodeId);
-    return node ? 2002 : 0;
-  }, [getNodeById, source]);
+  const defaultZIndex = sourceParentId ? 2002 : 0;
 
   // Offset edges from same source horizontally to avoid visual overlap
   const edgeStepOffset = useMemo(() => {
-    const sameSourceEdges = edges.filter((e) => e.source === source);
+    const sameSourceEdges = getEdges().filter((e) => e.source === source);
     if (sameSourceEdges.length <= 1) return 0;
 
     const nodesMap = new Map(getNodes().map((n) => [n.id, n]));
@@ -111,11 +100,13 @@ const ButtonEdge = (props: EdgeProps) => {
 
     const maxOffset = Math.abs(targetX - sourceX) * 0.25;
     return Math.max(-maxOffset, Math.min(maxOffset, offset));
-  }, [edges, source, id, getNodes, sourceX, targetX]);
+    // workflow.edges 是刻意的依赖：结构变化后 store 里的画布边才是新的。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workflow.edges, source, id, getNodes, getEdges, sourceX, targetX]);
 
   const onDelConnect = useCallback(
     (id: string) => {
-      const edge = edges.find((item) => item.id === id);
+      const edge = getEdge(id);
       if (!edge) return;
       workflow.disconnectEdge({
         edge: {
@@ -126,7 +117,7 @@ const ButtonEdge = (props: EdgeProps) => {
         }
       });
     },
-    [edges, workflow]
+    [getEdge, workflow]
   );
 
   // Selected edge or source/target node selected

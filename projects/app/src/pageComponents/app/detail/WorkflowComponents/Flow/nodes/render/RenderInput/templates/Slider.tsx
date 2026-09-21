@@ -1,14 +1,11 @@
 import React, { useMemo } from 'react';
 import type { RenderInputProps } from '../type';
-import { useTranslation } from 'next-i18next';
 import { Box } from '@chakra-ui/react';
 import MySlider from '@/components/Slider';
-import { useContextSelector } from 'use-context-selector';
-import { WorkflowActionsContext } from '@/pageComponents/app/detail/WorkflowComponents/context/workflowActionsContext';
+import { useField } from '@/web/core/workflow/editor';
 
 const SliderRender = ({ item, nodeId }: RenderInputProps) => {
-  const { t } = useTranslation();
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const field = useField(nodeId, item.key, 'input');
 
   const Render = useMemo(() => {
     return (
@@ -21,20 +18,12 @@ const SliderRender = ({ item, nodeId }: RenderInputProps) => {
           step={item.step || 1}
           value={item.value}
           onChange={(e) => {
-            onChangeNode({
-              nodeId,
-              type: 'updateInput',
-              key: item.key,
-              value: {
-                ...item,
-                value: e
-              }
-            });
+            field?.setValue(e);
           }}
         />
       </Box>
     );
-  }, [item, nodeId, onChangeNode]);
+  }, [field, item]);
 
   return Render;
 };

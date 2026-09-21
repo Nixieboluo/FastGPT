@@ -1,23 +1,29 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { Box, Flex, Button, IconButton, type ButtonProps, Input } from '@chakra-ui/react';
 import { useTranslation } from 'next-i18next';
 import { useContextSelector } from 'use-context-selector';
-import { WorkflowBufferDataContext } from '../../WorkflowComponents/context/workflowInitContext';
 import { useReactFlow } from 'reactflow';
 import { useKeyPress, useThrottleEffect } from 'ahooks';
 import MyIcon from '@fastgpt/web/components/common/Icon';
 import MyTooltip from '@fastgpt/web/components/common/MyTooltip';
 import { useSystem } from '@fastgpt/web/hooks/useSystem';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
+import type { ViewOverlayPatch } from '@/web/core/workflow/editor/cutover/translate';
+import { useWorkflowSnapshotGetter } from '../../WorkflowComponents/Flow/nodes/render/useWorkflowDocument';
 
 const SearchButton = (props: ButtonProps) => {
   const { t } = useTranslation();
-  const setNodes = useContextSelector(WorkflowBufferDataContext, (state) => state.setNodes);
-  const { fitView } = useReactFlow();
+  // 命中节点读文档一次性算，不建订阅；高亮标记是画布视图数据，写进 host overlay 由投影合并。
+  const getWorkflow = useWorkflowSnapshotGetter();
+  const patchViewData = useContextSelector(WorkflowHostContext, (state) => state.patchViewData);
+  const { fitView, setNodes } = useReactFlow();
   const { isMac } = useSystem();
 
   const [keyword, setKeyword] = useState<string>();
   const [searchIndex, setSearchIndex] = useState<number>(0);
   const [searchedNodeCount, setSearchedNodeCount] = useState(0);
+  // 上一轮写过标记的节点：只提交增量，避免每次按键都让全画布 overlay 变更并重投影。
+  const markedNodeIdsRef = useRef<string[]>([]);
 
   useKeyPress(['ctrl.f', 'meta.f'], (e) => {
     e.preventDefault();
@@ -30,52 +36,44 @@ const SearchButton = (props: ButtonProps) => {
     setKeyword(undefined);
   });
 
+  /**
+   * 按节点名称搜索：命中标记写 host overlay，当前命中项定位并选中。
+   *
+   * 标记必须走 overlay 而不是画布数组：数组每次重投影都会从文档重建，
+   * 直接写 data 会让高亮在下一次任意编辑后丢失。
+   */
   const onSearch = useCallback(() => {
-    setNodes((nodes) => {
-      if (!keyword) {
-        setSearchIndex(0);
-        setSearchedNodeCount(0);
-        return nodes.map((node) => ({
-          ...node,
-          data: {
-            ...node.data,
-            searchedText: undefined
-          }
-        }));
-      }
+    const lowerKeyword = keyword?.toLowerCase();
+    const matchedNodeIds = lowerKeyword
+      ? (getWorkflow()?.nodes ?? [])
+          .filter((node) => node.name.toLowerCase().includes(lowerKeyword))
+          .map((node) => node.nodeId)
+      : [];
+    const matchedIds = new Set(matchedNodeIds);
+    const previousIds = markedNodeIdsRef.current;
+    const patches: ViewOverlayPatch[] = [
+      ...previousIds
+        .filter((nodeId) => !matchedIds.has(nodeId))
+        .map((nodeId) => ({ nodeId, values: { searchedText: undefined } })),
+      ...matchedNodeIds
+        .filter((nodeId) => !previousIds.includes(nodeId))
+        .map((nodeId) => ({ nodeId, values: { searchedText: keyword } }))
+    ];
+    markedNodeIdsRef.current = matchedNodeIds;
+    patchViewData(patches);
 
-      const searchResult = nodes.filter((node) => {
-        return node.data.name.toLowerCase().includes(keyword.toLowerCase());
-      });
+    if (!keyword) {
+      setSearchIndex(0);
+      setSearchedNodeCount(0);
+      return;
+    }
+    if (matchedNodeIds.length === 0) return;
 
-      if (searchResult.length === 0) {
-        return nodes.map((node) => ({
-          ...node,
-          data: {
-            ...node.data,
-            searchedText: undefined
-          }
-        }));
-      }
-
-      setSearchedNodeCount(searchResult.length);
-
-      const searchedNode = searchResult[searchIndex] ?? searchResult[0];
-
-      if (searchedNode) {
-        fitView({ nodes: [searchedNode], padding: 0.6 });
-      }
-
-      return nodes.map((node) => ({
-        ...node,
-        selected: node.id === searchedNode.id,
-        data: {
-          ...node.data,
-          searchedText: searchResult.find((item) => item.id === node.id) ? keyword : undefined
-        }
-      }));
-    });
-  }, [keyword, searchIndex]);
+    setSearchedNodeCount(matchedNodeIds.length);
+    const activeNodeId = matchedNodeIds[searchIndex] ?? matchedNodeIds[0];
+    fitView({ nodes: [{ id: activeNodeId }], padding: 0.6 });
+    setNodes((nodes) => nodes.map((node) => ({ ...node, selected: node.id === activeNodeId })));
+  }, [fitView, getWorkflow, keyword, patchViewData, searchIndex, setNodes]);
 
   useThrottleEffect(
     () => {

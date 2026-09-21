@@ -6,13 +6,12 @@ import Container from '../components/Container';
 import IOTitle from '../components/IOTitle';
 import ToolSetList, { getNodeToolSetList } from './components/ToolSetList';
 import { useTranslation } from 'next-i18next';
-import { useContextSelector } from 'use-context-selector';
-import { WorkflowActionsContext } from '../../context/workflowActionsContext';
+import { useNode } from '@/web/core/workflow/editor';
 
 const NodeToolSet = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useTranslation();
   const toolList = getNodeToolSetList(data);
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
+  const node = useNode(data.nodeId);
   const onSaveDescription = useCallback(
     (index: number, description: string) => {
       const toolSetKey = (['mcpToolSet', 'httpToolSet', 'systemToolSet'] as const).find(
@@ -23,11 +22,9 @@ const NodeToolSet = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
       const toolSet = data.toolConfig[toolSetKey];
       if (!toolSet) return;
 
-      onChangeNode({
-        nodeId: data.nodeId,
-        type: 'attr',
-        key: 'toolConfig',
-        value: {
+      // 工具集描述是节点语义数据（toolConfig）：整块替换后走 updateNode。
+      node?.updateNode({
+        toolConfig: {
           ...data.toolConfig,
           [toolSetKey]: {
             ...toolSet,
@@ -38,7 +35,7 @@ const NodeToolSet = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         }
       });
     },
-    [data.nodeId, data.toolConfig, onChangeNode]
+    [data.toolConfig, node]
   );
 
   return (

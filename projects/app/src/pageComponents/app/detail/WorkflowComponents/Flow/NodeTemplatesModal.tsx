@@ -1,5 +1,5 @@
 import type { FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
-import { type Node } from 'reactflow';
+import { useReactFlow, type Node } from 'reactflow';
 import NodeTemplateListHeader from './components/NodeTemplates/header';
 import NodeTemplateList from './components/NodeTemplates/list';
 import { useNodeTemplates } from './components/NodeTemplates/useNodeTemplates';
@@ -7,11 +7,12 @@ import { buildNodeTemplateContext } from '@fastgpt/global/core/workflow/template
 import { useMemoizedFn } from 'ahooks';
 import React from 'react';
 import { useContextSelector } from 'use-context-selector';
-import { WorkflowBufferDataContext } from '../context/workflowInitContext';
 import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
 import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/cutover/translate';
 import AppDetailPanelModal from '../../components/AppDetailPanelModal';
+import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
+import { useDocumentGetNodeById, useWorkflowDocument } from './nodes/render/useWorkflowDocument';
 
 type ModuleTemplateListProps = {
   isOpen: boolean;
@@ -21,25 +22,27 @@ type ModuleTemplateListProps = {
 export const sliderWidth = 460;
 
 const NodeTemplatesModal = ({ isOpen, onClose }: ModuleTemplateListProps) => {
-  const { setNodes, edges, getNodeById, hasToolNode, hasLoopRunNode } = useContextSelector(
-    WorkflowBufferDataContext,
-    (v) => v
-  );
   /** 新增节点后立即复查问题文案，不等 host 的 10s 定时扫描。 */
   const refreshNodeIssues = useContextSelector(WorkflowHostContext, (v) => v.refreshNodeIssues);
   const workflow = useWorkflowAdapter();
+  const { setNodes } = useReactFlow();
+  const getNodeById = useDocumentGetNodeById();
+  const nodeList = useWorkflowDocument().reader?.nodes;
+  // 模板目录按画布级存在性标记过滤：工具调用与循环执行入口容器各自唯一。
+  const hasToolNode = !!nodeList?.some((node) => node.flowNodeType === FlowNodeTypeEnum.toolCall);
+  const hasLoopRunNode = !!nodeList?.some((node) => node.flowNodeType === FlowNodeTypeEnum.loopRun);
 
   const templateContext = React.useMemo(
     () =>
       buildNodeTemplateContext({
         sourceNode: undefined,
-        edges,
+        edges: workflow.edges,
         getNodeById,
         isSidebar: true,
         hasToolNode,
         hasLoopRunNode
       }),
-    [edges, getNodeById, hasToolNode, hasLoopRunNode]
+    [workflow.edges, getNodeById, hasToolNode, hasLoopRunNode]
   );
 
   const {

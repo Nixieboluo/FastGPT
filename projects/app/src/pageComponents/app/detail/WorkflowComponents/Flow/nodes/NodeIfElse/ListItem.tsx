@@ -21,9 +21,8 @@ import {
   renderNumberConditionList,
   stringConditionList
 } from '@fastgpt/global/core/workflow/template/system/ifElse/constant';
-import { useContextSelector } from 'use-context-selector';
 import React, { useCallback, useMemo } from 'react';
-import { WorkflowBufferDataContext } from '../../../context/workflowInitContext';
+import { useContextSelector } from 'use-context-selector';
 import MySelect from '@fastgpt/web/components/common/MySelect';
 import MyInput from '@/components/MyInput';
 import { getElseIFLabel, getHandleId } from '@fastgpt/global/core/workflow/utils';
@@ -35,8 +34,8 @@ import { AppContext } from '@/pageComponents/app/detail/context';
 import MyNumberInput from '@fastgpt/web/components/common/Input/NumberInput';
 import MyTooltip from '@fastgpt/web/components/common/MyTooltip';
 import MyIconButton from '@fastgpt/web/components/common/Icon/button';
-import { WorkflowActionsContext } from '../../../context/workflowActionsContext';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
+import { useDocumentGetNodeById } from '../render/useWorkflowDocument';
 
 const ListItem = ({
   provided,
@@ -45,6 +44,7 @@ const ListItem = ({
   conditionItem,
   ifElseList,
   onUpdateIfElseList,
+  onDeleteBranch,
   nodeId
 }: {
   provided: DraggableProvided;
@@ -53,11 +53,12 @@ const ListItem = ({
   conditionItem: IfElseListItemType;
   ifElseList: IfElseListItemType[];
   onUpdateIfElseList: (value: IfElseListItemType[]) => void;
+  /** 删除分支由父节点提交：分支记录与其 handle 连线必须在同一事务里消失。 */
+  onDeleteBranch: (conditionIndex: number) => void;
   nodeId: string;
 }) => {
   const { t } = useTranslation();
   const { getZoom } = useReactFlow();
-  const onDelEdge = useContextSelector(WorkflowActionsContext, (v) => v.onDelEdge);
   const handleId = getHandleId(nodeId, 'source', getIfElseBranchHandleKey(conditionItem));
 
   const Render = useMemo(() => {
@@ -114,11 +115,7 @@ const ListItem = ({
                 _hover={{ color: 'red.600' }}
                 color={'myGray.600'}
                 onClick={() => {
-                  onUpdateIfElseList(ifElseList.filter((_, index) => index !== conditionIndex));
-                  onDelEdge({
-                    nodeId,
-                    sourceHandle: handleId
-                  });
+                  onDeleteBranch(conditionIndex);
                 }}
               />
             )}
@@ -283,7 +280,7 @@ const ListItem = ({
     handleId,
     ifElseList,
     nodeId,
-    onDelEdge,
+    onDeleteBranch,
     onUpdateIfElseList,
     provided,
     snapshot.isDragging,
@@ -353,7 +350,7 @@ const ConditionSelect = ({
   onSelect: (e: VariableConditionEnum) => void;
 }) => {
   const { t } = useTranslation();
-  const { getNodeById } = useContextSelector(WorkflowBufferDataContext, (v) => v);
+  const getNodeById = useDocumentGetNodeById();
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
 
   // get condition type
@@ -434,7 +431,7 @@ const ConditionValueInput = ({
   nodeId: string;
 }) => {
   const { t } = useTranslation();
-  const { getNodeById } = useContextSelector(WorkflowBufferDataContext, (v) => v);
+  const getNodeById = useDocumentGetNodeById();
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
 
   const isReference = useMemo(() => type === 'reference', [type]);

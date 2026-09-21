@@ -3,8 +3,6 @@ import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import { useTranslation } from 'next-i18next';
 import { type NodeProps } from 'reactflow';
 import NodeCard from '../render/NodeCard';
-import { useContextSelector } from 'use-context-selector';
-import { WorkflowBufferDataContext } from '../../../context/workflowInitContext';
 import {
   NodeInputKeyEnum,
   NodeOutputKeyEnum,
@@ -17,7 +15,8 @@ import {
   FlowValueTypeMap
 } from '@fastgpt/global/core/workflow/node/constant';
 import MyIcon from '@fastgpt/web/components/common/Icon';
-import { WorkflowActionsContext } from '../../../context/workflowActionsContext';
+import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
+import { useNode, useWorkflow } from '@/web/core/workflow/editor';
 
 const typeMap = {
   [WorkflowIOValueTypeEnum.arrayString]: WorkflowIOValueTypeEnum.string,
@@ -29,62 +28,66 @@ const typeMap = {
 
 const NodeLoopStart = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useTranslation();
-  const { nodeId, outputs } = data;
-  const { getNodeById } = useContextSelector(WorkflowBufferDataContext, (v) => v);
-  const onChangeNode = useContextSelector(WorkflowActionsContext, (v) => v.onChangeNode);
-
-  const loopStartNode = getNodeById(nodeId);
+  const { nodeId, outputs, parentNodeId } = data;
+  // 数组元素类型来自父容器的 nestedInputArray：直接订阅父节点文档数据。
+  const node = useNode(nodeId);
+  const parentNode = useNode(parentNodeId ?? '');
+  const { edges } = useWorkflow();
 
   // According to the variable referenced by parentInput, find the output of the corresponding node and take its output valueType
   const loopItemInputType = useMemo(() => {
-    const parentNode = getNodeById(loopStartNode?.parentNodeId);
-    const parentArrayInput = parentNode?.inputs.find(
+    const parentArrayInput = parentNode?.data.inputs.find(
       (input) => input.key === NodeInputKeyEnum.nestedInputArray
     );
     return typeMap[parentArrayInput?.valueType as keyof typeof typeMap];
-  }, [getNodeById, loopStartNode?.parentNodeId]);
+  }, [parentNode]);
 
   // Auth update loopStartInput output
   useEffect(() => {
-    const loopArrayOutput = loopStartNode?.outputs.find(
+    const documentOutputs = node?.data.outputs;
+    if (!documentOutputs) return;
+
+    const loopArrayOutput = documentOutputs.find(
       (output) => output.key === NodeOutputKeyEnum.nestedStartInput
     );
 
-    // if loopItemInputType is undefined, delete loopStartInput output
+    // 删除 / 新增 / 改类型三种情况收敛成一次整表提交：一次父节点变更只产生一条历史。
+    let nextOutputs: typeof documentOutputs | undefined;
     if (!loopItemInputType && loopArrayOutput) {
-      onChangeNode({
-        nodeId,
-        type: 'delOutput',
-        key: NodeOutputKeyEnum.nestedStartInput
-      });
-    }
-    // if loopItemInputType is not undefined, and has no loopArrayOutput, add loopStartInput output
-    if (loopItemInputType && !loopArrayOutput) {
-      onChangeNode({
-        nodeId,
-        type: 'addOutput',
-        value: {
-          id: NodeOutputKeyEnum.nestedStartInput,
-          key: NodeOutputKeyEnum.nestedStartInput,
-          label: t('workflow:Array_element'),
-          type: FlowNodeOutputTypeEnum.static,
-          valueType: loopItemInputType
-        }
-      });
-    }
-    // if loopItemInputType is not undefined, and has loopArrayOutput, update loopStartInput output
-    if (loopItemInputType && loopArrayOutput) {
-      onChangeNode({
-        nodeId,
-        type: 'updateOutput',
+      nextOutputs = documentOutputs.filter(
+        (output) => output.key !== NodeOutputKeyEnum.nestedStartInput
+      );
+    } else if (loopItemInputType && !loopArrayOutput) {
+      nextOutputs = documentOutputs.concat({
+        id: NodeOutputKeyEnum.nestedStartInput,
         key: NodeOutputKeyEnum.nestedStartInput,
-        value: {
-          ...loopArrayOutput,
-          valueType: loopItemInputType
-        }
+        label: t('workflow:Array_element'),
+        type: FlowNodeOutputTypeEnum.static,
+        valueType: loopItemInputType
       });
+    } else if (loopItemInputType && loopArrayOutput?.valueType !== loopItemInputType) {
+      nextOutputs = documentOutputs.map((output) =>
+        output.key === NodeOutputKeyEnum.nestedStartInput
+          ? { ...output, valueType: loopItemInputType }
+          : output
+      );
     }
-  }, [loopStartNode?.outputs, nodeId, onChangeNode, loopItemInputType, t]);
+    if (!nextOutputs) return;
+
+    node?.updateNode(
+      { outputs: nextOutputs },
+      // 删除该输出时，旧 handle 上的连线同事务断开。
+      !loopItemInputType
+        ? {
+            disconnectEdges: getOutputDisconnectCommands({
+              edges,
+              nodeId,
+              outputKey: NodeOutputKeyEnum.nestedStartInput
+            })
+          }
+        : undefined
+    );
+  }, [edges, loopItemInputType, node, nodeId, t]);
 
   const Render = useMemo(() => {
     return (
