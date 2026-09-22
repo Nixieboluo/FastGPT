@@ -6,6 +6,9 @@ import { useContextSelector } from 'use-context-selector';
 import { ReactFlowProvider } from 'reactflow';
 import { AppContext } from '@/pageComponents/app/detail/context';
 import { materializeWorkflow } from '@/web/core/workflow/editor/codec';
+import { peekWorkflowModelDetails } from '@/web/core/workflow/modelData';
+import { checkWorkflowNodeIssues } from '@/web/core/workflow/workflowCheck';
+import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import {
   WorkflowHostContext,
   WorkflowHostProvider,
@@ -28,7 +31,9 @@ vi.mock('@/web/core/workflow/localDraft/useWorkflowDraftLifecycle', () => ({
   useWorkflowDraftLifecycle: () => ({ authExpiredModal: undefined })
 }));
 vi.mock('@/web/core/workflow/modelData', () => ({
-  getWorkflowModelDetails: vi.fn(async () => [])
+  getWorkflowModelDetails: vi.fn(async () => []),
+  // 目录未就绪：Issue Provider 不产出环境问题，host 版本历史行为不受影响。
+  peekWorkflowModelDetails: vi.fn(() => undefined)
 }));
 vi.mock('@/web/core/workflow/workflowCheck', () => ({
   checkWorkflowNodeIssues: vi.fn(() => ({})),
@@ -136,6 +141,75 @@ describe('WorkflowHostProvider version history', () => {
 
     const serialized = await host!.serializeWorkflowAndCheck(true);
     expect(serialized).toEqual(expect.objectContaining({ nodes: [], edges: [] }));
+
+    act(() => root.unmount());
+  });
+
+  it('merges editor issue provider results into the runtime issue view', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    let host: WorkflowHostValue | undefined;
+    const initial = materializeWorkflow({
+      input: {
+        nodes: [
+          {
+            nodeId: 'answer',
+            flowNodeType: FlowNodeTypeEnum.answerNode,
+            name: 'Answer',
+            position: { x: 0, y: 0 },
+            inputs: [],
+            outputs: []
+          }
+        ],
+        edges: []
+      },
+      chatConfig: {},
+      t
+    });
+    // 目录就绪 + 校验器产出一条环境问题：hydrate 阶段 provider 只被调用一次。
+    vi.mocked(peekWorkflowModelDetails).mockReturnValueOnce([]);
+    vi.mocked(checkWorkflowNodeIssues).mockReturnValueOnce({
+      answer: [
+        {
+          nodeId: 'answer',
+          nodeType: FlowNodeTypeEnum.answerNode,
+          level: 'error',
+          code: 'model_unavailable',
+          message: 'model_unavailable'
+        }
+      ]
+    });
+
+    const Observer = () => {
+      host = useContextSelector(WorkflowHostContext, (value) => value);
+      return null;
+    };
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          AppContext.Provider,
+          { value: { appDetail: { chatConfig: {} }, setAppDetail: vi.fn() } as never },
+          React.createElement(
+            ReactFlowProvider,
+            null,
+            React.createElement(WorkflowHostProvider, null, React.createElement(Observer))
+          )
+        )
+      );
+    });
+
+    act(() => {
+      host?.initRuntime(initial);
+    });
+
+    // Workflow 与 Plugin host 共用这一份 provider 接线，issue 从 Runtime 统一读取面暴露。
+    expect(host?.runtime?.getNode('answer')?.issues.map((issue) => issue.code)).toContain(
+      'model_unavailable'
+    );
+    expect(host?.runtime?.getWorkflow().issues.map((issue) => issue.code)).toContain(
+      'model_unavailable'
+    );
 
     act(() => root.unmount());
   });

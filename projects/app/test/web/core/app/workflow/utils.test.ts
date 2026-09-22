@@ -1862,7 +1862,7 @@ describe('checkWorkflowNodeIssues', () => {
         { id: 'e1', source: 'start', target: 'required', type: EDGE_TYPE },
         { id: 'e2', source: 'start', target: 'valid', type: EDGE_TYPE }
       ],
-      nodeId: 'valid'
+      nodeIds: ['valid']
     });
 
     expect(result.required).toBeUndefined();
@@ -2022,7 +2022,7 @@ describe('checkWorkflowNodeIssues', () => {
     const result = checkWorkflowNodeIssues({
       nodes: [startNode, requiredNode],
       edges: [{ id: 'e1', source: 'start', target: 'required', type: EDGE_TYPE }],
-      nodeId: 'required'
+      nodeIds: ['required']
     });
 
     expect(result.required).toBeUndefined();
@@ -2059,7 +2059,7 @@ describe('checkWorkflowNodeIssues', () => {
         { id: 'e1', source: 'start', target: 'required', type: EDGE_TYPE },
         { id: 'e2', source: 'start', target: 'form', type: EDGE_TYPE }
       ],
-      nodeId: 'required'
+      nodeIds: ['required']
     });
 
     expect(Object.keys(result)).toEqual(['required']);

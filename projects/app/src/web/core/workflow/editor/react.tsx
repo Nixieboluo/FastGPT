@@ -21,6 +21,8 @@ import type {
   WorkflowRuntimePort,
   WorkflowSnapshot
 } from '@fastgpt/global/core/workflow/editor';
+// issue-only 通知类型直接从定义模块引入，不经过 editor barrel。
+import type { WorkflowIssueUpdate } from '@fastgpt/global/core/workflow/editor/types';
 import type { StoreEdgeItemType } from '@fastgpt/global/core/workflow/type/edge';
 import type { StoreNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 
@@ -166,6 +168,7 @@ export const createWorkflowEditorAdapter = (
 ): WorkflowEditorAdapter => {
   let disposed = false;
   let unsubscribeRuntime: (() => void) | undefined;
+  let unsubscribeIssues: (() => void) | undefined;
   let structure = freezeStructure(runtime.getWorkflow());
   const workflowActions = Object.freeze({
     addNode: (node: StoreNodeItemType) => runtime.dispatch({ type: 'addNode', node }),
@@ -394,9 +397,19 @@ export const createWorkflowEditorAdapter = (
     }
   };
 
+  /**
+   * Issue-only 刷新不是 Workflow Change：结构、几何与字段都没变，
+   * 只需要让订阅了这些节点的 hook 重新读取带 Unified Issue View 的 snapshot。
+   */
+  const onIssueUpdate = (update: WorkflowIssueUpdate) => {
+    if (disposed) return;
+    notify(collectRegistryListeners(nodeDataListeners, update.nodeIds));
+  };
+
   const connect = () => {
     if (disposed || unsubscribeRuntime) return;
     unsubscribeRuntime = runtime.subscribe(onRuntimeChange);
+    unsubscribeIssues = runtime.subscribeIssues(onIssueUpdate);
   };
   if (subscribeImmediately) connect();
   const canvasHandle: WorkflowCanvasHandle = Object.freeze({
@@ -442,6 +455,8 @@ export const createWorkflowEditorAdapter = (
       if (disposed) return;
       disposed = true;
       unsubscribeRuntime?.();
+      unsubscribeIssues?.();
+      unsubscribeIssues = undefined;
       workflowListeners.clear();
       nodeDataListeners.clear();
       nodeViewListeners.clear();

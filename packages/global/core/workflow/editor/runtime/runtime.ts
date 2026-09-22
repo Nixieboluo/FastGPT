@@ -12,8 +12,11 @@ import type {
   WorkflowFieldIdentity,
   WorkflowFieldQuery,
   WorkflowFieldSnapshot,
+  WorkflowIssueScope,
+  WorkflowIssueUpdate,
   WorkflowNodeSnapshot,
   WorkflowRuntimePort,
+  WorkflowRuntimeOptions,
   WorkflowSavepoint,
   WorkflowSnapshot
 } from '../types';
@@ -51,6 +54,9 @@ import type {
  */
 
 const MAX_CHANGE_LOG = 100;
+
+/** 没有 issue 变化时复用的空通知载荷。 */
+const EMPTY_ISSUE_UPDATE = freezeValue({ nodeIds: [] }) as WorkflowIssueUpdate;
 
 const createMutationMeta = (kind: MutationMeta['kind'] = 'semantic'): MutationMeta => ({
   kind,
@@ -96,9 +102,10 @@ const workflowCommandTypes = new Set<string>([
 const isWorkflowCommand = (value: unknown): value is WorkflowCommand =>
   isObject(value) && typeof value.type === 'string' && workflowCommandTypes.has(value.type);
 
-/** 从 strict canonical fixture 创建 Workflow Runtime Port。 */
+/** 从 strict canonical fixture 创建 Workflow Runtime Port；editor 特性通过 options 注入。 */
 export const createWorkflowEditor = (
-  strictCanonicalData: CanonicalWorkflowData
+  strictCanonicalData: CanonicalWorkflowData,
+  options: WorkflowRuntimeOptions = {}
 ): WorkflowRuntimePort => {
   // 入站边界只组装一次：语义记录归 Document，位置与折叠归 Node View。
   const initial = buildDocument(strictCanonicalData);
@@ -106,7 +113,11 @@ export const createWorkflowEditor = (
   const document = createDocumentModule(initial);
   const nodeView = createNodeViewModule({ document, views: initial.views });
   const reference = createReferenceModule(document);
-  const issue = createIssueModule({ document, reference });
+  const issue = createIssueModule({
+    document,
+    reference,
+    issueProvider: options.issueProvider
+  });
   const history = createHistoryModule();
 
   let disposed = false;
@@ -121,6 +132,8 @@ export const createWorkflowEditor = (
   /** 已确认保存的内容版本；与当前内容版本不同即为脏。 */
   let savedRevision = 0;
   const listeners = new Set<(change: WorkflowChange) => void>();
+  /** issue-only 订阅：刷新不是 Workflow Change，因此走独立通道。 */
+  const issueListeners = new Set<(update: WorkflowIssueUpdate) => void>();
   const changeLog: WorkflowChange[] = [];
   const nodeSnapshotCache = new Map<
     string,
@@ -370,7 +383,8 @@ export const createWorkflowEditor = (
       document.rebuildGraphIndex();
       document.rebuildWorkflowStartIds();
       reference.rebuildGraph();
-      issue.rebuildIssues();
+      // 整文档替换是全量失效分支：文档检查与 provider 结果都按替换后的文档重算。
+      issue.rebuildAll();
       reference.pruneFieldStatusCache();
       fieldSnapshotCache.clear();
     } else {
@@ -424,6 +438,8 @@ export const createWorkflowEditor = (
     const previousIssues = issue.getIssuesByNode();
     const meta = createMutationMeta('geometry');
     let applied = 0;
+    /** 是否回放到文档记录：纯几何回放不改文档，provider 结果无需重算。 */
+    let documentRestored = false;
 
     /** 把一条 history 记录携带的变更集合并入整批 meta；replay 只借 meta 组装事件，视图值已由记录恢复。 */
     const mergeReplayedChange = (originalChange: WorkflowChange) => {
@@ -453,6 +469,7 @@ export const createWorkflowEditor = (
         direction === 'undo' ? entry.beforeContentRevision : entry.afterContentRevision;
       nodeView.applyHistoryViews(entry.viewChanges, direction);
       if (entry.kind === 'checkpoint') {
+        documentRestored = true;
         document.setDocument(direction === 'undo' ? entry.before : entry.after);
         document.rebuildNodeIndex();
         semanticVersion++;
@@ -472,6 +489,8 @@ export const createWorkflowEditor = (
     if (applied === 0)
       return { ok: false, error: getError('invalid_command', `Nothing to ${direction}`) };
 
+    // 回放对订阅者是一次变化，provider 只在最终文档上跑一次全量刷新；纯几何回放跳过。
+    if (documentRestored) issue.refreshProviderIssues('all');
     if (meta.kind === 'replace') {
       meta.structureChanged = true;
     } else {
@@ -487,7 +506,7 @@ export const createWorkflowEditor = (
     return { ok: true, change };
   };
 
-  issue.rebuildIssues();
+  issue.rebuildAll();
 
   const port: WorkflowRuntimePort = {
     getWorkflow: getWorkflowSnapshot,
@@ -525,6 +544,32 @@ export const createWorkflowEditor = (
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
+    /**
+     * Issue-only 刷新：只重跑 editor provider 并更新 Unified Issue View。
+     * Content Revision、History、Savepoint 与 dirty 一律不动，也不发布 Workflow Change；
+     * Issue View 会进入 workflow snapshot，因此只作废 snapshot 缓存。
+     */
+    refreshIssues: (scope: WorkflowIssueScope = 'all') => {
+      // 刷新可能由 host effect 在 runtime 释放后触发：此时没有可刷新的状态，静默返回空结果。
+      if (disposed) return EMPTY_ISSUE_UPDATE;
+      const changedNodeIds = issue.refreshProviderIssues(scope);
+      if (changedNodeIds.length === 0) return EMPTY_ISSUE_UPDATE;
+      workflowSnapshotCache = undefined;
+      const update = freezeValue({ nodeIds: changedNodeIds }) as WorkflowIssueUpdate;
+      issueListeners.forEach((listener) => {
+        try {
+          listener(update);
+        } catch {
+          // 一个订阅者失败不能阻止其他订阅者观察本次刷新。
+        }
+      });
+      return update;
+    },
+    subscribeIssues: (listener) => {
+      if (disposed) return () => undefined;
+      issueListeners.add(listener);
+      return () => issueListeners.delete(listener);
+    },
     undo: () => replayHistory('undo'),
     redo: () => replayHistory('redo'),
     isDisposed: () => disposed,
@@ -532,6 +577,7 @@ export const createWorkflowEditor = (
       if (disposed) return;
       disposed = true;
       listeners.clear();
+      issueListeners.clear();
       changeLog.length = 0;
       history.clear();
       nodeSnapshotCache.clear();

@@ -66,7 +66,8 @@ type WorkflowCheckContext = {
   chatConfig?: AppChatConfigType;
 };
 
-type WorkflowCheckModel = {
+/** 校验只需要的模型身份字段；由模型目录解析结果直接提供。 */
+export type WorkflowCheckModel = {
   modelId: string;
   model: string;
   type: ModelTypeEnum;
@@ -456,25 +457,30 @@ const isVariableUpdateValueEmpty = (item: TUpdateListItem) => {
 /**
  * 结构化校验工作流节点和连线。
  * 函数只读取入参并返回每个节点的错误列表，调用方负责写入 React state、toast 或定位画布。
+ * nodeIds 缺省表示全量校验；给定范围时只输出这些节点的问题，图上下文仍按整份文档构建。
  */
 export const checkWorkflowNodeIssues = ({
   nodes,
   edges,
   models,
-  nodeId,
+  nodeIds,
   t,
   chatConfig
 }: {
   nodes: Node<FlowNodeItemType, string | undefined>[];
   edges: Edge<any>[];
   models?: WorkflowCheckModel[];
-  nodeId?: string;
+  nodeIds?: readonly string[];
   t?: TFunction;
   chatConfig?: AppChatConfigType;
 }): WorkflowCheckNodeIssueMap => {
   const context = createWorkflowCheckContext({ nodes, edges, chatConfig });
   const issueMap: WorkflowCheckNodeIssueMap = {};
-  const targetNodes = nodeId ? nodes.filter((node) => node.data.nodeId === nodeId) : nodes;
+  // scope 可能覆盖大量节点，用 Set 避免 nodes × nodeIds 的二次遍历。
+  const targetNodeIdSet = nodeIds ? new Set(nodeIds) : undefined;
+  const targetNodes = targetNodeIdSet
+    ? nodes.filter((node) => targetNodeIdSet.has(node.data.nodeId))
+    : nodes;
 
   const addIssue = ({
     node,
