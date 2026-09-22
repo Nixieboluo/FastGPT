@@ -1,8 +1,5 @@
-import {
-  getNodeAllSource,
-  workflowReferenceValueIsSelectable,
-  type WorkflowGraphEdge
-} from '@/web/core/workflow/utils';
+import { getNodeAllSource, type WorkflowGraphEdge } from '@/web/core/workflow/utils';
+import { workflowReferenceValueIsSelectable } from '@fastgpt/global/core/workflow/editor/utils';
 import { workflowSystemVariables } from '@/web/core/app/utils';
 import { type AppChatConfigType, type AppDetailType } from '@fastgpt/global/core/app/type';
 import {

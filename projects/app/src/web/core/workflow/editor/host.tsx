@@ -4,7 +4,7 @@
  * 拥有 Runtime 生命周期与 adapter 挂载、版本列表与整文档替换切换、Savepoint 与出站序列化入口、
  * 环境事实注入（模型目录与 sandbox，供 Runtime 算 Issue View）、Issue View 刷新触发与
  * 标红焦点定位、本地草稿与离开保护。
- * overlay/patchViewData 与投影供数是迁移期兼容面，随调用点迁移票逐步迁出。
+ * overlay/patchViewData 是迁移期兼容面，随调用点迁移票逐步迁出。
  */
 import React, {
   useEffect,
@@ -34,6 +34,7 @@ import type { CanonicalWorkflowData } from '@fastgpt/global/core/workflow/migrat
 import { useWorkflowDraftLifecycle } from '@/web/core/workflow/localDraft/useWorkflowDraftLifecycle';
 import { useToast } from '@fastgpt/web/hooks/useToast';
 import { ensureModelCatalog } from '@/web/core/ai/model/modelData';
+import { useUserModelStore } from '@/web/core/ai/model/useUserModelStore';
 import { peekWorkflowEnvironmentModels } from '@/web/core/workflow/modelData';
 import {
   collectWorkflowErrorIssues,
@@ -47,8 +48,6 @@ import type { ViewDataOverlayMap } from './projection';
 import type { ViewOverlayPatch } from './canvas';
 import { WorkflowEditorProvider } from './react';
 
-/** Environment Issue 定时扫描间隔。 */
-const ENVIRONMENT_SCAN_INTERVAL = 10_000;
 /** 定位问题节点时的视口留白，与画布其它 fitView 调用一致。 */
 const ISSUE_FOCUS_FIT_PADDING = 0.3;
 /** Runtime 最多保留 100 笔 history；版本列表包含当前状态，因此最多 101 项。 */
@@ -94,8 +93,6 @@ export type WorkflowHostValue = {
 
   /** 问题焦点节点 id：投影据此标红并选中该节点；undefined 表示无焦点。 */
   issueFocusRef: MutableRefObject<string | undefined>;
-  /** 触发 Runtime 按当前环境事实重算 Issue View：缺省全量，传 nodeId 只复查该节点。 */
-  refreshNodeIssues: (nodeId?: string) => void;
   /** 标红并定位到指定节点；传 undefined 只清除标红（节点被点击或取消选中）。 */
   focusIssueNode: (nodeId?: string) => void;
 
@@ -125,7 +122,6 @@ export const WorkflowHostContext = createContext<WorkflowHostValue>({
   serializeWorkflowAndCheck: notImplemented,
   markSaved: notImplemented,
   issueFocusRef: { current: undefined },
-  refreshNodeIssues: notImplemented,
   focusIssueNode: notImplemented,
   initRuntime: notImplemented,
   loadDocument: notImplemented
@@ -432,30 +428,38 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
     bump();
   });
 
-  /**
-   * 触发 Runtime 按当前环境事实重算 Issue View：缺省整份文档，传 nodeId 只复查该节点。
-   * 文档变更由 Runtime 在每笔事务后自行定向刷新，这里只覆盖环境事实变化（模型目录冷启动就绪）
-   * 与模板新增节点后的即时复查。
-   */
-  const refreshNodeIssues = useMemoizedFn((nodeId?: string) => {
+  /** 让 Runtime 按当前环境事实重算整份 Issue View；文档变更由 Runtime 在事务后自行定向刷新。 */
+  const refreshIssues = useMemoizedFn(() => {
     const current = runtimeRef.current;
     if (!current || current.isDisposed()) return;
-    current.refreshIssues(nodeId ? [nodeId] : 'all');
+    current.refreshIssues('all');
   });
 
   /**
-   * 编辑页定时刷新 Issue View，主动发现环境事实变化带来的新增/已修复问题。
-   * 文档变更由 Runtime 在每笔事务后自行定向刷新，这里只兜环境事实。
+   * 环境事实（模型目录、sandbox 开关）不进文档，变化后必须显式让 Runtime 重算 Issue View。
+   * 目录冷启动由这里 ensure 一次（旧路径靠定时扫描顺带加载），之后的变化订阅 modelList 引用；
+   * ensureModelCatalog 的凭证校验在 store 写入之后的微任务里完成，订阅回调因此延后一个宏任务再重算，
+   * 否则 peek 到的仍是未校验目录。
    */
   useEffect(() => {
     if (!runtime) return;
-    refreshNodeIssues();
-    const timer = window.setInterval(() => refreshNodeIssues(), ENVIRONMENT_SCAN_INTERVAL);
+    let timer: number | undefined;
+    const unsubscribe = useUserModelStore.subscribe((state, prev) => {
+      if (state.modelList === prev.modelList) return;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(refreshIssues, 0);
+    });
+    void ensureModelCatalog()
+      .then(refreshIssues)
+      .catch(() => undefined);
+    // 挂载与 sandbox 开关变化都走到这里：环境事实已经不同，直接重算一轮。
+    refreshIssues();
 
     return () => {
-      window.clearInterval(timer);
+      window.clearTimeout(timer);
+      unsubscribe();
     };
-  }, [runtime, refreshNodeIssues]);
+  }, [runtime, refreshIssues, showSandbox, enableSandbox]);
 
   // 本地草稿、beforeunload 与卸载自动保存、鉴权过期草稿。
   const { authExpiredModal } = useWorkflowDraftLifecycle({
@@ -491,7 +495,6 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
       serializeWorkflowAndCheck,
       markSaved,
       issueFocusRef,
-      refreshNodeIssues,
       focusIssueNode,
       initRuntime,
       loadDocument
@@ -511,7 +514,6 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
       serializeWorkflow,
       serializeWorkflowAndCheck,
       markSaved,
-      refreshNodeIssues,
       focusIssueNode,
       initRuntime,
       loadDocument

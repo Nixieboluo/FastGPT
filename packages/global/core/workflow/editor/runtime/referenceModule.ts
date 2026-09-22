@@ -7,10 +7,10 @@ import { i18nT } from '../../../../common/i18n/utils';
 import {
   filterSelectableWorkflowNodeOutputs,
   getHTTPToolParamOutputs,
+  getWorkflowReferenceItemsFromValue,
   isWorkflowReferenceItem,
   workflowValueTypeIsCompatible
 } from '../utils';
-import { getWorkflowReferenceItemsFromValue } from '../referenceCheck';
 import { getWorkflowGlobalVariables } from '../variables';
 import type {
   FlowNodeInputItemType,

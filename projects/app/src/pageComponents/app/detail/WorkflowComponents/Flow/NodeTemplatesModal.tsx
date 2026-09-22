@@ -6,8 +6,6 @@ import { useNodeTemplates } from './components/NodeTemplates/useNodeTemplates';
 import { buildNodeTemplateContext } from '@fastgpt/global/core/workflow/template/context';
 import { useMemoizedFn } from 'ahooks';
 import React from 'react';
-import { useContextSelector } from 'use-context-selector';
-import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
 import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/canvas';
 import AppDetailPanelModal from '../../components/AppDetailPanelModal';
@@ -22,8 +20,6 @@ type ModuleTemplateListProps = {
 export const sliderWidth = 460;
 
 const NodeTemplatesModal = ({ isOpen, onClose }: ModuleTemplateListProps) => {
-  /** 新增节点后立即复查问题文案，不等 host 的 10s 定时扫描。 */
-  const refreshNodeIssues = useContextSelector(WorkflowHostContext, (v) => v.refreshNodeIssues);
   const workflow = useWorkflowAdapter();
   const { setNodes } = useReactFlow();
   const getNodeById = useDocumentGetNodeById();
@@ -63,13 +59,8 @@ const NodeTemplatesModal = ({ isOpen, onClose }: ModuleTemplateListProps) => {
 
   const onAddNode = useMemoizedFn(async ({ newNodes }: { newNodes: Node<FlowNodeItemType>[] }) => {
     setNodes((state) => state.map((node) => ({ ...node, selected: false })));
+    // 新增节点的问题由 Runtime 在 addNode 事务后自行刷新，画布不需要额外触发。
     workflow.addNodes(newNodes.map(canvasNodeToStoreNode));
-
-    // [TODO] probably can delegate to runtime problem views.
-    // 新增节点后立即同步下方待完善提示，不依赖 10s 定时扫描或用户首次编辑。
-    setTimeout(() => {
-      refreshNodeIssues(newNodes[0]?.data.nodeId ?? '');
-    }, 0);
   });
 
   return (

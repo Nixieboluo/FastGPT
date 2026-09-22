@@ -24,11 +24,11 @@ import {
 import { ModelTypeEnum } from '../../../ai/constants';
 import { getModelReferenceValue, isEmptyModelValue } from '../../../ai/modelReference';
 import {
+  getWorkflowReferenceItemsFromValue,
   isConfiguredReferenceValue,
   isEmptyReferenceValue,
   workflowValueTypeIsCompatible
 } from '../utils';
-import { getWorkflowReferenceItemsFromValue } from '../referenceCheck';
 import type { WorkflowIssueCode } from '../issueCode';
 import type { WorkflowConfigIssue, WorkflowEnvironment, WorkflowReferenceStatus } from '../types';
 import type { FlowNodeInputItemType } from '../../type/io';

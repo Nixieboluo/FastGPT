@@ -13,7 +13,6 @@ import { useMemoizedFn } from 'ahooks';
 import React from 'react';
 import { useReactFlow, type Node } from 'reactflow';
 import { useContextSelector } from 'use-context-selector';
-import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
 import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/canvas';
 import { WorkflowModalContext } from './context/workflowModalContext';
@@ -26,8 +25,6 @@ import { useDocumentGetNodeById, useWorkflowDocument } from './nodes/render/useW
 const NodeTemplatesPopover = () => {
   const { handleParams, setHandleParams } = useContextSelector(WorkflowModalContext, (v) => v);
 
-  /** 新增节点后立即复查问题文案，不等 host 的 10s 定时扫描。 */
-  const refreshNodeIssues = useContextSelector(WorkflowHostContext, (v) => v.refreshNodeIssues);
   const workflow = useWorkflowAdapter();
   const { setNodes } = useReactFlow();
   const getNodeById = useDocumentGetNodeById();
@@ -108,12 +105,6 @@ const NodeTemplatesPopover = () => {
     );
 
     setHandleParams(null);
-
-    setTimeout(() => {
-      validNewNodes.forEach((node) => {
-        refreshNodeIssues(node.data.nodeId);
-      });
-    }, 0);
   });
 
   if (!handleParams) return null;

@@ -1,6 +1,6 @@
 import { NodeInputKeyEnum } from '../../constants';
 import { nodeInputIsReference } from '../../utils';
-import { getWorkflowReferenceItemsFromValue } from '../referenceCheck';
+import { getWorkflowReferenceItemsFromValue } from '../utils';
 import type {
   FlowNodeInputItemType,
   FlowNodeOutputItemType,

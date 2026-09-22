@@ -49,7 +49,6 @@ import {
   resolveDatasetTagFilterVersion
 } from '@fastgpt/global/core/dataset/workflowTagFilter';
 
-export { workflowReferenceValueIsSelectable } from '@fastgpt/global/core/workflow/editor/referenceCheck';
 export {
   filterSelectableWorkflowNodeOutputs,
   filterWorkflowNodeOutputsByType,

@@ -330,19 +330,12 @@ export type WorkflowCheckIssueLevel = z.infer<typeof WorkflowCheckIssueLevelSche
  */
 export const WorkflowCheckIssueSchema = z.object({
   nodeId: z.string(),
-  /** @deprecated 文案改由渲染层按 code 解析；随 app 侧旧 checker 一起删除。 */
-  nodeName: z.string().optional(),
-  /** @deprecated 同上。 */
-  nodeType: z.enum(FlowNodeTypeEnum).optional(),
   level: WorkflowCheckIssueLevelSchema,
   code: WorkflowIssueCodeSchema,
-  /** @deprecated 同上。 */
-  message: z.string().optional(),
   inputKey: z.string().optional(),
   params: z.record(z.string(), z.string()).optional()
 });
 export type WorkflowCheckIssue = z.infer<typeof WorkflowCheckIssueSchema>;
-export type WorkflowCheckNodeIssueMap = Record<string, WorkflowCheckIssue[]>;
 
 // react flow node type
 export const FlowNodeItemSchema = FlowNodeTemplateTypeSchema.extend({
