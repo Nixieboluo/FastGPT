@@ -17,7 +17,7 @@ import React, {
 import { useMemoizedFn } from 'ahooks';
 import { isEqual } from 'lodash-es';
 import { useTranslation } from 'next-i18next';
-import { useReactFlow, type Edge } from 'reactflow';
+import { useReactFlow } from 'reactflow';
 import { createContext, useContextSelector } from 'use-context-selector';
 import { formatTime2YMDHMS } from '@fastgpt/global/common/string/time';
 import { AppChatConfigTypeSchema } from '@fastgpt/global/core/app/type';
@@ -33,18 +33,17 @@ import type {
 import type { CanonicalWorkflowData } from '@fastgpt/global/core/workflow/migration';
 import { useWorkflowDraftLifecycle } from '@/web/core/workflow/localDraft/useWorkflowDraftLifecycle';
 import { useToast } from '@fastgpt/web/hooks/useToast';
+import { ensureModelCatalog } from '@/web/core/ai/model/modelData';
+import { peekWorkflowEnvironmentModels } from '@/web/core/workflow/modelData';
 import {
-  getWorkflowModelDetails,
-  peekWorkflowEnvironmentModels
-} from '@/web/core/workflow/modelData';
-import { checkWorkflowBeforeRunOrPublish } from '@/web/core/workflow/workflowCheck';
+  collectWorkflowErrorIssues,
+  renderWorkflowIssueMessage
+} from '@/web/core/workflow/issueView';
 import { useSystemStore } from '@/web/common/system/useSystemStore';
 import { useUserStore } from '@/web/support/user/useUserStore';
-import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
-import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import { AppContext } from '@/pageComponents/app/detail/context';
 import { materializeWorkflow, serializeRuntime } from './codec';
-import { createProjectionCache, projectRuntimeCanvas, type ViewDataOverlayMap } from './projection';
+import type { ViewDataOverlayMap } from './projection';
 import type { ViewOverlayPatch } from './canvas';
 import { WorkflowEditorProvider } from './react';
 
@@ -54,9 +53,6 @@ const ENVIRONMENT_SCAN_INTERVAL = 10_000;
 const ISSUE_FOCUS_FIT_PADDING = 0.3;
 /** Runtime 最多保留 100 笔 history；版本列表包含当前状态，因此最多 101 项。 */
 const MAX_VERSION_ENTRIES = 101;
-
-/** 扫描用空 overlay：问题检查只读文档投影，不受视图数据影响。 */
-const EMPTY_OVERLAYS: ViewDataOverlayMap = {};
 
 /**
  * 版本列表条目。每笔 Runtime command 记录一份冻结文档，live 标记当前版本。
@@ -162,8 +158,6 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
   const unsubscribeRef = useRef<(() => void) | undefined>(undefined);
   const leaveSaveSign = useRef(true);
   const issueFocusRef = useRef<string | undefined>(undefined);
-  // 扫描用的独立投影缓存：与画布投影的 overlay/交互状态不同，不能共用。
-  const scanProjectionCache = useRef(createProjectionCache());
   // 订阅回调里回写 appDetail，用 ref 避免 chatConfig 变化导致重新订阅。
   const setAppDetailRef = useRef(setAppDetail);
   useEffect(() => {
@@ -285,81 +279,40 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
   });
 
   /**
-   * 在保存、发布或调试前从 Runtime 快照执行 sandbox、模型目录和工作流规则校验。
-   * 校验失败只更新 host 问题状态与焦点，不序列化不完整文档；hideTip 用于静默预检。
+   * 保存、发布与调试共用的 gate：先确保模型目录就绪，再让 Runtime 按当前环境事实重算整份
+   * Issue View，然后只读它判定。校验失败只更新标红焦点与提示，不序列化不完整文档；
+   * hideTip 用于静默预检。
    */
   const serializeWorkflowAndCheck = useMemoizedFn(async (hideTip = false) => {
     const current = runtimeRef.current;
     if (!current || current.isDisposed()) return undefined;
-    const workflow = current.getWorkflow();
-    const sandboxNode = workflow.nodes.find((node) => {
-      if (
-        node.flowNodeType !== FlowNodeTypeEnum.agent &&
-        node.flowNodeType !== FlowNodeTypeEnum.toolCall
-      )
-        return false;
-      const enabled = node.inputs.find(
-        (input) => input.key === NodeInputKeyEnum.useAgentSandbox
-      )?.value;
-      return !!enabled && (!showSandbox || !enableSandbox);
-    });
-    if (sandboxNode) {
-      if (!hideTip) {
-        focusIssueNode(sandboxNode.nodeId);
-        toast({
-          status: 'warning',
-          title: !showSandbox
-            ? t('skill:sandbox_system_not_configured_toast')
-            : t('app:sandbox_free_not_support')
-        });
-      }
-      return undefined;
-    }
-    const nodes = projectRuntimeCanvas({
-      runtime: current,
-      overlays: EMPTY_OVERLAYS,
-      t,
-      localNodes: [],
-      localEdges: [],
-      cache: scanProjectionCache.current
-    }).nodes;
-    const models = await getWorkflowModelDetails(nodes, appDetailChatConfig).catch(() => undefined);
-    if (!models) {
+    // 目录冷启动可能还没就绪，此时模型类问题会整体漏判，gate 必须等它到位。
+    const catalog = await ensureModelCatalog().catch(() => undefined);
+    if (!catalog) {
       if (!hideTip) toast({ status: 'error', title: t('common:model_catalog_load_failed') });
       return undefined;
     }
-    const edges: Edge[] = workflow.edges.map((edge, index) => ({
-      id: `wfedge-${index}`,
-      source: edge.source,
-      target: edge.target,
-      sourceHandle: edge.sourceHandle,
-      targetHandle: edge.targetHandle
-    }));
-    const result = checkWorkflowBeforeRunOrPublish({
-      nodes,
-      edges,
-      models,
-      chatConfig: appDetailChatConfig,
-      t
-    });
-    if (result.hasError) {
-      if (!hideTip) {
-        if (result.firstErrorNodeId) focusIssueNode(result.firstErrorNodeId);
-        toast({
-          status: 'warning',
-          title: t('common:core.workflow.Check Failed'),
-          description: [...Object.values(result.issueMap).flat(), ...result.chatConfigIssues]
-            .filter((issue) => issue.level === 'error')
-            .map((issue) => issue.message)
-            .filter(Boolean)
-            .join('\n')
-        });
-      }
-      return undefined;
+    if (current.isDisposed()) return undefined;
+
+    const errors = collectWorkflowErrorIssues(current);
+    if (errors.length === 0) {
+      // 校验通过：清掉上一次 gate 留下的标红焦点，选中态由投影还原成本地交互值。
+      focusIssueNode(undefined);
+      return serializeWorkflow();
     }
-    // 校验通过：清掉上一次 gate 留下的标红焦点，选中态由投影还原成本地交互值。
-    focusIssueNode(undefined);
-    return serializeWorkflow();
+    if (!hideTip) {
+      // 标红节点按文档节点顺序取第一个，不依赖 Issue View 的数组顺序。
+      const firstErrorNodeId = current
+        .getWorkflow()
+        .nodes.find((node) => node.issues.some((issue) => issue.level === 'error'))?.nodeId;
+      if (firstErrorNodeId) focusIssueNode(firstErrorNodeId);
+      toast({
+        status: 'warning',
+        title: t('common:core.workflow.Check Failed'),
+        description: errors.map((issue) => renderWorkflowIssueMessage(issue, t)).join('\n')
+      });
+    }
+    return undefined;
   });
 
   const markSaved = useMemoizedFn(() => {
@@ -492,18 +445,17 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
 
   /**
    * 编辑页定时刷新 Issue View，主动发现环境事实变化带来的新增/已修复问题。
-   * t 是刻意的依赖：语言切换会让 gate 用的扫描投影缓存失效，因此整体作废。
+   * 文档变更由 Runtime 在每笔事务后自行定向刷新，这里只兜环境事实。
    */
   useEffect(() => {
     if (!runtime) return;
-    scanProjectionCache.current = createProjectionCache();
     refreshNodeIssues();
     const timer = window.setInterval(() => refreshNodeIssues(), ENVIRONMENT_SCAN_INTERVAL);
 
     return () => {
       window.clearInterval(timer);
     };
-  }, [runtime, refreshNodeIssues, t]);
+  }, [runtime, refreshNodeIssues]);
 
   // 本地草稿、beforeunload 与卸载自动保存、鉴权过期草稿。
   const { authExpiredModal } = useWorkflowDraftLifecycle({

@@ -1,7 +1,10 @@
 import type { TFunction } from 'next-i18next';
 import { WORKFLOW_ISSUE_I18N_KEYS } from '@fastgpt/global/core/workflow/editor/issueCode';
 import type { WorkflowIssueCode } from '@fastgpt/global/core/workflow/editor/issueCode';
-import type { WorkflowConfigIssue } from '@fastgpt/global/core/workflow/editor/types';
+import type {
+  WorkflowConfigIssue,
+  WorkflowRuntimePort
+} from '@fastgpt/global/core/workflow/editor/types';
 import type { WorkflowCheckIssue } from '@fastgpt/global/core/workflow/type/node';
 
 /** Issue 渲染入参：节点问题与工作流级问题共用 code + params 约定。 */
@@ -37,6 +40,17 @@ export const getWorkflowIssueUIStatus = (code: WorkflowIssueCode): WorkflowIssue
  * `params.nodeName` 是文档里已翻译的节点名，属于工作流自身信息，语言切换后保持不变。
  * 其余 params（如 model）是纯数据，不翻译。
  */
+/**
+ * 保存/发布/调试 gate 的判定入口：按当前环境事实重算整份 Issue View，返回全部 error。
+ * chatConfig 桶不属于任何画布节点，排在节点问题之后。
+ * Issue View 的数组顺序在增量刷新后不保证是文档顺序，标红节点由调用方按文档顺序另取。
+ */
+export const collectWorkflowErrorIssues = (runtime: WorkflowRuntimePort) => {
+  runtime.refreshIssues('all');
+  const { issues, chatConfigIssues } = runtime.getWorkflow();
+  return [...issues, ...chatConfigIssues].filter((issue) => issue.level === 'error');
+};
+
 export const renderWorkflowIssueMessage = (issue: WorkflowIssueLike, t: TFunction) => {
   const key = WORKFLOW_ISSUE_I18N_KEYS[issue.code] as any;
   const params = issue.params;

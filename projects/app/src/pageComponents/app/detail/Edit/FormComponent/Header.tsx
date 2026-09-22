@@ -1,9 +1,13 @@
 import FolderPath from '@/components/common/folder/Path';
 import { useSystemStore } from '@/web/common/system/useSystemStore';
-import { getWorkflowModelDetails } from '@/web/core/workflow/modelData';
 import { getAppFolderPath } from '@/web/core/app/api/app';
-import { storeEdge2RenderEdge, storeNode2FlowNode } from '@/web/core/workflow/utils';
-import { checkWorkflowBeforeRunOrPublish } from '@/web/core/workflow/workflowCheck';
+import { ensureModelCatalog } from '@/web/core/ai/model/modelData';
+import { hydrateRuntime } from '@/web/core/workflow/editor/codec';
+import {
+  collectWorkflowErrorIssues,
+  renderWorkflowIssueMessage
+} from '@/web/core/workflow/issueView';
+import { peekWorkflowEnvironmentModels } from '@/web/core/workflow/modelData';
 import { useUserStore } from '@/web/support/user/useUserStore';
 import { Box, Flex, IconButton } from '@chakra-ui/react';
 import type { ParentIdType } from '@fastgpt/global/common/parentFolder/type';
@@ -11,7 +15,6 @@ import { formatTime2YMDHMS } from '@fastgpt/global/common/string/time';
 import { isProduction } from '@fastgpt/global/common/system/constants';
 import type { AppFormEditFormType } from '@fastgpt/global/core/app/formEdit/type';
 import type { AppVersionSchemaType } from '@fastgpt/global/core/app/version/type';
-import { NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import MyIcon from '@fastgpt/web/components/common/Icon';
 import MyTag from '@fastgpt/web/components/common/Tag/index';
 import { useBeforeunload } from '@fastgpt/web/hooks/useBeforeunload';
@@ -279,44 +282,35 @@ const Header = ({
                 }
 
                 const { nodes: storeNodes, edges: storeEdges } = form2WorkflowFn(appForm, t);
-
-                const toolNodeIds = new Set(
-                  storeEdges
-                    .filter((edge) => edge.targetHandle === NodeOutputKeyEnum.selectedTools)
-                    .map((edge) => edge.target)
-                );
-                const nodes = storeNodes.map((item) =>
-                  storeNode2FlowNode({
-                    item,
-                    t,
-                    isTool: toolNodeIds.has(item.nodeId)
-                  })
-                );
-                const edges = storeEdges.map((item) => storeEdge2RenderEdge({ edge: item }));
-
-                const checkResults = checkWorkflowBeforeRunOrPublish({
-                  nodes,
-                  edges,
-                  models: await getWorkflowModelDetails(nodes, appForm.chatConfig),
+                // 简易应用编辑器没有常驻 Runtime：现场 hydrate 一份，走与工作流编辑器同一条 gate。
+                const runtime = hydrateRuntime({
+                  input: { nodes: storeNodes, edges: storeEdges },
                   chatConfig: appForm.chatConfig,
-                  t
+                  t,
+                  getEnvironment: () => ({
+                    models: peekWorkflowEnvironmentModels(),
+                    sandbox: { configured: !!showSandbox, planSupported: enableSandbox }
+                  })
                 });
+                // 目录未就绪时模型类问题会整体漏判，宁可挡住发布也不放过。
+                const catalog = await ensureModelCatalog().catch(() => undefined);
+                if (!catalog) {
+                  toast({ status: 'error', title: t('common:model_catalog_load_failed') });
+                  return false;
+                }
+                const errors = collectWorkflowErrorIssues(runtime);
+                runtime.dispose();
 
-                if (checkResults.hasError) {
-                  const issueMessages = [
-                    ...Object.values(checkResults.issueMap).flat(),
-                    ...checkResults.chatConfigIssues
-                  ]
-                    .filter((issue) => issue.level === 'error')
-                    .map((issue) => issue.message)
-                    .filter(Boolean);
+                if (errors.length > 0) {
                   toast({
                     title: t('app:app.error.publish_unExist_app'),
-                    description: issueMessages.join('\n'),
+                    description: errors
+                      .map((issue) => renderWorkflowIssueMessage(issue, t))
+                      .join('\n'),
                     status: 'warning'
                   });
                 }
-                return !checkResults.hasError;
+                return errors.length === 0;
               }}
             />
           </Flex>

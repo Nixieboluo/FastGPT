@@ -30,23 +30,13 @@ vi.mock('@/web/core/workflow/localDraft/useWorkflowDraftLifecycle', () => ({
   useWorkflowDraftLifecycle: () => ({ authExpiredModal: undefined })
 }));
 vi.mock('@/web/core/workflow/modelData', () => ({
-  getWorkflowModelDetails: vi.fn(async () => []),
   // 目录未就绪：Runtime 跳过模型规则，host 版本历史行为不受影响。
   peekWorkflowEnvironmentModels: vi.fn(() => undefined)
 }));
-vi.mock('@/web/core/workflow/workflowCheck', () => ({
-  checkWorkflowNodeIssues: vi.fn(() => ({})),
-  checkWorkflowBeforeRunOrPublish: vi.fn(() => ({
-    issueMap: {},
-    hasError: false,
-    firstErrorNodeId: undefined,
-    errorNodeIds: [],
-    chatConfigIssues: []
-  }))
-}));
-vi.mock('@/web/core/workflow/editor/projection', () => ({
-  createProjectionCache: () => ({}),
-  projectRuntimeCanvas: () => ({ nodes: [], edges: [] })
+// gate 只等目录就绪；Issue 判定全在 Runtime，这里不再 mock 任何检查器。
+vi.mock('@/web/core/ai/model/modelData', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  ensureModelCatalog: vi.fn(async () => ({}))
 }));
 vi.mock('@/web/core/workflow/editor/react', () => ({
   WorkflowEditorProvider: ({ children }: { children: React.ReactNode }) => children
@@ -197,6 +187,8 @@ describe('WorkflowHostProvider version history', () => {
     expect(host?.runtime?.getWorkflow().issues.map((issue) => issue.code)).toContain(
       'required_input_empty'
     );
+    // gate 只读 Issue View：有 error 时不序列化。
+    expect(await host?.serializeWorkflowAndCheck(true)).toBeUndefined();
 
     act(() => root.unmount());
   });

@@ -7,7 +7,10 @@ import {
   serializeWorkflowEditor,
   type StoreWorkflow
 } from '@fastgpt/global/core/workflow/editor/protocol';
-import type { WorkflowRuntimePort } from '@fastgpt/global/core/workflow/editor/types';
+import type {
+  WorkflowRuntimeOptions,
+  WorkflowRuntimePort
+} from '@fastgpt/global/core/workflow/editor/types';
 import { storeNode2FlowNode } from '@/web/core/workflow/utils';
 import { uiWorkflow2StoreWorkflow } from '@/pageComponents/app/detail/WorkflowComponents/utils';
 import type { Edge, Node } from 'reactflow';
@@ -64,13 +67,17 @@ export const materializeWorkflow = ({
   return migrateStoreWorkflow({ nodes, edges: canonicalEdges, chatConfig: workflow.chatConfig });
 };
 
-/** 保存、发布、本地草稿、离开确认和调试共用的编辑器入口：物化后创建 Runtime。 */
+/**
+ * 保存、发布、本地草稿、离开确认和调试共用的编辑器入口：物化后创建 Runtime。
+ * 一次性场景（简易应用发布检查）可透传 Runtime options，与工作流编辑器共用同一套 Issue 规则。
+ */
 export const hydrateRuntime = ({
   input,
   chatConfig,
-  t
-}: HydrateWorkflowEditorOptions): WorkflowRuntimePort =>
-  hydrateWorkflowEditor(materializeWorkflow({ input, chatConfig, t }));
+  t,
+  ...options
+}: HydrateWorkflowEditorOptions & WorkflowRuntimeOptions): WorkflowRuntimePort =>
+  hydrateWorkflowEditor(materializeWorkflow({ input, chatConfig, t }), options);
 
 /**
  * 出站边界：读取 Runtime 完整导出，并用旧保存路径的 Workflow Normalization 原样包住
