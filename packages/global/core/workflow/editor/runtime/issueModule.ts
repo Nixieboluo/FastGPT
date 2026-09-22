@@ -1,242 +1,25 @@
-import { NodeInputKeyEnum, NodeOutputKeyEnum } from '../../constants';
 import { FlowNodeTypeEnum } from '../../node/constant';
-import {
-  canInputBeAgentGenerated,
-  initToolInputTypeByDefaultMode,
-  isAgentGeneratedToolInput
-} from '../../../app/formEdit/utils';
-import { isEmptyReferenceValue } from '../utils';
-import type { FlowNodeInputItemType } from '../../type/io';
 import type { WorkflowCheckIssue } from '../../type/node';
-import type { WorkflowIssueCode } from '../issueCode';
 import type {
   WorkflowConfigIssue,
+  WorkflowEnvironment,
   WorkflowIssueProvider,
   WorkflowIssueScope,
-  WorkflowReferenceStatus,
   WorkflowSnapshot
 } from '../types';
-import { addFieldIdentity, isEmptyValue, isObject, valuesEqual } from './kernel';
-import type {
-  DocumentReadApi,
-  EdgeRecord,
-  GraphIndex,
-  MutationMeta,
-  NodeRecord,
-  ReferenceReadApi
-} from './types';
+import { addFieldIdentity, valuesEqual } from './kernel';
+import { collectConfigIssues, collectNodeIssues, type IssueRuleInput } from './issueRules';
+import type { DocumentReadApi, MutationMeta, ReferenceReadApi } from './types';
 
 /**
  * Issue module：拥有 issue 派生结果与可达节点集合。
  * 每笔事务只读一次最终的 Document/Reference/MutationMeta 状态，不写 Document。
+ * 判定规则在 issueRules；本 module 只负责状态、scope、缓存与 affected records。
  */
 
-const noUpstreamExemptTypes = new Set<FlowNodeTypeEnum>([
-  FlowNodeTypeEnum.workflowStart,
-  FlowNodeTypeEnum.pluginInput,
-  FlowNodeTypeEnum.nestedStart,
-  FlowNodeTypeEnum.loopRunStart,
-  FlowNodeTypeEnum.comment,
-  FlowNodeTypeEnum.globalVariable,
-  FlowNodeTypeEnum.emptyNode
-]);
-
-/** 将非正常引用状态转换为稳定的 Issue View 记录。 */
-const issueForStatus = ({
-  node,
-  input,
-  status
-}: {
-  node: NodeRecord;
-  input: FlowNodeInputItemType;
-  status: WorkflowReferenceStatus;
-}): WorkflowCheckIssue | undefined => {
-  if (status.code === 'valid' || status.code === 'empty') return undefined;
-  return {
-    nodeId: node.data.nodeId,
-    level: 'error',
-    code: status.code,
-    inputKey: input.key,
-    params: { inputName: input.label ?? input.key }
-  };
-};
-
-/**
- * 各节点类型的专属校验规则。入参全部来自 Document 只读数据，不依赖 Issue module 状态，
- * 因此可以放在 module 级别；返回值按顺序交给调用方去重后写入 Issue View。
- */
-const collectNodeTypeIssues = ({
-  node,
-  nodes,
-  graphIndex,
-  isSourceEdgeValid
-}: {
-  node: NodeRecord;
-  nodes: NodeRecord[];
-  graphIndex: GraphIndex;
-  isSourceEdgeValid: (edge: EdgeRecord) => boolean;
-}) => {
-  const issues: { code: WorkflowIssueCode; inputKey?: string }[] = [];
-  const addIssue = (code: WorkflowIssueCode, inputKey?: string) => {
-    issues.push({ code, ...(inputKey ? { inputKey } : {}) });
-  };
-  const inputs = node.data.inputs;
-  const inputMap = new Map(inputs.map((input) => [input.key, input]));
-  const getInputValue = (key: string) => {
-    const input = inputMap.get(key);
-    return input?.value ?? input?.defaultValue;
-  };
-  // 被工具选择边指向的节点算工具节点，代码节点的动态入参校验会放宽。
-  const isToolNode = (graphIndex.byTarget.get(node.data.nodeId) ?? []).some(
-    (edge) => edge.data.targetHandle === NodeOutputKeyEnum.selectedTools && isSourceEdgeValid(edge)
-  );
-
-  if (node.data.flowNodeType === FlowNodeTypeEnum.ifElseNode) {
-    const ifElseList = getInputValue(NodeInputKeyEnum.ifElseList);
-    const hasIncompleteCondition =
-      !Array.isArray(ifElseList) ||
-      ifElseList.some(
-        (branch) =>
-          !isObject(branch) ||
-          !Array.isArray(branch.list) ||
-          branch.list.some((condition) => {
-            if (!isObject(condition)) return true;
-            const hasEmptyVariable = isEmptyReferenceValue(condition.variable);
-            const hasEmptyValue =
-              condition.value === undefined ||
-              (condition.valueType === 'reference' && isEmptyReferenceValue(condition.value));
-            return (
-              hasEmptyVariable ||
-              condition.condition === undefined ||
-              (hasEmptyValue &&
-                condition.condition !== 'isEmpty' &&
-                condition.condition !== 'isNotEmpty')
-            );
-          })
-      );
-    if (hasIncompleteCondition) {
-      addIssue('if_else_incomplete', NodeInputKeyEnum.ifElseList);
-    }
-  }
-
-  if (node.data.flowNodeType === FlowNodeTypeEnum.userSelect) {
-    const options = getInputValue(NodeInputKeyEnum.userSelectOptions);
-    if (!Array.isArray(options) || options.length === 0) {
-      addIssue('user_select_empty', NodeInputKeyEnum.userSelectOptions);
-    } else if (options.some((option) => !isObject(option) || !option.value)) {
-      addIssue('user_select_value_empty', NodeInputKeyEnum.userSelectOptions);
-    }
-  }
-
-  if (node.data.flowNodeType === FlowNodeTypeEnum.formInput) {
-    const forms = getInputValue(NodeInputKeyEnum.userInputForms);
-    if (!Array.isArray(forms) || forms.length === 0) {
-      addIssue('form_input_empty', NodeInputKeyEnum.userInputForms);
-    }
-  }
-
-  if (node.data.flowNodeType === FlowNodeTypeEnum.datasetConcatNode) {
-    if (!inputs.some((input) => input.canEdit)) {
-      addIssue('required_input_empty', NodeInputKeyEnum.datasetQuoteList);
-    }
-  }
-
-  if (node.data.flowNodeType === FlowNodeTypeEnum.classifyQuestion) {
-    const agents = getInputValue(NodeInputKeyEnum.agents);
-    if (!Array.isArray(agents) || agents.length === 0) {
-      addIssue('classify_question_empty', NodeInputKeyEnum.agents);
-    } else if (agents.some((agent) => !isObject(agent) || !agent.value)) {
-      addIssue('classify_question_value_empty', NodeInputKeyEnum.agents);
-    }
-  }
-
-  if (node.data.flowNodeType === FlowNodeTypeEnum.code) {
-    const hasIncompleteDynamicInput = inputs.some((input) => {
-      if (
-        [NodeInputKeyEnum.code, NodeInputKeyEnum.codeType, NodeInputKeyEnum.addInputParam].includes(
-          input.key as NodeInputKeyEnum
-        ) ||
-        !input.canEdit
-      ) {
-        return false;
-      }
-      if (
-        isToolNode &&
-        isAgentGeneratedToolInput(
-          initToolInputTypeByDefaultMode(input, { allowUserChatInputAgentGenerated: true })
-        ) &&
-        canInputBeAgentGenerated(input)
-      ) {
-        return false;
-      }
-      return !input.key || !input.label || isEmptyReferenceValue(input.value);
-    });
-    if (hasIncompleteDynamicInput) {
-      addIssue('code_input_incomplete');
-    }
-  }
-
-  if (node.data.flowNodeType === FlowNodeTypeEnum.httpRequest468) {
-    if (isEmptyValue(getInputValue(NodeInputKeyEnum.httpReqUrl))) {
-      addIssue('http_url_empty', NodeInputKeyEnum.httpReqUrl);
-    }
-  }
-
-  if (node.data.flowNodeType === FlowNodeTypeEnum.contentExtract) {
-    const extractKeys = getInputValue(NodeInputKeyEnum.extractKeys);
-    if (!Array.isArray(extractKeys) || extractKeys.length === 0) {
-      addIssue('context_extract_empty', NodeInputKeyEnum.extractKeys);
-    }
-  }
-
-  if (node.data.flowNodeType === FlowNodeTypeEnum.loopRun) {
-    if (getInputValue(NodeInputKeyEnum.loopRunMode) === 'conditional') {
-      const childIds = getInputValue(NodeInputKeyEnum.childrenNodeIdList);
-      const childIdSet = new Set(Array.isArray(childIds) ? childIds : []);
-      const hasBreak = nodes.some(
-        (child) =>
-          childIdSet.has(child.data.nodeId) &&
-          child.data.flowNodeType === FlowNodeTypeEnum.loopRunBreak
-      );
-      if (!hasBreak) {
-        addIssue('loop_run_missing_break');
-      }
-    }
-  }
-
-  if (node.data.flowNodeType === FlowNodeTypeEnum.toolCall) {
-    const hasToolConnection = (graphIndex.bySource.get(node.data.nodeId) ?? []).some(
-      (edge) =>
-        edge.data.sourceHandle === NodeOutputKeyEnum.selectedTools && isSourceEdgeValid(edge)
-    );
-    if (!hasToolConnection && getInputValue(NodeInputKeyEnum.useAgentSandbox) !== true) {
-      addIssue('tool_call_empty', NodeInputKeyEnum.useAgentSandbox);
-    }
-  }
-
-  if (node.data.flowNodeType === FlowNodeTypeEnum.variableUpdate) {
-    const updateList = getInputValue(NodeInputKeyEnum.updateList);
-    const isUpdateValueEmpty = (item: Record<string, unknown>) => {
-      if (item.renderType === 'reference') return isEmptyReferenceValue(item.value);
-      if (item.arrayMode === 'clear' || item.booleanMode) return false;
-      const value = item.value;
-      return (
-        !Array.isArray(value) || value[1] === undefined || value[1] === null || value[1] === ''
-      );
-    };
-    if (
-      !Array.isArray(updateList) ||
-      updateList.length === 0 ||
-      updateList.some(
-        (item) =>
-          !isObject(item) || isEmptyReferenceValue(item.variable) || isUpdateValueEmpty(item)
-      )
-    ) {
-      addIssue('required_input_empty', NodeInputKeyEnum.updateList);
-    }
-  }
-
-  return issues;
+/** 环境事实缺省值：目录未知（跳过模型规则）、sandbox 可用（不产出 sandbox 问题）。 */
+const UNKNOWN_ENVIRONMENT: WorkflowEnvironment = {
+  sandbox: { configured: true, planSupported: true }
 };
 
 /** Issue 去重身份：同一节点上 code 与 field identity 相同即视为同一条问题。 */
@@ -246,12 +29,18 @@ const getIssueIdentity = (issue: WorkflowCheckIssue) => `${issue.code}\0${issue.
 export const createIssueModule = ({
   document,
   reference,
-  issueProvider
+  issueProvider,
+  getEnvironment
 }: {
   document: DocumentReadApi;
   reference: ReferenceReadApi;
   /** editor 注入的同步 Issue Provider；缺省时 Unified Issue View 只有文档确定性结果。 */
   issueProvider?: WorkflowIssueProvider;
+  /**
+   * editor 注入的同步环境事实来源。每轮派生调用一次且不做缓存，
+   * 因此实现必须同步且便宜；缺省时本轮不判定任何环境规则。
+   */
+  getEnvironment?: () => WorkflowEnvironment;
 }) => {
   /** 文档确定性检查结果；由 rebuildIssues 全量或按候选节点重算。 */
   let documentIssuesByNode = new Map<string, WorkflowCheckIssue[]>();
@@ -266,6 +55,7 @@ export const createIssueModule = ({
   const getIssuesByNode = () => issuesByNode;
   const getNodeIssues = (nodeId: string) => issuesByNode.get(nodeId) ?? [];
   const getConfigIssues = () => configIssues;
+  const readEnvironment = () => getEnvironment?.() ?? UNKNOWN_ENVIRONMENT;
 
   /** 文档检查是权威结果；provider 与文档同 code + field identity 的条目直接丢弃。 */
   const mergeIssues = (
@@ -444,68 +234,29 @@ export const createIssueModule = ({
     reachableNodeIds = nextReachableNodeIds;
   };
 
-  /** 根据当前 Document 更新 Issue View；局部事务只重算受影响节点。 */
+  /**
+   * 按当前 Document 与环境事实更新 Issue View；局部事务只重算受影响节点。
+   * 判定规则全在 issueRules，本函数只负责 scope、可达集合与结果身份复用。
+   */
   const rebuildIssues = (onlyNodeIds?: ReadonlySet<string>) => {
     const current = document.getDocument();
-    const graphIndex = document.getGraphIndex();
-    const isSourceEdgeValid = document.isSourceEdgeValid;
     const nextIssues = onlyNodeIds
       ? new Map(documentIssuesByNode)
       : new Map<string, WorkflowCheckIssue[]>();
     if (!onlyNodeIds) reachableNodeIds = calculateReachableNodeIds();
     const touchedNodeIds = new Set<string>();
+    const ruleInput: IssueRuleInput = {
+      document,
+      reference,
+      reachableNodeIds,
+      environment: readEnvironment()
+    };
 
     current.nodes
       .filter((node) => !onlyNodeIds || onlyNodeIds.has(node.data.nodeId))
       .forEach((node) => {
-        const issues: WorkflowCheckIssue[] = [];
-        const addIssue = (
-          code: WorkflowIssueCode,
-          inputKey?: string,
-          params?: Record<string, string>
-        ) => {
-          if (issues.some((issue) => issue.code === code && issue.inputKey === inputKey)) return;
-          issues.push({
-            nodeId: node.data.nodeId,
-            level: 'error',
-            code,
-            ...(inputKey ? { inputKey } : {}),
-            ...(params ? { params } : {})
-          });
-        };
-
-        node.data.inputs.forEach((input) => {
-          const value = input.value ?? input.defaultValue;
-          if (input.required && isEmptyValue(value)) {
-            addIssue('required_input_empty', input.key, { inputName: input.label ?? input.key });
-          }
-          reference.getFieldStatuses(node.data.nodeId, input).forEach((status) => {
-            const issue = issueForStatus({ node, input, status });
-            if (!issue) return;
-            addIssue(issue.code, issue.inputKey, issue.params);
-          });
-        });
-
-        collectNodeTypeIssues({
-          node,
-          nodes: current.nodes,
-          graphIndex,
-          isSourceEdgeValid
-        }).forEach(({ code, inputKey }) => addIssue(code, inputKey));
-
-        const incoming = (graphIndex.byTarget.get(node.data.nodeId) ?? []).some((edge) =>
-          isSourceEdgeValid(edge)
-        );
-        if (!incoming && !noUpstreamExemptTypes.has(node.data.flowNodeType)) {
-          addIssue('no_upstream');
-        } else if (
-          incoming &&
-          reachableNodeIds.size > 0 &&
-          !reachableNodeIds.has(node.data.nodeId) &&
-          !noUpstreamExemptTypes.has(node.data.flowNodeType)
-        ) {
-          addIssue('unreachable_from_start');
-        }
+        const issues = collectNodeIssues(ruleInput, node);
+        // 内容未变的节点沿用旧数组身份，节点 snapshot 缓存才不会整表失效。
         const previous = documentIssuesByNode.get(node.data.nodeId);
         nextIssues.set(
           node.data.nodeId,
@@ -519,6 +270,9 @@ export const createIssueModule = ({
       touchedNodeIds.add(nodeId);
     });
     documentIssuesByNode = nextIssues;
+    // 工作流级问题不属于任何节点，每轮按当前 chatConfig 与环境事实整体重算。
+    const nextConfigIssues = collectConfigIssues(ruleInput);
+    if (!valuesEqual(configIssues, nextConfigIssues)) configIssues = nextConfigIssues;
     // 全量重建后合并视图里可能残留已删除节点，按新旧 key 并集一起清理。
     if (!onlyNodeIds) issuesByNode.forEach((_issues, nodeId) => touchedNodeIds.add(nodeId));
     syncMergedView(touchedNodeIds);

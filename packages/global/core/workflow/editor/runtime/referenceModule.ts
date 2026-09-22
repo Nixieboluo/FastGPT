@@ -10,6 +10,7 @@ import {
   isWorkflowReferenceItem,
   workflowValueTypeIsCompatible
 } from '../utils';
+import { getWorkflowReferenceItemsFromValue } from '../referenceCheck';
 import { getWorkflowGlobalVariables } from '../variables';
 import type {
   FlowNodeInputItemType,
@@ -538,6 +539,39 @@ export const createReferenceModule = (document: DocumentReadApi) => {
     return result;
   };
 
+  /**
+   * 按值判定引用状态：ifElse 条件与 variableUpdate 条目的引用嵌在结构化 value 里，
+   * 不是独立字段，因此复用整字段的来源范围与类型兼容规则；malformed 数组同样报 invalid_reference。
+   */
+  const getValueStatuses = ({
+    value,
+    targetNodeId,
+    targetType
+  }: {
+    value: unknown;
+    targetNodeId: string;
+    targetType?: WorkflowIOValueTypeEnum;
+  }): WorkflowReferenceStatus[] => {
+    const statuses = getWorkflowReferenceItemsFromValue(value).map((reference) =>
+      getReferenceStatus({ reference, targetType, targetNodeId })
+    );
+    return hasMalformedReferenceArray(value) || (statuses.length === 0 && !isEmptyValue(value))
+      ? [{ code: 'invalid_reference' as const }, ...statuses]
+      : statuses;
+  };
+
+  /** 引用来源的值类型；来源缺失返回 undefined，调用方按 any 处理。 */
+  const getReferenceValueType = (reference: unknown) => {
+    if (!isWorkflowReferenceItem(reference)) return undefined;
+    const current = document.getDocument();
+    return getReferenceSource({
+      reference,
+      nodes: current.nodes,
+      chatConfig: current.chatConfig,
+      edges: current.edges
+    }).output?.valueType;
+  };
+
   /** 返回当前字段可选的实时来源；失效引用不会重新出现在选择列表。 */
   const getReferenceOptions = (
     nodeId: string,
@@ -631,6 +665,8 @@ export const createReferenceModule = (document: DocumentReadApi) => {
     commitTransaction,
     getStructureInvalidationFields,
     getFieldStatuses,
+    getValueStatuses,
+    getReferenceValueType,
     getReferenceOptions,
     invalidateFieldStatuses,
     pruneFieldStatusCache,

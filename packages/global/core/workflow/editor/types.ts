@@ -137,6 +137,11 @@ export type WorkflowIssueUpdate = DeepReadonly<{ nodeIds: string[] }>;
 /** Runtime 创建参数；editor 特性以只读依赖注入，Runtime 不反向依赖 app。 */
 export type WorkflowRuntimeOptions = {
   issueProvider?: WorkflowIssueProvider;
+  /**
+   * 同步的环境事实来源（模型目录与 sandbox）。Runtime 每轮派生调用一次且不缓存，
+   * 实现必须同步且便宜；缺省时本轮跳过所有环境规则。
+   */
+  getEnvironment?: () => WorkflowEnvironment;
 };
 
 /** 一次 history entry 的公开状态。 */

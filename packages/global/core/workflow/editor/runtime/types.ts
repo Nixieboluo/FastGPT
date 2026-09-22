@@ -11,6 +11,7 @@ import type {
 import type { StoreEdgeItemType } from '../../type/edge';
 import type { FlowNodeInputItemType, FlowNodeOutputItemType } from '../../type/io';
 import type { AppChatConfigType } from '../../../app/type';
+import type { WorkflowIOValueTypeEnum } from '../../constants';
 
 /** Runtime 内部私有契约；不通过 editor/index.ts 对外暴露。 */
 
@@ -139,6 +140,17 @@ export type ReferenceReadApi = {
     nodeId: string,
     field: FlowNodeInputItemType | FlowNodeOutputItemType
   ) => WorkflowReferenceStatus[];
+  /**
+   * 任意值的引用状态集合。ifElse 条件与 variableUpdate 条目的引用嵌在结构化 value 里，
+   * 不是独立字段，因此按值判定；来源范围与类型兼容规则和整字段完全一致。
+   */
+  readonly getValueStatuses: (args: {
+    value: unknown;
+    targetNodeId: string;
+    targetType?: WorkflowIOValueTypeEnum;
+  }) => WorkflowReferenceStatus[];
+  /** 引用来源的值类型；来源不存在时返回 undefined，调用方按 any 处理。 */
+  readonly getReferenceValueType: (reference: unknown) => WorkflowIOValueTypeEnum | undefined;
 };
 
 /**

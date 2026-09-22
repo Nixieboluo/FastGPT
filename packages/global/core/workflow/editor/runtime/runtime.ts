@@ -116,7 +116,8 @@ export const createWorkflowEditor = (
   const issue = createIssueModule({
     document,
     reference,
-    issueProvider: options.issueProvider
+    issueProvider: options.issueProvider,
+    getEnvironment: options.getEnvironment
   });
   const history = createHistoryModule();
 
