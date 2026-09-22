@@ -6,8 +6,7 @@ import { useContextSelector } from 'use-context-selector';
 import { ReactFlowProvider } from 'reactflow';
 import { AppContext } from '@/pageComponents/app/detail/context';
 import { materializeWorkflow } from '@/web/core/workflow/editor/codec';
-import { peekWorkflowModelDetails } from '@/web/core/workflow/modelData';
-import { checkWorkflowNodeIssues } from '@/web/core/workflow/workflowCheck';
+import { peekWorkflowEnvironmentModels } from '@/web/core/workflow/modelData';
 import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import {
   WorkflowHostContext,
@@ -32,8 +31,8 @@ vi.mock('@/web/core/workflow/localDraft/useWorkflowDraftLifecycle', () => ({
 }));
 vi.mock('@/web/core/workflow/modelData', () => ({
   getWorkflowModelDetails: vi.fn(async () => []),
-  // 目录未就绪：Issue Provider 不产出环境问题，host 版本历史行为不受影响。
-  peekWorkflowModelDetails: vi.fn(() => undefined)
+  // 目录未就绪：Runtime 跳过模型规则，host 版本历史行为不受影响。
+  peekWorkflowEnvironmentModels: vi.fn(() => undefined)
 }));
 vi.mock('@/web/core/workflow/workflowCheck', () => ({
   checkWorkflowNodeIssues: vi.fn(() => ({})),
@@ -145,7 +144,7 @@ describe('WorkflowHostProvider version history', () => {
     act(() => root.unmount());
   });
 
-  it('merges editor issue provider results into the runtime issue view', async () => {
+  it('exposes the runtime issue view hydrated from the document', async () => {
     const container = document.createElement('div');
     const root = createRoot(container);
     let host: WorkflowHostValue | undefined;
@@ -165,19 +164,6 @@ describe('WorkflowHostProvider version history', () => {
       },
       chatConfig: {},
       t
-    });
-    // 目录就绪 + 校验器产出一条环境问题：hydrate 阶段 provider 只被调用一次。
-    vi.mocked(peekWorkflowModelDetails).mockReturnValueOnce([]);
-    vi.mocked(checkWorkflowNodeIssues).mockReturnValueOnce({
-      answer: [
-        {
-          nodeId: 'answer',
-          nodeType: FlowNodeTypeEnum.answerNode,
-          level: 'error',
-          code: 'model_unavailable',
-          message: 'model_unavailable'
-        }
-      ]
     });
 
     const Observer = () => {
@@ -203,12 +189,13 @@ describe('WorkflowHostProvider version history', () => {
       host?.initRuntime(initial);
     });
 
-    // Workflow 与 Plugin host 共用这一份 provider 接线，issue 从 Runtime 统一读取面暴露。
+    // Issue View 由 Runtime 自己按文档规则算出；host 只负责注入环境事实。
+    expect(peekWorkflowEnvironmentModels).toHaveBeenCalled();
     expect(host?.runtime?.getNode('answer')?.issues.map((issue) => issue.code)).toContain(
-      'model_unavailable'
+      'required_input_empty'
     );
     expect(host?.runtime?.getWorkflow().issues.map((issue) => issue.code)).toContain(
-      'model_unavailable'
+      'required_input_empty'
     );
 
     act(() => root.unmount());

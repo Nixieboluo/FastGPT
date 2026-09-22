@@ -114,29 +114,14 @@ export type WorkflowEnvironment = {
   sandbox: { configured: boolean; planSupported: boolean };
 };
 
-/** Issue 刷新与 provider 调用共用的节点范围；'all' 表示整份文档。 */
+/** Issue 刷新范围；'all' 表示整份文档。 */
 export type WorkflowIssueScope = readonly string[] | 'all';
 
-/** Workflow Issue Provider 入参：当前派生阶段对应的只读 Workflow Snapshot 与本次范围。 */
-export type WorkflowIssueProviderInput = {
-  workflow: WorkflowSnapshot;
-  nodeIds: WorkflowIssueScope;
-};
-
-/**
- * editor 提供的同步 Issue Provider：只读 snapshot，返回依赖 editor 状态（模型、插件、
- * sandbox、语言）的结构化 issue。它不读取 Runtime，也不把 app 专属类型带进 Runtime。
- */
-export type WorkflowIssueProvider = (
-  input: WorkflowIssueProviderInput
-) => readonly WorkflowCheckIssue[];
-
-/** Issue-only 通知载荷：只带 Unified Issue View 实际变化的节点，不是 Workflow Change。 */
+/** Issue-only 通知载荷：只带 Issue View 实际变化的节点，不是 Workflow Change。 */
 export type WorkflowIssueUpdate = DeepReadonly<{ nodeIds: string[] }>;
 
 /** Runtime 创建参数；editor 特性以只读依赖注入，Runtime 不反向依赖 app。 */
 export type WorkflowRuntimeOptions = {
-  issueProvider?: WorkflowIssueProvider;
   /**
    * 同步的环境事实来源（模型目录与 sandbox）。Runtime 每轮派生调用一次且不缓存，
    * 实现必须同步且便宜；缺省时本轮跳过所有环境规则。
@@ -299,7 +284,7 @@ export type WorkflowRuntimePort = {
    */
   markSaved: (contentRevision: number) => void;
   /**
-   * 重跑 editor Issue Provider 并刷新 Unified Issue View。
+   * 按当前环境事实重算 Issue View。
    * 它不是 Workflow Command：Content Revision、History、Savepoint 与 dirty 全部不变，
    * 只通过 subscribeIssues 发布 issue-only 通知。
    */

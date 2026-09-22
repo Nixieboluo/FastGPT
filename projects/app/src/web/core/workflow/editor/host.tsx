@@ -2,7 +2,7 @@
  * 工作流编辑器 host 层：编辑器唯一的数据与生命周期边界。
  *
  * 拥有 Runtime 生命周期与 adapter 挂载、版本列表与整文档替换切换、Savepoint 与出站序列化入口、
- * Issue Provider 注入（与文档检查合并成 Unified Issue View）、Environment Issue 定时扫描与
+ * 环境事实注入（模型目录与 sandbox，供 Runtime 算 Issue View）、Environment Issue 定时扫描与
  * 按节点问题存储（含标红焦点与定位）、本地草稿与离开保护。
  * overlay/patchViewData 与投影供数是迁移期兼容面，随调用点迁移票逐步迁出。
  */
@@ -26,12 +26,18 @@ import {
   hydrateWorkflowEditor,
   type StoreWorkflow
 } from '@fastgpt/global/core/workflow/editor/protocol';
-import type { WorkflowRuntimePort } from '@fastgpt/global/core/workflow/editor/types';
+import type {
+  WorkflowEnvironment,
+  WorkflowRuntimePort
+} from '@fastgpt/global/core/workflow/editor/types';
 import type { CanonicalWorkflowData } from '@fastgpt/global/core/workflow/migration';
 import type { WorkflowCheckNodeIssueMap } from '@fastgpt/global/core/workflow/type/node';
 import { useWorkflowDraftLifecycle } from '@/web/core/workflow/localDraft/useWorkflowDraftLifecycle';
 import { useToast } from '@fastgpt/web/hooks/useToast';
-import { getWorkflowModelDetails, peekWorkflowModelDetails } from '@/web/core/workflow/modelData';
+import {
+  getWorkflowModelDetails,
+  peekWorkflowEnvironmentModels
+} from '@/web/core/workflow/modelData';
 import {
   checkWorkflowBeforeRunOrPublish,
   checkWorkflowNodeIssues
@@ -42,7 +48,6 @@ import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import { AppContext } from '@/pageComponents/app/detail/context';
 import { materializeWorkflow, serializeRuntime } from './codec';
-import { createWorkflowIssueProvider } from './issueProvider';
 import { createProjectionCache, projectRuntimeCanvas, type ViewDataOverlayMap } from './projection';
 import type { ViewOverlayPatch } from './canvas';
 import { WorkflowEditorProvider } from './react';
@@ -181,11 +186,16 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
     setAppDetailRef.current = setAppDetail;
   }, [setAppDetail]);
 
-  // Issue Provider 由 Runtime 同步调用，文案函数走 ref 后绑定：语言切换不需要重建 Runtime。
-  const tRef = useRef(t);
-  useEffect(() => {
-    tRef.current = t;
-  }, [t]);
+  /**
+   * Runtime 的环境事实来源：模型目录与 sandbox 开关。
+   * Runtime 每轮派生同步调用且不缓存，因此这里只读已就绪的 store 快照，不发请求。
+   */
+  const getEnvironment = useMemoizedFn(
+    (): WorkflowEnvironment => ({
+      models: peekWorkflowEnvironmentModels(),
+      sandbox: { configured: !!showSandbox, planSupported: enableSandbox }
+    })
+  );
 
   const bump = useMemoizedFn(() => {
     setRuntimeTick((tick) => tick + 1);
@@ -416,13 +426,8 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
   });
 
   const initRuntime = useMemoizedFn((content: CanonicalWorkflowData) => {
-    // provider 结果与文档检查合并成 Unified Issue View；Workflow 与 Plugin host 共用这一份接线。
-    const nextRuntime = hydrateWorkflowEditor(content, {
-      issueProvider: createWorkflowIssueProvider({
-        getModels: peekWorkflowModelDetails,
-        getT: () => tRef.current
-      })
-    });
+    // Issue View 由 Runtime 按文档规则与环境事实算出；Workflow 与 Plugin host 共用这一份接线。
+    const nextRuntime = hydrateWorkflowEditor(content, { getEnvironment });
     attachRuntime(nextRuntime);
     overlaysRef.current = {};
     resetIssueState();

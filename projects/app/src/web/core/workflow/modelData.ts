@@ -1,4 +1,8 @@
-import { getModelDetail, peekModelCatalog, peekModelDetail } from '@/web/core/ai/model/modelData';
+import {
+  getModelDetail,
+  matchesModelFilter,
+  peekModelCatalog
+} from '@/web/core/ai/model/modelData';
 import { getModelReferenceValue, isEmptyModelValue } from '@fastgpt/global/core/ai/modelReference';
 import { workflowModelKeyMappings } from '@fastgpt/global/core/workflow/utils';
 import type { FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
@@ -60,16 +64,15 @@ export const getWorkflowModelDetails = async (
 };
 
 /**
- * 同步解析工作流引用的模型详情，供 Issue Provider 使用（provider 必须是同步调用）。
- * 目录未就绪返回 undefined，与“没有引用模型”的空数组区分开：调用方据此跳过本轮环境校验，
+ * 同步读取当前团队可用的模型目录，作为 Runtime 的环境事实（getEnvironment 必须同步）。
+ * 目录未就绪返回 undefined，与“目录为空”区分开：调用方据此跳过本轮模型规则，
  * 目录就绪后由 host 触发一次 Issue 刷新补上结果。
  */
-export const peekWorkflowModelDetails = (
-  nodes: { data: FlowNodeItemType }[],
-  chatConfig?: AppChatConfigType
-) => {
-  if (!peekModelCatalog()) return undefined;
-  return collectWorkflowModelReferences(nodes, chatConfig)
-    .map(peekModelDetail)
-    .filter((model) => model !== undefined);
+export const peekWorkflowEnvironmentModels = () => {
+  const catalog = peekModelCatalog();
+  if (!catalog) return undefined;
+  // 与 peekModelDetail 共用同一份过滤规则，避免可选列表和可用性校验出现两套口径。
+  return catalog.modelList
+    .filter((model) => matchesModelFilter(model, {}))
+    .map((model) => ({ modelId: model.modelId, model: model.model, type: model.type }));
 };

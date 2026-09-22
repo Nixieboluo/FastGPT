@@ -11,12 +11,11 @@ import type {
   WorkflowChange,
   WorkflowCommand,
   WorkflowDispatchResult,
-  WorkflowIssueProviderInput,
+  WorkflowEnvironment,
   WorkflowIssueUpdate,
   WorkflowRuntimePort
 } from '@fastgpt/global/core/workflow/editor/types';
-import type { WorkflowCheckIssue } from '@fastgpt/global/core/workflow/type/node';
-import type { WorkflowIssueCode } from '@fastgpt/global/core/workflow/editor/issueCode';
+import { ModelTypeEnum } from '@fastgpt/global/core/ai/constants';
 
 const createRuntime = (): WorkflowRuntimePort => {
   const editor = createWorkflowEditor({
@@ -892,9 +891,8 @@ describe('workflow editor runtime modules', () => {
     expect(editor.getDebug).toBeUndefined();
   });
 });
-
-/** Issue provider 夹具：answer 无文档问题，http 恒定带 http_url_empty 与 no_upstream。 */
-const createProviderFixture = () => ({
+/** 环境事实夹具：chat 依赖模型目录，tool 依赖 sandbox 开关。 */
+const createEnvironmentFixture = (chatConfig: Record<string, unknown> = {}) => ({
   nodes: [
     {
       nodeId: 'start',
@@ -911,205 +909,121 @@ const createProviderFixture = () => ({
       ]
     },
     {
-      nodeId: 'answer',
-      flowNodeType: FlowNodeTypeEnum.answerNode,
-      name: 'Answer',
+      nodeId: 'chat',
+      flowNodeType: FlowNodeTypeEnum.chatNode,
+      name: 'Chat',
       inputs: [
         {
-          key: NodeInputKeyEnum.answerText,
-          label: 'Answer',
-          renderTypeList: [FlowNodeInputTypeEnum.reference],
-          selectedType: FlowNodeInputTypeEnum.reference,
-          valueType: WorkflowIOValueTypeEnum.string
+          key: NodeInputKeyEnum.aiModelId,
+          label: 'Model',
+          renderTypeList: [FlowNodeInputTypeEnum.selectLLMModel],
+          selectedType: FlowNodeInputTypeEnum.selectLLMModel,
+          valueType: WorkflowIOValueTypeEnum.string,
+          required: true
         }
       ],
       outputs: []
     },
     {
-      nodeId: 'http',
-      flowNodeType: FlowNodeTypeEnum.httpRequest468,
-      name: 'HTTP',
-      inputs: [],
+      nodeId: 'tool',
+      flowNodeType: FlowNodeTypeEnum.toolCall,
+      name: 'Tool',
+      inputs: [
+        {
+          key: NodeInputKeyEnum.useAgentSandbox,
+          label: 'Sandbox',
+          renderTypeList: [FlowNodeInputTypeEnum.switch],
+          valueType: WorkflowIOValueTypeEnum.boolean,
+          value: true
+        }
+      ],
       outputs: []
     }
   ],
-  edges: [{ source: 'start', target: 'answer', sourceHandle: 'source', targetHandle: 'target' }],
-  chatConfig: {}
+  edges: [
+    { source: 'start', target: 'chat', sourceHandle: 'source', targetHandle: 'target' },
+    { source: 'chat', target: 'tool', sourceHandle: 'source', targetHandle: 'target' }
+  ],
+  chatConfig
 });
 
-const createProviderIssue = ({
-  nodeId,
-  code,
-  message = code,
-  inputKey
-}: {
-  nodeId: string;
-  code: WorkflowIssueCode;
-  message?: string;
-  inputKey?: string;
-}): WorkflowCheckIssue => ({
-  nodeId,
-  nodeType: nodeId === 'http' ? FlowNodeTypeEnum.httpRequest468 : FlowNodeTypeEnum.answerNode,
-  level: 'error',
-  code,
-  message,
-  ...(inputKey ? { inputKey } : {})
-});
+const LLM_MODELS = [{ modelId: 'llm-1', model: 'llm-1', type: ModelTypeEnum.llm }];
 
-const readAnswerText = (call: WorkflowIssueProviderInput) =>
-  call.workflow.nodes
-    .find((node) => node.nodeId === 'answer')
-    ?.inputs.find((input) => input.key === NodeInputKeyEnum.answerText)?.value;
-
-describe('workflow issue provider', () => {
-  it('merges provider issues with document issues in one view', () => {
-    const editor = createWorkflowEditor(createProviderFixture(), {
-      issueProvider: () => [
-        createProviderIssue({ nodeId: 'answer', code: 'model_unavailable' }),
-        // 与文档检查同 code + field identity 的条目由文档结果胜出，合并后不出现重复。
-        createProviderIssue({
-          nodeId: 'http',
-          code: 'http_url_empty',
-          message: 'provider copy',
-          inputKey: NodeInputKeyEnum.httpReqUrl
-        })
-      ]
-    });
-
-    expect(editor.getNode('answer')?.issues.map((issue) => issue.code)).toEqual([
-      'model_unavailable'
-    ]);
-    const httpIssues = editor.getNode('http')?.issues ?? [];
-    expect(httpIssues.filter((issue) => issue.code === 'http_url_empty')).toHaveLength(1);
-    expect(httpIssues.find((issue) => issue.code === 'http_url_empty')?.message).not.toBe(
-      'provider copy'
-    );
-    expect(httpIssues.map((issue) => issue.code)).toContain('no_upstream');
-    expect(editor.getWorkflow().issues.map((issue) => issue.code)).toContain('model_unavailable');
-  });
-
-  it('hands the provider the snapshot of the stage that triggered it', () => {
-    const calls: WorkflowIssueProviderInput[] = [];
-    const editor = createWorkflowEditor(createProviderFixture(), {
-      issueProvider: (input) => {
-        calls.push(input);
-        return [];
-      }
-    });
-
-    calls.length = 0;
-    editor.dispatch({
-      type: 'updateField',
-      nodeId: 'answer',
-      fieldKey: NodeInputKeyEnum.answerText,
-      value: 'hello'
-    });
-    expect(calls).toHaveLength(1);
-    // 普通事务按受影响节点定向调用，读到的已经是本笔事务提交后的文档。
-    expect(calls[0].nodeIds).not.toBe('all');
-    expect([...(calls[0].nodeIds as readonly string[])]).toContain('answer');
-    expect(readAnswerText(calls[0])).toBe('hello');
-
-    calls.length = 0;
-    editor.undo();
-    expect(calls).toHaveLength(1);
-    expect(calls[0].nodeIds).toBe('all');
-    expect(readAnswerText(calls[0])).toBeUndefined();
-
-    calls.length = 0;
-    editor.redo();
-    expect(calls).toHaveLength(1);
-    expect(calls[0].nodeIds).toBe('all');
-    expect(readAnswerText(calls[0])).toBe('hello');
-
-    calls.length = 0;
-    editor.dispatch({
-      type: 'replaceDocument',
-      document: { nodes: [], edges: [], chatConfig: {} }
-    });
-    expect(calls).toHaveLength(1);
-    expect(calls[0].nodeIds).toBe('all');
-    expect(calls[0].workflow.nodes).toEqual([]);
-  });
-
-  it('refreshes issues without a workflow change, history entry or dirty state', () => {
-    let environmentIssues: WorkflowCheckIssue[] = [
-      createProviderIssue({ nodeId: 'answer', code: 'model_unavailable' })
-    ];
-    const editor = createWorkflowEditor(createProviderFixture(), {
-      issueProvider: () => environmentIssues
+describe('workflow environment facts', () => {
+  it('skips model rules until the catalog is ready, then refreshes without a workflow change', () => {
+    // 用对象承载目录：模拟“先未就绪、后就绪”，getEnvironment 每轮读当前值。
+    const environment: { models?: WorkflowEnvironment['models'] } = {};
+    const editor = createWorkflowEditor(createEnvironmentFixture(), {
+      getEnvironment: () => ({
+        models: environment.models,
+        sandbox: { configured: true, planSupported: true }
+      })
     });
     const changes: WorkflowChange[] = [];
     const updates: WorkflowIssueUpdate[] = [];
     editor.subscribe((change) => changes.push(change));
     editor.subscribeIssues((update) => updates.push(update));
-    editor.dispatch({
-      type: 'updateField',
-      nodeId: 'answer',
-      fieldKey: NodeInputKeyEnum.answerText,
-      value: 'hello'
-    });
+    // 目录未就绪时不判定模型规则，冷启动阶段不会误报模型不可用。
+    expect(editor.getNode('chat')?.issues.map((issue) => issue.code)).not.toContain(
+      'model_required'
+    );
+
     const savepoint = editor.getSavepoint();
     const history = editor.getHistory();
-
-    environmentIssues = [];
+    environment.models = LLM_MODELS;
     const update = editor.refreshIssues('all');
 
-    expect(update.nodeIds).toEqual(['answer']);
+    // 目录就绪后，chat 与 tool 的模型规则同时生效；顺序按文档节点顺序。
+    expect(update.nodeIds).toEqual(['chat', 'tool']);
     expect(updates).toEqual([update]);
-    // provider 结果被清掉，文档检查（'hello' 不是合法引用）继续留在同一个视图里。
-    expect(editor.getNode('answer')?.issues.map((issue) => issue.code)).toEqual([
-      'invalid_reference'
-    ]);
-    expect(editor.getWorkflow().issues.map((issue) => issue.code)).not.toContain(
-      'model_unavailable'
-    );
-    // Issue 刷新不是 Workflow Change，也不改 Content Revision、History 与 dirty。
-    expect(changes).toHaveLength(1);
+    expect(editor.getNode('chat')?.issues.map((issue) => issue.code)).toContain('model_required');
+    // 环境刷新不是 Workflow Change，也不改 Content Revision、History 与 dirty。
+    expect(changes).toHaveLength(0);
     expect(editor.getSavepoint()).toEqual(savepoint);
     expect(editor.getHistory()).toEqual(history);
-
-    environmentIssues = [
-      createProviderIssue({ nodeId: 'answer', code: 'model_unavailable' }),
-      createProviderIssue({ nodeId: 'http', code: 'tool_missing' })
-    ];
-    const scoped = editor.refreshIssues(['http']);
-    expect(scoped.nodeIds).toEqual(['http']);
-    // 定向刷新只替换 scope 内的 provider 分桶，其余节点沿用上一轮结果。
-    expect(editor.getNode('http')?.issues.map((issue) => issue.code)).toContain('tool_missing');
-    expect(editor.getNode('answer')?.issues.map((issue) => issue.code)).not.toContain(
-      'model_unavailable'
-    );
-    expect(changes).toHaveLength(1);
   });
 
-  it('keeps the previous provider result when the provider throws', () => {
-    let failing = false;
-    const editor = createWorkflowEditor(createProviderFixture(), {
-      issueProvider: () => {
-        if (failing) throw new Error('provider boom');
-        return [createProviderIssue({ nodeId: 'answer', code: 'model_unavailable' })];
-      }
+  it('reports sandbox facts on the field that enables the sandbox', () => {
+    const editor = createWorkflowEditor(createEnvironmentFixture(), {
+      getEnvironment: () => ({ models: [], sandbox: { configured: false, planSupported: true } })
     });
-    expect(editor.getNode('answer')?.issues.map((issue) => issue.code)).toEqual([
-      'model_unavailable'
-    ]);
-
-    failing = true;
-    const result = editor.dispatch({
-      type: 'updateField',
-      nodeId: 'answer',
-      fieldKey: NodeInputKeyEnum.answerText,
-      value: 'hello'
-    });
-
-    expect(result.ok).toBe(true);
     expect(
-      editor.getField({ nodeId: 'answer', fieldKey: NodeInputKeyEnum.answerText })?.input?.value
-    ).toBe('hello');
-    expect(editor.getNode('answer')?.issues.map((issue) => issue.code)).toContain(
-      'model_unavailable'
+      editor.getNode('tool')?.issues.map((issue) => [issue.code, issue.inputKey])
+    ).toContainEqual(['sandbox_not_configured', NodeInputKeyEnum.useAgentSandbox]);
+  });
+
+  it('recomputes only the scoped nodes on a targeted refresh', () => {
+    let configured = false;
+    const editor = createWorkflowEditor(createEnvironmentFixture(), {
+      getEnvironment: () => ({ models: [], sandbox: { configured, planSupported: true } })
+    });
+    expect(editor.getNode('tool')?.issues.map((issue) => issue.code)).toContain(
+      'sandbox_not_configured'
     );
-    expect(editor.refreshIssues('all').nodeIds).toEqual([]);
+
+    configured = true;
+    expect(editor.refreshIssues(['tool']).nodeIds).toEqual(['tool']);
+    expect(editor.getNode('tool')?.issues.map((issue) => issue.code)).not.toContain(
+      'sandbox_not_configured'
+    );
+    // 环境事实没有变化时，定向刷新不产生通知。
+    expect(editor.refreshIssues(['tool']).nodeIds).toEqual([]);
+  });
+
+  it('keeps chat config model issues in their own bucket', () => {
+    const editor = createWorkflowEditor(
+      createEnvironmentFixture({ questionGuide: { open: true, modelId: 'gone' } }),
+      {
+        getEnvironment: () => ({
+          models: LLM_MODELS,
+          sandbox: { configured: true, planSupported: true }
+        })
+      }
+    );
+    // chatConfig 的模型问题不属于任何画布节点，单独成桶供 gate 排在提示文案最后。
+    expect(editor.getWorkflow().chatConfigIssues.map((issue) => issue.code)).toEqual([
+      'model_unavailable_short'
+    ]);
+    expect(editor.getWorkflow().issues.every((issue) => !!issue.nodeId)).toBe(true);
   });
 });
