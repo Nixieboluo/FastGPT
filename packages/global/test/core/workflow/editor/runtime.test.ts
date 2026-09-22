@@ -16,6 +16,7 @@ import type {
   WorkflowRuntimePort
 } from '@fastgpt/global/core/workflow/editor/types';
 import type { WorkflowCheckIssue } from '@fastgpt/global/core/workflow/type/node';
+import type { WorkflowIssueCode } from '@fastgpt/global/core/workflow/editor/issueCode';
 
 const createRuntime = (): WorkflowRuntimePort => {
   const editor = createWorkflowEditor({
@@ -943,7 +944,7 @@ const createProviderIssue = ({
   inputKey
 }: {
   nodeId: string;
-  code: string;
+  code: WorkflowIssueCode;
   message?: string;
   inputKey?: string;
 }): WorkflowCheckIssue => ({

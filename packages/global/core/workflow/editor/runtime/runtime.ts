@@ -234,7 +234,8 @@ export const createWorkflowEditor = (
       nodes: current.nodes.map((node) => getNodeSnapshot(node.data.nodeId)!),
       edges: current.edges.map((edge) => cloneValue(edge.data)) as WorkflowEdgeSnapshot[],
       chatConfig: cloneValue(current.chatConfig),
-      issues: Array.from(issue.getIssuesByNode().values()).flatMap((issues) => cloneValue(issues))
+      issues: Array.from(issue.getIssuesByNode().values()).flatMap((issues) => cloneValue(issues)),
+      chatConfigIssues: cloneValue(issue.getConfigIssues())
     }) as WorkflowSnapshot;
     workflowSnapshotCache = { version: semanticVersion, snapshot };
     return snapshot;

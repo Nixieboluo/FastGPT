@@ -6,7 +6,10 @@ import { getAppVersionList } from '@/web/core/app/api/version';
 import { getTeamToolVersions } from '@/web/core/plugin/team/api';
 import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { storeNode2FlowNode } from '@/web/core/workflow/utils';
-import { getWorkflowCheckIssueUIStatus } from '@/web/core/workflow/workflowCheck';
+import {
+  getWorkflowIssueUIStatus,
+  renderWorkflowIssueMessage
+} from '@/web/core/workflow/issueView';
 import { Box, Button, Flex, type FlexProps } from '@chakra-ui/react';
 import { getNanoid } from '@fastgpt/global/common/string/tools';
 import { LOGO_ICON } from '@fastgpt/global/common/system/constants';
@@ -543,7 +546,7 @@ export default React.memo(NodeCard);
 const WorkflowCheckIssueStatusIcon = React.memo(function WorkflowCheckIssueStatusIcon({
   status
 }: {
-  status: ReturnType<typeof getWorkflowCheckIssueUIStatus>;
+  status: ReturnType<typeof getWorkflowIssueUIStatus>;
 }) {
   return (
     <MyIcon
@@ -577,7 +580,7 @@ const NodeWorkflowCheckIssues = React.memo(function NodeWorkflowCheckIssues({
   return (
     <Flex flexDirection={'column'} alignItems={'flex-start'} gap={'8px'} mt={2}>
       {issues.map((issue, index) => {
-        const status = getWorkflowCheckIssueUIStatus(issue.code);
+        const status = getWorkflowIssueUIStatus(issue.code);
         // 显式保留静态 key，避免 i18n 清理脚本误删状态前缀文案。
         const statusPrefixText =
           status === 'pending_handle'
@@ -609,7 +612,7 @@ const NodeWorkflowCheckIssues = React.memo(function NodeWorkflowCheckIssues({
               wordBreak={'break-word'}
               {...workflowCheckIssueTextStyle}
             >
-              {issue.message.trim()}
+              {renderWorkflowIssueMessage(issue, t)}
             </Box>
           </Flex>
         );

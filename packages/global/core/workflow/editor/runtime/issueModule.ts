@@ -1,22 +1,22 @@
-import { NodeInputKeyEnum, NodeOutputKeyEnum, WorkflowIOValueTypeEnum } from '../../constants';
+import { NodeInputKeyEnum, NodeOutputKeyEnum } from '../../constants';
 import { FlowNodeTypeEnum } from '../../node/constant';
 import {
   canInputBeAgentGenerated,
   initToolInputTypeByDefaultMode,
   isAgentGeneratedToolInput
 } from '../../../app/formEdit/utils';
-import { nodeInputIsReference } from '../../utils';
 import { isEmptyReferenceValue } from '../utils';
 import type { FlowNodeInputItemType } from '../../type/io';
 import type { WorkflowCheckIssue } from '../../type/node';
+import type { WorkflowIssueCode } from '../issueCode';
 import type {
+  WorkflowConfigIssue,
   WorkflowIssueProvider,
   WorkflowIssueScope,
   WorkflowReferenceStatus,
   WorkflowSnapshot
 } from '../types';
 import { addFieldIdentity, isEmptyValue, isObject, valuesEqual } from './kernel';
-import { getPlacementError } from './documentRules';
 import type {
   DocumentReadApi,
   EdgeRecord,
@@ -41,28 +41,6 @@ const noUpstreamExemptTypes = new Set<FlowNodeTypeEnum>([
   FlowNodeTypeEnum.emptyNode
 ]);
 
-/** 检查已提交普通字段的基础值类型；引用字段由 Reference View 负责类型诊断。 */
-const hasExpectedValueType = (value: unknown, valueType: WorkflowIOValueTypeEnum | undefined) => {
-  if (!valueType || valueType === WorkflowIOValueTypeEnum.any) return true;
-  if (
-    valueType === WorkflowIOValueTypeEnum.chatHistory ||
-    valueType === WorkflowIOValueTypeEnum.datasetQuote ||
-    valueType === WorkflowIOValueTypeEnum.dynamic ||
-    valueType === WorkflowIOValueTypeEnum.selectApp ||
-    valueType === WorkflowIOValueTypeEnum.selectDataset
-  ) {
-    return true;
-  }
-  if (valueType === WorkflowIOValueTypeEnum.string) return typeof value === 'string';
-  if (valueType === WorkflowIOValueTypeEnum.number)
-    return typeof value === 'number' && Number.isFinite(value);
-  if (valueType === WorkflowIOValueTypeEnum.boolean) return typeof value === 'boolean';
-  if (valueType === WorkflowIOValueTypeEnum.object)
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
-  if (valueType.startsWith('array')) return Array.isArray(value);
-  return true;
-};
-
 /** 将非正常引用状态转换为稳定的 Issue View 记录。 */
 const issueForStatus = ({
   node,
@@ -74,20 +52,12 @@ const issueForStatus = ({
   status: WorkflowReferenceStatus;
 }): WorkflowCheckIssue | undefined => {
   if (status.code === 'valid' || status.code === 'empty') return undefined;
-  const message =
-    status.code === 'invalid_reference_type'
-      ? `Input ${input.label} has an incompatible reference type`
-      : status.code === 'unreachable_reference'
-        ? `Input ${input.label} references an unreachable node`
-        : `Input ${input.label} has an invalid reference`;
   return {
     nodeId: node.data.nodeId,
-    nodeName: node.data.name,
-    nodeType: node.data.flowNodeType,
     level: 'error',
     code: status.code,
-    message,
-    inputKey: input.key
+    inputKey: input.key,
+    params: { inputName: input.label ?? input.key }
   };
 };
 
@@ -106,9 +76,9 @@ const collectNodeTypeIssues = ({
   graphIndex: GraphIndex;
   isSourceEdgeValid: (edge: EdgeRecord) => boolean;
 }) => {
-  const issues: { code: string; message: string; inputKey?: string }[] = [];
-  const addIssue = (code: string, message: string, inputKey?: string) => {
-    issues.push({ code, message, ...(inputKey ? { inputKey } : {}) });
+  const issues: { code: WorkflowIssueCode; inputKey?: string }[] = [];
+  const addIssue = (code: WorkflowIssueCode, inputKey?: string) => {
+    issues.push({ code, ...(inputKey ? { inputKey } : {}) });
   };
   const inputs = node.data.inputs;
   const inputMap = new Map(inputs.map((input) => [input.key, input]));
@@ -145,66 +115,38 @@ const collectNodeTypeIssues = ({
           })
       );
     if (hasIncompleteCondition) {
-      addIssue(
-        'if_else_incomplete',
-        'If/Else contains an incomplete condition',
-        NodeInputKeyEnum.ifElseList
-      );
+      addIssue('if_else_incomplete', NodeInputKeyEnum.ifElseList);
     }
   }
 
   if (node.data.flowNodeType === FlowNodeTypeEnum.userSelect) {
     const options = getInputValue(NodeInputKeyEnum.userSelectOptions);
     if (!Array.isArray(options) || options.length === 0) {
-      addIssue(
-        'user_select_empty',
-        'User selection needs at least one option',
-        NodeInputKeyEnum.userSelectOptions
-      );
+      addIssue('user_select_empty', NodeInputKeyEnum.userSelectOptions);
     } else if (options.some((option) => !isObject(option) || !option.value)) {
-      addIssue(
-        'user_select_value_empty',
-        'User selection options cannot be empty',
-        NodeInputKeyEnum.userSelectOptions
-      );
+      addIssue('user_select_value_empty', NodeInputKeyEnum.userSelectOptions);
     }
   }
 
   if (node.data.flowNodeType === FlowNodeTypeEnum.formInput) {
     const forms = getInputValue(NodeInputKeyEnum.userInputForms);
     if (!Array.isArray(forms) || forms.length === 0) {
-      addIssue(
-        'form_input_empty',
-        'Form input needs at least one field',
-        NodeInputKeyEnum.userInputForms
-      );
+      addIssue('form_input_empty', NodeInputKeyEnum.userInputForms);
     }
   }
 
   if (node.data.flowNodeType === FlowNodeTypeEnum.datasetConcatNode) {
     if (!inputs.some((input) => input.canEdit)) {
-      addIssue(
-        'required_input_empty',
-        'Dataset concat needs at least one dataset quote',
-        NodeInputKeyEnum.datasetQuoteList
-      );
+      addIssue('required_input_empty', NodeInputKeyEnum.datasetQuoteList);
     }
   }
 
   if (node.data.flowNodeType === FlowNodeTypeEnum.classifyQuestion) {
     const agents = getInputValue(NodeInputKeyEnum.agents);
     if (!Array.isArray(agents) || agents.length === 0) {
-      addIssue(
-        'classify_question_empty',
-        'Classification needs at least one category',
-        NodeInputKeyEnum.agents
-      );
+      addIssue('classify_question_empty', NodeInputKeyEnum.agents);
     } else if (agents.some((agent) => !isObject(agent) || !agent.value)) {
-      addIssue(
-        'classify_question_value_empty',
-        'Classification values cannot be empty',
-        NodeInputKeyEnum.agents
-      );
+      addIssue('classify_question_value_empty', NodeInputKeyEnum.agents);
     }
   }
 
@@ -230,24 +172,20 @@ const collectNodeTypeIssues = ({
       return !input.key || !input.label || isEmptyReferenceValue(input.value);
     });
     if (hasIncompleteDynamicInput) {
-      addIssue('code_input_incomplete', 'Code input variables are incomplete');
+      addIssue('code_input_incomplete');
     }
   }
 
   if (node.data.flowNodeType === FlowNodeTypeEnum.httpRequest468) {
     if (isEmptyValue(getInputValue(NodeInputKeyEnum.httpReqUrl))) {
-      addIssue('http_url_empty', 'HTTP request needs a URL', NodeInputKeyEnum.httpReqUrl);
+      addIssue('http_url_empty', NodeInputKeyEnum.httpReqUrl);
     }
   }
 
   if (node.data.flowNodeType === FlowNodeTypeEnum.contentExtract) {
     const extractKeys = getInputValue(NodeInputKeyEnum.extractKeys);
     if (!Array.isArray(extractKeys) || extractKeys.length === 0) {
-      addIssue(
-        'context_extract_empty',
-        'Content extraction needs at least one target field',
-        NodeInputKeyEnum.extractKeys
-      );
+      addIssue('context_extract_empty', NodeInputKeyEnum.extractKeys);
     }
   }
 
@@ -261,7 +199,7 @@ const collectNodeTypeIssues = ({
           child.data.flowNodeType === FlowNodeTypeEnum.loopRunBreak
       );
       if (!hasBreak) {
-        addIssue('loop_run_missing_break', 'Conditional loop needs a Loop Break node');
+        addIssue('loop_run_missing_break');
       }
     }
   }
@@ -272,11 +210,7 @@ const collectNodeTypeIssues = ({
         edge.data.sourceHandle === NodeOutputKeyEnum.selectedTools && isSourceEdgeValid(edge)
     );
     if (!hasToolConnection && getInputValue(NodeInputKeyEnum.useAgentSandbox) !== true) {
-      addIssue(
-        'tool_call_empty',
-        'Tool call needs a tool or the agent sandbox',
-        NodeInputKeyEnum.useAgentSandbox
-      );
+      addIssue('tool_call_empty', NodeInputKeyEnum.useAgentSandbox);
     }
   }
 
@@ -298,11 +232,7 @@ const collectNodeTypeIssues = ({
           !isObject(item) || isEmptyReferenceValue(item.variable) || isUpdateValueEmpty(item)
       )
     ) {
-      addIssue(
-        'required_input_empty',
-        'Variable update contains an incomplete item',
-        NodeInputKeyEnum.updateList
-      );
+      addIssue('required_input_empty', NodeInputKeyEnum.updateList);
     }
   }
 
@@ -329,10 +259,13 @@ export const createIssueModule = ({
   let providerIssuesByNode = new Map<string, WorkflowCheckIssue[]>();
   /** Unified Issue View：两个来源合并后的唯一读取面，对外只暴露这一份。 */
   let issuesByNode = new Map<string, WorkflowCheckIssue[]>();
+  /** 工作流级问题桶：chatConfig 的模型问题不属于任何节点。 */
+  let configIssues: WorkflowConfigIssue[] = [];
   let reachableNodeIds = new Set<string>();
 
   const getIssuesByNode = () => issuesByNode;
   const getNodeIssues = (nodeId: string) => issuesByNode.get(nodeId) ?? [];
+  const getConfigIssues = () => configIssues;
 
   /** 文档检查是权威结果；provider 与文档同 code + field identity 的条目直接丢弃。 */
   const mergeIssues = (
@@ -526,33 +459,30 @@ export const createIssueModule = ({
       .filter((node) => !onlyNodeIds || onlyNodeIds.has(node.data.nodeId))
       .forEach((node) => {
         const issues: WorkflowCheckIssue[] = [];
-        const addIssue = (code: string, message: string, inputKey?: string) => {
+        const addIssue = (
+          code: WorkflowIssueCode,
+          inputKey?: string,
+          params?: Record<string, string>
+        ) => {
           if (issues.some((issue) => issue.code === code && issue.inputKey === inputKey)) return;
           issues.push({
             nodeId: node.data.nodeId,
-            nodeName: node.data.name,
-            nodeType: node.data.flowNodeType,
             level: 'error',
             code,
-            message,
-            ...(inputKey ? { inputKey } : {})
+            ...(inputKey ? { inputKey } : {}),
+            ...(params ? { params } : {})
           });
         };
 
         node.data.inputs.forEach((input) => {
           const value = input.value ?? input.defaultValue;
           if (input.required && isEmptyValue(value)) {
-            addIssue('required', `Input ${input.label} is required`, input.key);
-          } else if (
-            !isEmptyValue(value) &&
-            !nodeInputIsReference(input) &&
-            !hasExpectedValueType(value, input.valueType)
-          ) {
-            addIssue('invalid_type', `Input ${input.label} has an invalid value type`, input.key);
+            addIssue('required_input_empty', input.key, { inputName: input.label ?? input.key });
           }
           reference.getFieldStatuses(node.data.nodeId, input).forEach((status) => {
             const issue = issueForStatus({ node, input, status });
-            if (issue) addIssue(issue.code, issue.message, issue.inputKey);
+            if (!issue) return;
+            addIssue(issue.code, issue.inputKey, issue.params);
           });
         });
 
@@ -561,31 +491,20 @@ export const createIssueModule = ({
           nodes: current.nodes,
           graphIndex,
           isSourceEdgeValid
-        }).forEach(({ code, message, inputKey }) => addIssue(code, message, inputKey));
-
-        if (getPlacementError({ working: current, node, parentId: node.data.parentNodeId })) {
-          addIssue('invalid_placement', 'Node placement is not allowed');
-        }
+        }).forEach(({ code, inputKey }) => addIssue(code, inputKey));
 
         const incoming = (graphIndex.byTarget.get(node.data.nodeId) ?? []).some((edge) =>
           isSourceEdgeValid(edge)
         );
         if (!incoming && !noUpstreamExemptTypes.has(node.data.flowNodeType)) {
-          issues.push({
-            nodeId: node.data.nodeId,
-            nodeName: node.data.name,
-            nodeType: node.data.flowNodeType,
-            level: 'warning',
-            code: 'no_upstream',
-            message: 'Node is not connected to an upstream node'
-          });
+          addIssue('no_upstream');
         } else if (
           incoming &&
           reachableNodeIds.size > 0 &&
           !reachableNodeIds.has(node.data.nodeId) &&
           !noUpstreamExemptTypes.has(node.data.flowNodeType)
         ) {
-          addIssue('unreachable_from_start', 'Node cannot be reached from a workflow start node');
+          addIssue('unreachable_from_start');
         }
         const previous = documentIssuesByNode.get(node.data.nodeId);
         nextIssues.set(
@@ -667,12 +586,14 @@ export const createIssueModule = ({
     documentIssuesByNode = new Map();
     providerIssuesByNode = new Map();
     issuesByNode = new Map();
+    configIssues = [];
     reachableNodeIds = new Set();
   };
 
   return {
     getIssuesByNode,
     getNodeIssues,
+    getConfigIssues,
     rebuildIssues,
     rebuildAll,
     refreshProviderIssues,

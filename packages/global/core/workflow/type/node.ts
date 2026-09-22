@@ -10,6 +10,7 @@ import { PluginStatusSchema } from '../../plugin/type';
 import { SourceMemberSchema } from '../../../support/user/type';
 import z from 'zod';
 import { BoolSchema, NumSchema } from '../../../common/zod';
+import { WorkflowIssueCodeSchema } from '../editor/issueCode';
 
 export const McpToolSetRuntimeConfigSchema = z.object({
   url: z.string().meta({
@@ -322,14 +323,23 @@ export type NodeTemplateListType = z.infer<typeof NodeTemplateListTypeSchema>;
 export const WorkflowCheckIssueLevelSchema = z.enum(['error', 'warning']);
 export type WorkflowCheckIssueLevel = z.infer<typeof WorkflowCheckIssueLevelSchema>;
 
+/**
+ * 一条工作流问题：只携带稳定标识与插值参数，不携带文案。
+ * 文案由渲染层按 code 查 i18n key，并对 params.inputName 再翻译一次（label 原样是 i18n key），
+ * 因此语言切换不需要重算 Issue View。
+ */
 export const WorkflowCheckIssueSchema = z.object({
   nodeId: z.string(),
+  /** @deprecated 文案改由渲染层按 code 解析；随 app 侧旧 checker 一起删除。 */
   nodeName: z.string().optional(),
-  nodeType: z.enum(FlowNodeTypeEnum),
+  /** @deprecated 同上。 */
+  nodeType: z.enum(FlowNodeTypeEnum).optional(),
   level: WorkflowCheckIssueLevelSchema,
-  code: z.string(),
-  message: z.string(),
-  inputKey: z.string().optional()
+  code: WorkflowIssueCodeSchema,
+  /** @deprecated 同上。 */
+  message: z.string().optional(),
+  inputKey: z.string().optional(),
+  params: z.record(z.string(), z.string()).optional()
 });
 export type WorkflowCheckIssue = z.infer<typeof WorkflowCheckIssueSchema>;
 export type WorkflowCheckNodeIssueMap = Record<string, WorkflowCheckIssue[]>;

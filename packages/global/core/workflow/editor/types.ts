@@ -9,6 +9,7 @@ import type {
 import type { StoreEdgeItemType } from '../type/edge';
 import type { StoreNodeItemType, WorkflowCheckIssue } from '../type/node';
 import type { WorkflowIOValueTypeEnum } from '../constants';
+import type { ModelTypeEnum } from '../../ai/constants';
 
 /** 递归只读类型，用于阻止调用方通过 scoped snapshot 修改运行时数据。 */
 export type DeepReadonly<T> = T extends (...args: any[]) => any
@@ -91,7 +92,27 @@ export type WorkflowSnapshot = DeepReadonly<{
   edges: WorkflowEdgeSnapshot[];
   chatConfig: AppChatConfigType;
   issues: WorkflowCheckIssue[];
+  /** 工作流级问题桶：chatConfig 的模型问题不属于任何画布节点。 */
+  chatConfigIssues: WorkflowConfigIssue[];
 }>;
+
+/**
+ * 工作流级问题：与节点问题共用 code 与 params 约定，但没有归属节点，
+ * 因此不带 nodeId。gate 的提示文案把它排在节点问题之后。
+ */
+export type WorkflowConfigIssue = DeepReadonly<Omit<WorkflowCheckIssue, 'nodeId'>>;
+
+/**
+ * editor 在 hydrate 时注入的环境事实来源。
+ *
+ * Runtime 不缓存结果，每轮派生调用一次，因此实现必须同步且便宜（读已就绪的 store 快照，
+ * 不发请求、不做深拷贝）。`models` 为 undefined 表示目录尚未就绪，本轮跳过模型相关规则，
+ * 等 host 订阅到目录变化后调用 refreshIssues 补上。
+ */
+export type WorkflowEnvironment = {
+  models?: { modelId: string; model: string; type: ModelTypeEnum }[];
+  sandbox: { configured: boolean; planSupported: boolean };
+};
 
 /** Issue 刷新与 provider 调用共用的节点范围；'all' 表示整份文档。 */
 export type WorkflowIssueScope = readonly string[] | 'all';

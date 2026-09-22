@@ -2,6 +2,7 @@ import type {
   WorkflowCheckIssue,
   WorkflowCheckNodeIssueMap
 } from '@fastgpt/global/core/workflow/type/node';
+import type { WorkflowIssueCode } from '@fastgpt/global/core/workflow/editor/issueCode';
 import type { FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import type { Edge, Node } from 'reactflow';
 import {
@@ -192,24 +193,6 @@ const WORKFLOW_CHECK_ISSUE_MESSAGE_CODE_MAP: Record<string, WorkflowCheckMessage
   variable_update_incomplete: 'code_input_incomplete'
 };
 
-/** 待处理：引用无效、工具不可访问或加载失败。其余均为待完善。 */
-export const WORKFLOW_CHECK_PENDING_HANDLE_CODES = new Set<string>([
-  'invalid_reference',
-  'invalid_reference_type',
-  'unreachable_reference',
-  'tool_missing',
-  'tool_load_failed',
-  'tool_no_permission',
-  'tool_offline',
-  'model_unavailable'
-]);
-
-export type WorkflowCheckUIStatus = 'pending_improve' | 'pending_handle';
-
-/** 按 issue code 映射 UI 状态前缀，不直接使用 level 字段。 */
-export const getWorkflowCheckIssueUIStatus = (code: string): WorkflowCheckUIStatus =>
-  WORKFLOW_CHECK_PENDING_HANDLE_CODES.has(code) ? 'pending_handle' : 'pending_improve';
-
 const workflowCheckMessageFallback: Record<
   WorkflowCheckMessageCode,
   (params?: { inputName?: string; model?: string; nodeName?: string }) => string
@@ -252,8 +235,11 @@ const PLUGIN_DATA_MISSING_ERROR_CODES = new Set<string>([
   PluginErrEnum.unExist
 ]);
 
+/** pluginData.error 归到的 issue code；三种都属于工具不可用类。 */
+type PluginDataIssueCode = 'tool_no_permission' | 'tool_missing' | 'tool_load_failed';
+
 /** pluginData.error 可能是 statusText 或 getErrText 翻译后的 message，需两种都识别。 */
-const resolvePluginDataErrorIssueCode = (error: string): WorkflowCheckMessageCode => {
+const resolvePluginDataErrorIssueCode = (error: string): PluginDataIssueCode => {
   if (
     PLUGIN_DATA_PERMISSION_ERROR_CODES.has(error) ||
     error === ERROR_RESPONSE[AppErrEnum.unAuthApp]?.message ||
@@ -489,7 +475,7 @@ export const checkWorkflowNodeIssues = ({
     inputKey
   }: {
     node: Node<FlowNodeItemType, string | undefined>;
-    code: string;
+    code: WorkflowIssueCode;
     message: string;
     inputKey?: string;
   }) => {
