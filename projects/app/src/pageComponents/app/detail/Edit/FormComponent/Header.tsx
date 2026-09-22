@@ -282,6 +282,12 @@ const Header = ({
                 }
 
                 const { nodes: storeNodes, edges: storeEdges } = form2WorkflowFn(appForm, t);
+                // 目录未就绪时模型类问题会整体漏判，宁可挡住发布也不放过；先确认目录再建 Runtime。
+                const catalog = await ensureModelCatalog().catch(() => undefined);
+                if (!catalog) {
+                  toast({ status: 'error', title: t('common:model_catalog_load_failed') });
+                  return false;
+                }
                 // 简易应用编辑器没有常驻 Runtime：现场 hydrate 一份，走与工作流编辑器同一条 gate。
                 const runtime = hydrateRuntime({
                   input: { nodes: storeNodes, edges: storeEdges },
@@ -292,12 +298,6 @@ const Header = ({
                     sandbox: { configured: !!showSandbox, planSupported: enableSandbox }
                   })
                 });
-                // 目录未就绪时模型类问题会整体漏判，宁可挡住发布也不放过。
-                const catalog = await ensureModelCatalog().catch(() => undefined);
-                if (!catalog) {
-                  toast({ status: 'error', title: t('common:model_catalog_load_failed') });
-                  return false;
-                }
                 const errors = collectWorkflowErrorIssues(runtime);
                 runtime.dispose();
 

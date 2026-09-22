@@ -1,5 +1,4 @@
 export { createWorkflowEditor } from './runtime/runtime';
-export { WorkflowIssueCode, WORKFLOW_ISSUE_I18N_KEYS } from './issueCode';
 export {
   hydrateWorkflowEditor,
   migrateStoreWorkflow,
@@ -11,8 +10,6 @@ export type {
   HistorySnapshot,
   NodeViewState,
   RuntimeEdgeId,
-  WorkflowConfigIssue,
-  WorkflowEnvironment,
   WorkflowChange,
   WorkflowCommand,
   WorkflowCommandError,

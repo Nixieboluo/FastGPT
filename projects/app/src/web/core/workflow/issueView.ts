@@ -32,15 +32,6 @@ export const getWorkflowIssueUIStatus = (code: WorkflowIssueCode): WorkflowIssue
   PENDING_HANDLE_CODES.has(code) ? 'pending_handle' : 'pending_improve';
 
 /**
- * 渲染 Issue 文案：code 查 i18n key，params 交给 i18next 插值。
- *
- * `params.inputName` 存的是 label 原始字符串（模板 label 是 i18nT 返回的 key，用户自定义 label
- * 是自由文本），所以对它再翻译一次；i18next 未命中 key 时原样返回，自由文本不受影响，
- * 语言切换后文案自动跟随，Issue 本身不需要重算。
- * `params.nodeName` 是文档里已翻译的节点名，属于工作流自身信息，语言切换后保持不变。
- * 其余 params（如 model）是纯数据，不翻译。
- */
-/**
  * 保存/发布/调试 gate 的判定入口：按当前环境事实重算整份 Issue View，返回全部 error。
  * chatConfig 桶不属于任何画布节点，排在节点问题之后。
  * Issue View 的数组顺序在增量刷新后不保证是文档顺序，标红节点由调用方按文档顺序另取。
@@ -51,6 +42,15 @@ export const collectWorkflowErrorIssues = (runtime: WorkflowRuntimePort) => {
   return [...issues, ...chatConfigIssues].filter((issue) => issue.level === 'error');
 };
 
+/**
+ * 渲染 Issue 文案：code 查 i18n key，params 交给 i18next 插值。
+ *
+ * `params.inputName` 存的是 label 原始字符串（模板 label 是 i18nT 返回的 key，用户自定义 label
+ * 是自由文本），所以对它再翻译一次；i18next 未命中 key 时原样返回，自由文本不受影响，
+ * 语言切换后文案自动跟随，Issue 本身不需要重算。
+ * `params.nodeName` 是文档里已翻译的节点名，属于工作流自身信息，语言切换后保持不变。
+ * 其余 params（如 model）是纯数据，不翻译。
+ */
 export const renderWorkflowIssueMessage = (issue: WorkflowIssueLike, t: TFunction) => {
   const key = WORKFLOW_ISSUE_I18N_KEYS[issue.code] as any;
   const params = issue.params;

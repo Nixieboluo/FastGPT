@@ -23,12 +23,9 @@ import {
 } from '@fastgpt/global/core/workflow/constants';
 import { ModelTypeEnum } from '@fastgpt/global/core/ai/constants';
 import { moduleTemplatesFlat } from '@fastgpt/global/core/workflow/template/constants';
-import {
-  createWorkflowEditor,
-  migrateStoreWorkflow,
-  WorkflowIssueCode,
-  type WorkflowEnvironment
-} from '@fastgpt/global/core/workflow/editor';
+import { createWorkflowEditor, migrateStoreWorkflow } from '@fastgpt/global/core/workflow/editor';
+import { WorkflowIssueCode } from '@fastgpt/global/core/workflow/editor/issueCode';
+import type { WorkflowEnvironment } from '@fastgpt/global/core/workflow/editor/types';
 import { nodeTemplate2FlowNode } from '@/web/core/workflow/utils';
 import { uiWorkflow2StoreWorkflow } from '@/pageComponents/app/detail/WorkflowComponents/utils';
 import { AiChatModule } from '@fastgpt/global/core/workflow/template/system/aiChat';
