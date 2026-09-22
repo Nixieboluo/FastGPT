@@ -1,15 +1,15 @@
 // Runtime snapshot -> ReactFlow renderer projection.
 // 画布节点 = Node Data（storeNode2FlowNode 物化）+ Node View State（位置/折叠）
-// + host 问题存储（按节点问题文案 + 标红焦点）
+// + host 标红焦点
 // + host 视图 overlay（debugResult/searchedText/教程元信息）
 // + renderer 交互状态（选中、拖拽、测量尺寸、层级，从本地数组保留）。
+// 问题文案不进画布数组：节点组件直接读 Runtime snapshot 的 issues。
 import { pick } from 'lodash-es';
 import type { Edge } from 'reactflow';
 import type { TFunction } from 'next-i18next';
 import { EDGE_TYPE } from '@fastgpt/global/core/workflow/node/constant';
 import { NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { StoreNodeItemTypeSchema } from '@fastgpt/global/core/workflow/type/node';
-import type { WorkflowCheckNodeIssueMap } from '@fastgpt/global/core/workflow/type/node';
 import type {
   WorkflowNodeSnapshot,
   WorkflowNodeViewSnapshot,
@@ -30,7 +30,6 @@ type NodeCacheEntry = {
   snapshot: WorkflowNodeSnapshot;
   view: WorkflowNodeViewSnapshot | undefined;
   overlay: Partial<Record<ViewDataKey, unknown>> | undefined;
-  issues: WorkflowCheckNodeIssueMap[string] | undefined;
   isError: boolean;
   isTool: boolean;
   selected: boolean | undefined;
@@ -68,7 +67,7 @@ const INTERACTION_FIELDS = ['selected', 'dragging', 'width', 'height', 'measured
 
 /**
  * 把 Runtime 当前状态投影成画布数组。
- * 带按节点缓存：runtime snapshot / view / 问题 / overlay / 交互值都没变的节点复用同一对象，
+ * 带按节点缓存：runtime snapshot / view / overlay / 交互值都没变的节点复用同一对象，
  * 保证 reactflow 与节点组件不因重投影而无谓重渲染。
  * 注意：只能使用 getWorkflow/getNode/getNodeView（有版本缓存），
  * 不能用 getWorkflowData()（每次全量深拷贝）。
@@ -76,7 +75,6 @@ const INTERACTION_FIELDS = ['selected', 'dragging', 'width', 'height', 'measured
 export const projectRuntimeCanvas = ({
   runtime,
   overlays,
-  issues,
   errorNodeId,
   t,
   localNodes,
@@ -85,8 +83,6 @@ export const projectRuntimeCanvas = ({
 }: {
   runtime: WorkflowRuntimePort;
   overlays: ViewDataOverlayMap;
-  /** host 问题存储：按 nodeId 的问题文案，投影合并进节点 data 供节点组件渲染。 */
-  issues: WorkflowCheckNodeIssueMap;
   /** host 问题焦点节点：该节点标红并强制选中，其余节点还原本地选中态。 */
   errorNodeId?: string;
   t: TFunction;
@@ -106,7 +102,6 @@ export const projectRuntimeCanvas = ({
     const nodeId = snapshot.nodeId;
     const view = runtime.getNodeView(nodeId);
     const overlay = overlays[nodeId];
-    const nodeIssues = issues[nodeId];
     const isError = errorNodeId === nodeId;
     const local = localNodeById.get(nodeId);
     const isTool = toolNodeIds.has(nodeId);
@@ -124,7 +119,6 @@ export const projectRuntimeCanvas = ({
       cached.snapshot === snapshot &&
       cached.view === view &&
       cached.overlay === overlay &&
-      cached.issues === nodeIssues &&
       cached.isError === isError &&
       cached.isTool === isTool &&
       cached.selected === selected &&
@@ -138,11 +132,9 @@ export const projectRuntimeCanvas = ({
       return cached.node;
     }
 
-    // snapshot 上的 issues 是 Runtime Issue View 结果；切换期展示以 host 问题存储为准
-    // （Issue View 文案未 i18n，合并会出现英文重复条目），投影时剥离。
-    const { issues: _issues, ...docNode } = snapshot;
     const flowNode = storeNode2FlowNode({
-      item: StoreNodeItemTypeSchema.parse({ ...docNode, position }),
+      // StoreNodeItemType 不含 issues，parse 会自然剥掉 Issue View 字段。
+      item: StoreNodeItemTypeSchema.parse({ ...snapshot, position }),
       isTool,
       t
     });
@@ -151,7 +143,6 @@ export const projectRuntimeCanvas = ({
       ...flowNode.data,
       isFolded: view?.isFolded,
       ...overlay,
-      ...(nodeIssues ? { workflowCheckIssues: nodeIssues } : {}),
       ...(isError ? { isError: true } : {})
     } as typeof flowNode.data;
     const node: CanvasNode = {
@@ -169,7 +160,6 @@ export const projectRuntimeCanvas = ({
       snapshot,
       view,
       overlay,
-      issues: nodeIssues,
       isError,
       isTool,
       selected,

@@ -10,7 +10,7 @@ export type CanvasNode = Node<FlowNodeItemType, string | undefined>;
  * 只属于画布视图的数据字段：不进文档，由 host overlay 持有并在投影时合并。
  * courseUrl/userGuide 是旧路径也从不持久化的展示元信息（保存白名单会剥离），
  * 归入视图字段避免 updateNode 时被 store schema 丢弃。
- * isError/workflowCheckIssues 不在此列：问题状态由 host 问题存储持有，投影时直接合并。
+ * isError 不在此列：标红焦点由 host 持有、投影时合并；问题文案由节点组件读 Runtime snapshot。
  */
 export type ViewDataKey = 'debugResult' | 'searchedText' | 'courseUrl' | 'readmeUrl' | 'userGuide';
 

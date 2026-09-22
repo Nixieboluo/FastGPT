@@ -349,7 +349,6 @@ export const FlowNodeItemSchema = FlowNodeTemplateTypeSchema.extend({
   nodeId: z.string(),
   parentNodeId: z.string().optional(),
   isError: BoolSchema.optional(),
-  workflowCheckIssues: z.array(WorkflowCheckIssueSchema).optional(),
   searchedText: z.string().optional(),
   debugResult: z
     .object({

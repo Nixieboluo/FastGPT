@@ -169,11 +169,8 @@ const NodeCard = (props: Props) => {
   const colorSchema = node?.colorSchema;
   const inputs = node?.inputs;
 
-  // 问题状态归 host：按节点问题文案与标红焦点直接读问题存储，不再经投影塞进 data。
-  const workflowCheckIssues = useContextSelector(
-    WorkflowHostContext,
-    (v) => v.issuesRef.current[nodeId]
-  );
+  // 问题文案归 Runtime：直接读节点 snapshot 的 Issue View，标红焦点仍由 host 单点持有。
+  const nodeIssues = nodeHandle?.data.issues;
   const isError = useContextSelector(
     WorkflowHostContext,
     (v) => v.issueFocusRef.current === nodeId
@@ -261,8 +258,8 @@ const NodeCard = (props: Props) => {
   }, [isFolded, avatar, avatarLinear, name, handleDoubleClick]);
 
   const errorIssues = useMemo(
-    () => workflowCheckIssues?.filter((issue) => issue.level === 'error') ?? [],
-    [workflowCheckIssues]
+    () => nodeIssues?.filter((issue) => issue.level === 'error') ?? [],
+    [nodeIssues]
   );
 
   const { outlineColor, outlineWidth } = useMemo(() => {

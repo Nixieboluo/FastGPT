@@ -64,8 +64,7 @@ const WorkflowCanvasProvider = ({ children }: { children: ReactNode }) => {
   const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
   const runtimeTick = useContextSelector(WorkflowHostContext, (v) => v.runtimeTick);
   const overlaysRef = useContextSelector(WorkflowHostContext, (v) => v.overlaysRef);
-  // 问题状态归 host：投影时合并问题文案与标红焦点，画布数组不再是问题状态的写入方。
-  const issuesRef = useContextSelector(WorkflowHostContext, (v) => v.issuesRef);
+  // 标红焦点归 host：投影时合并，画布数组不再是问题状态的写入方。
   const issueFocusRef = useContextSelector(WorkflowHostContext, (v) => v.issueFocusRef);
 
   // 交互状态层：reactflow 本地数组，语义值以 Runtime 投影为准。
@@ -84,7 +83,6 @@ const WorkflowCanvasProvider = ({ children }: { children: ReactNode }) => {
     const projected = projectRuntimeCanvas({
       runtime: runtime!,
       overlays: overlaysRef.current,
-      issues: issuesRef.current,
       errorNodeId: issueFocusRef.current,
       t,
       localNodes: nodesRef.current,
