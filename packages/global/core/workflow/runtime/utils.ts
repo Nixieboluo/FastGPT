@@ -300,7 +300,9 @@ export const filterWorkflowEdges = (edges: RuntimeEdgeItemType[]) => {
 };
 
 /*
-  Get the value of the reference variable/node output
+  Get the value of the reference variable/node output.
+  来源节点已不存在（死引用）时取到 undefined，不会把 [nodeId, outputId] 元组当值传给下游：
+  出站裁剪删除后，脏引用可能随自动保存落库并被执行层读到。
   1. [string,string]
   2. [string,string][]
 */
@@ -317,6 +319,7 @@ export const getReferenceVariableValue = ({
 }) => {
   if (!value || !isReferenceVal) return value;
 
+  /** 解析单个引用：全局变量走 variables，节点输出走 nodesMap；来源缺失一律 undefined。 */
   const resoleValue = (value: [string, string | undefined]) => {
     const sourceNodeId = value[0];
     const outputId = value[1];
@@ -326,11 +329,8 @@ export const getReferenceVariableValue = ({
       return variables[outputId];
     }
 
-    // 避免 value 刚好就是二个元素的字符串数组
     const node = nodesMap instanceof Map ? nodesMap.get(sourceNodeId) : nodesMap[sourceNodeId];
-    if (!node) {
-      return value;
-    }
+    if (!node) return undefined;
 
     return node.outputs.find((output) => output.id === outputId)?.value;
   };
@@ -341,10 +341,15 @@ export const getReferenceVariableValue = ({
   }
 
   // handle reference array
+  // 两列表格（string[][] 字面量）与引用数组在结构上无法区分，只有至少一项来源真实存在时
+  // 才按引用数组逐项解析，否则原样返回，避免把表格数据吃掉（见 #7051）。
+  // ponytail: 全部来源都失效的引用数组仍会整体透传；要区分它需要调用方声明「这是引用」，
+  // 目前只有 http468 / replaceEditorVariable 会传非引用值，等它们改按 input 元数据判定后再收紧。
   if (
     Array.isArray(value) &&
     value.length > 0 &&
-    value.every((item) => isValidReferenceValueFormat(item, nodesMap))
+    value.every((item) => isValidReferenceValueFormat(item)) &&
+    value.some((item) => isValidReferenceValueFormat(item, nodesMap))
   ) {
     return value
       .map<any>((val) => {
