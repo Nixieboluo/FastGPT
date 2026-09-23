@@ -32,14 +32,7 @@ import { WorkflowCanvasContext } from '../context/workflowCanvasContext';
 import { WorkflowUIContext } from '../context/workflowUIContext';
 import { WorkflowModalContext } from '../context/workflowModalContext';
 import { type HelperLinesController } from '../components/HelperLines';
-import { useDocumentGetNodeById } from '../nodes/render/useWorkflowDocument';
-import {
-  buildNodeTemplateContext,
-  getNodeContainerCheckError,
-  isNodeConnectionAllowed,
-  translateNodeContainerCheckError
-} from '@fastgpt/global/core/workflow/template/context';
-import { moduleTemplatesFlat } from '@fastgpt/global/core/workflow/template/constants';
+import { translateNodeContainerCheckError } from '@fastgpt/global/core/workflow/template/context';
 
 /*
   限定容量的最大堆,根为当前最大距离。保留为通用最近邻筛选工具,
@@ -411,8 +404,6 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
   );
   const workflow = useWorkflowAdapter();
   const canvas = useCanvas();
-  // 跨节点语义读取走文档 reader；按 id 取画布节点（位置、尺寸、选中）走 reactflow store。
-  const getNodeById = useDocumentGetNodeById();
 
   /** 标红焦点归 host：取消选中标红节点时清除焦点，画布不再自己维护错误标记。 */
   const focusIssueNode = useContextSelector(WorkflowHostContext, (v) => v.focusIssueNode);
@@ -468,37 +459,18 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
     );
 
     if (parentNode) {
-      const containerChildNodes = getNodes().filter(
-        (item) => item.data.parentNodeId === parentNode.data.nodeId
-      );
-      const containerContext = buildNodeTemplateContext({
-        sourceNode: undefined,
-        edges: workflow.edges,
-        getNodeById,
-        isSidebar: true,
-        targetParentType: parentNode.data.flowNodeType,
-        hasToolNode: containerChildNodes.some(
-          (item) => item.data.flowNodeType === FlowNodeTypeEnum.toolCall
-        ),
-        hasLoopRunNode: containerChildNodes.some(
-          (item) => item.data.flowNodeType === FlowNodeTypeEnum.loopRun
-        )
-      });
-      if (containerContext) {
-        const checkError = getNodeContainerCheckError({
-          node: node.data,
-          context: containerContext
-        });
-        if (checkError) {
-          return toast({
+      const result = workflow.attachToContainer(node.id, parentNode.id);
+      if (!result.ok) {
+        // 容器校验只在 runtime 跑一遍；拒绝原因随 dispatch 结果回来，app 只翻译。
+        // 非容器拒绝（节点已在容器里、目标不是容器、自嵌套）没有用户文案，保持静默。
+        if (result.error?.reason) {
+          toast({
             status: 'warning',
-            title: translateNodeContainerCheckError(checkError, t)
+            title: translateNodeContainerCheckError(result.error.reason, t)
           });
         }
+        return;
       }
-
-      const result = workflow.attachToContainer(node.id, parentNode.id);
-      if (!result.ok) return;
       // 旧行为是落入容器后删除该节点全部连线，按值断连避免投影 id 重排失效。
       workflow.edges
         .filter((edge) => edge.source === node.id || edge.target === node.id)
@@ -837,7 +809,12 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
       if (runtime?.getNodeView(nodeId)?.isFolded) {
         canvas.commitGeometry([{ nodeId, isFolded: false }]);
       }
-      setConnectingEdge(params);
+      // 拖拽开始时算一次 placement context 挂到连线状态：目标柄只按 target 应用纯规则，
+      // 不再每个柄各自从画布数组重建 nodes/edges map。
+      setConnectingEdge({
+        ...params,
+        context: runtime?.getPlacementContext({ node: { nodeId, handleId } }) ?? null
+      });
 
       // Check connect or click(If the mouse position remains basically unchanged, it indicates a click)
       if (params.handleId) {
@@ -907,31 +884,12 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
         });
       }
 
-      const sourceNode = getNodeById(connect.source);
-      const targetNode = getNodeById(connect.target);
-      const targetTemplate = targetNode
-        ? moduleTemplatesFlat.find((item) => item.id === targetNode.flowNodeType)
-        : undefined;
-      if (
-        !sourceNode ||
-        !targetNode ||
-        !isNodeConnectionAllowed({
-          targetTemplate,
-          targetNode,
-          sourceNode,
-          edges: workflow.edges,
-          handleId: connect.sourceHandle,
-          getNodeById
-        })
-      ) {
-        return;
-      }
-
+      // 容器与模板上下文判定归 runtime 的 connectEdge：被拒时静默返回，与既有连线失败行为一致。
       onConnect({
         connect
       });
     },
-    [workflow.edges, getNodeById, onConnect, t, toast]
+    [onConnect, t, toast]
   );
 
   /* edge */

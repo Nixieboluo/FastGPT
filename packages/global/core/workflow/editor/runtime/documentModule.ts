@@ -1,14 +1,16 @@
 import { NodeOutputKeyEnum } from '../../constants';
 import { stripCanvasSizeInputs } from '../../migration/migrate';
-import { FlowNodeTypeEnum, isNestedParentNodeType } from '../../node/constant';
+import {
+  FlowNodeTypeEnum,
+  isNestedChildSystemNodeType,
+  isNestedParentNodeType
+} from '../../node/constant';
 import { StoreEdgeItemTypeSchema, type StoreEdgeItemType } from '../../type/edge';
-import { StoreNodeItemTypeSchema } from '../../type/node';
+import { StoreNodeItemTypeSchema, type NodeTemplateContext } from '../../type/node';
 import { AppChatConfigTypeSchema } from '../../../app/type';
-import { isNodeConnectionAllowed } from '../../template/context';
-import { moduleTemplatesFlat } from '../../template/constants';
-import { isWorkflowEdgeSourceHandleValid } from '../utils';
+import { isConnectionTargetAllowed, isWorkflowEdgeSourceHandleValid } from '../utils';
 import { applyWorkflowStartInputAutoFill } from '../startAutoFill';
-import type { RuntimeEdgeId } from '../types';
+import type { PlacementRequest, RuntimeEdgeId, WorkflowNodeData } from '../types';
 import { addFieldIdentity, cloneValue, getError, getFieldIdentity, valuesEqual } from './kernel';
 import {
   deleteStagedNodeView,
@@ -42,9 +44,12 @@ import {
   getPlacementError,
   hasForbidDelete,
   isContainerArrayInputKey,
+  isUniqueRootNodeType,
+  placementError,
   recordEdgeChange,
   recordNodeChange,
   reuseEqualItems,
+  ROOT_PARENT_KEY,
   splitNode,
   validateNodeDeletion,
   validateNodePlacement
@@ -154,6 +159,109 @@ export const createDocumentModule = (initial: CanonicalResult) => {
   const getDescendantNodeIds = (rootIds: ReadonlySet<string>) =>
     collectDescendantNodeIds(graphIndex.childrenByParent, rootIds);
 
+  /**
+   * 从 working document 派生 placement context：侧边栏、handle 快捷添加、模板落点、拖入容器与连线校验共用。
+   *
+   * 作用域父容器决定 hasToolNode / hasLoopRunNode / takenUniqueTypes 的统计范围（Notes：按直接子节点算），
+   * 默认取来源节点的父容器，placement 校验里显式传目标容器；作用域为 null 表示文档根。
+   * 既无来源节点又不是侧边栏时返回 null，调用方把 null 当「允许」。
+   */
+  const derivePlacementContext = ({
+    sourceNodeId,
+    handleId,
+    isSidebar = false,
+    parentNodeId,
+    working = document,
+    meta
+  }: {
+    sourceNodeId?: string;
+    handleId?: string | null;
+    isSidebar?: boolean;
+    /** undefined 表示按来源节点推导，null 表示文档根。 */
+    parentNodeId?: string | null;
+    working?: RuntimeDocument;
+    meta?: MutationMeta;
+  }): NodeTemplateContext | null => {
+    const getNodeData = (nodeId?: string | null) =>
+      nodeId ? getWorkingNode(nodeId, meta)?.data : undefined;
+
+    const source = getNodeData(sourceNodeId);
+    if (!source && !isSidebar) return null;
+
+    const scopeParentId =
+      parentNodeId !== undefined ? parentNodeId : (source?.parentNodeId ?? null);
+    // 已提交状态直接读图索引（O(直接子节点)，root 作用域读 ROOT_PARENT_KEY 桶）；
+    // 事务内有 staged 节点变化时索引还没更新，回落扫描 working。
+    const scopeNodes: WorkflowNodeData[] = !meta?.nodeChanges.size
+      ? (graphIndex.childrenByParent.get(scopeParentId || ROOT_PARENT_KEY) ?? [])
+          .map((nodeId) => nodeIndex.get(nodeId)?.record.data)
+          .filter((data): data is WorkflowNodeData => !!data)
+      : working.nodes
+          .filter(({ data }) =>
+            scopeParentId === null ? !data.parentNodeId : data.parentNodeId === scopeParentId
+          )
+          .map(({ data }) => data);
+    const isScopeUniqueType = (flowNodeType: FlowNodeTypeEnum) =>
+      scopeParentId === null
+        ? isUniqueRootNodeType(flowNodeType)
+        : isNestedChildSystemNodeType(flowNodeType);
+
+    /**
+     * 工具子流程可经过多个普通节点，沿入边索引上溯找到任一 selectedTools 根边即可。
+     * 只读已提交的 graphIndex.byTarget：上面那段 working 回落只覆盖节点，事务内 staged 的边
+     * 在这里不可见。当前没有命令会在同一笔事务里既改边又派生 context，因此这是前提而非现行 bug。
+     */
+    const isConnectedTool = (nodeId: string) => {
+      const pendingNodeIds = [nodeId];
+      const visitedNodeIds = new Set<string>();
+      while (pendingNodeIds.length) {
+        const currentId = pendingNodeIds.pop()!;
+        if (visitedNodeIds.has(currentId)) continue;
+        visitedNodeIds.add(currentId);
+
+        for (const { data } of graphIndex.byTarget.get(currentId) ?? []) {
+          if (data.targetHandle === NodeOutputKeyEnum.selectedTools) return true;
+          if (data.source) pendingNodeIds.push(data.source);
+        }
+      }
+      return false;
+    };
+
+    return {
+      isSidebar,
+      sourceNodeId: source?.nodeId ?? null,
+      sourceType: source?.flowNodeType ?? null,
+      isConnectedTool: source ? isConnectedTool(source.nodeId) : false,
+      handleId: handleId ?? null,
+      parentType: scopeParentId ? (getNodeData(scopeParentId)?.flowNodeType ?? null) : null,
+      hasToolNode: scopeNodes.some(
+        ({ flowNodeType }) => flowNodeType === FlowNodeTypeEnum.toolCall
+      ),
+      hasLoopRunNode: scopeNodes.some(
+        ({ flowNodeType }) => flowNodeType === FlowNodeTypeEnum.loopRun
+      ),
+      takenUniqueTypes: scopeNodes.map(({ flowNodeType }) => flowNodeType).filter(isScopeUniqueType)
+    };
+  };
+
+  /** 公开端口：只读已提交 Document。 */
+  const getPlacementContext = (request: PlacementRequest): NodeTemplateContext | null =>
+    derivePlacementContext({
+      sourceNodeId: request.node?.nodeId,
+      handleId: request.node?.handleId,
+      isSidebar: request.isSidebar
+    });
+
+  /** placement 校验用的容器 context：作用域是目标容器，没有来源节点，按侧边栏口径产出。 */
+  const getContainerPlacementContext = (
+    containerId: string | undefined,
+    working: RuntimeDocument,
+    meta: MutationMeta
+  ) =>
+    containerId
+      ? derivePlacementContext({ isSidebar: true, parentNodeId: containerId, working, meta })
+      : null;
+
   const isEdgeConnectionAllowed = (
     working: RuntimeDocument,
     edge: StoreEdgeItemType,
@@ -191,14 +299,15 @@ export const createDocumentModule = (initial: CanonicalResult) => {
     ) {
       return false;
     }
-    const targetTemplate = moduleTemplatesFlat.find((item) => item.id === target.flowNodeType);
-    return isNodeConnectionAllowed({
-      targetTemplate,
+    return isConnectionTargetAllowed({
+      context: derivePlacementContext({
+        sourceNodeId: edge.source,
+        handleId: edge.sourceHandle,
+        working,
+        meta
+      }),
       targetNode: target,
-      sourceNode: source,
-      edges: working.edges.map(({ data }) => data),
-      handleId: edge.sourceHandle,
-      getNodeById: (nodeId) => (nodeId ? getFlowNodeById(working, nodeId, meta) : undefined)
+      sourceParentNodeId: source.parentNodeId
     });
   };
 
@@ -328,7 +437,11 @@ export const createDocumentModule = (initial: CanonicalResult) => {
           throw getError('duplicate_node', `Node already exists: ${parsedNode.nodeId}`);
         }
         const { record, view } = splitNode(parsedNode, hasForbidDelete(command.node));
-        validateNodePlacement({ working, node: record });
+        validateNodePlacement({
+          working,
+          node: record,
+          context: getContainerPlacementContext(record.data.parentNodeId, working, meta)
+        });
         working.nodes = [...working.nodes, record];
         setStagedNodeView({ meta, views, nodeId: record.data.nodeId, view });
         updateReferenceGraphNode({ graph: referenceGraph, after: record.data });
@@ -358,7 +471,12 @@ export const createDocumentModule = (initial: CanonicalResult) => {
           parsedNode,
           current.forbidDelete === true || hasForbidDelete(command.node)
         );
-        validateNodePlacement({ working, node: nextNode, excludeNodeId: command.nodeId });
+        validateNodePlacement({
+          working,
+          node: nextNode,
+          excludeNodeId: command.nodeId,
+          context: getContainerPlacementContext(nextNode.data.parentNodeId, working, meta)
+        });
         working.nodes[index] = nextNode;
         setStagedNodeView({ meta, views, nodeId: command.nodeId, view });
         commitNodeRecordUpdate({
@@ -400,8 +518,14 @@ export const createDocumentModule = (initial: CanonicalResult) => {
           ...(current.forbidDelete ? { forbidDelete: true } : {})
         };
         const nextRecord = working.nodes[index];
-        if (getPlacementError({ working, node: nextRecord, parentId: nextData.parentNodeId })) {
-          throw getError('invalid_placement', 'Node placement is not allowed');
+        const updateReject = getPlacementError({
+          working,
+          node: nextRecord,
+          parentId: nextData.parentNodeId,
+          context: getContainerPlacementContext(nextData.parentNodeId, working, meta)
+        });
+        if (updateReject) {
+          throw placementError(updateReject);
         }
         setStagedNodeView({
           meta,
@@ -548,8 +672,14 @@ export const createDocumentModule = (initial: CanonicalResult) => {
             'A node cannot be attached to itself or its descendant'
           );
         }
-        if (getPlacementError({ working, node, parentId: command.containerId })) {
-          throw getError('invalid_placement', 'Node placement is not allowed');
+        const attachReject = getPlacementError({
+          working,
+          node,
+          parentId: command.containerId,
+          context: getContainerPlacementContext(command.containerId, working, meta)
+        });
+        if (attachReject) {
+          throw placementError(attachReject);
         }
 
         const previouslyAllowedEdges = new Map(
@@ -606,6 +736,8 @@ export const createDocumentModule = (initial: CanonicalResult) => {
         working.nodes = rebuilt.document.nodes;
         working.edges = rebuilt.document.edges;
         working.chatConfig = rebuilt.document.chatConfig;
+        // 整文档替换自带一份快照；不能沿用替换前的，否则会把无关文档的历史元数据带进来。
+        working.referenceSnapshots = rebuilt.document.referenceSnapshots;
         replaceStagedNodeViews({ meta, views, next: rebuilt.views });
         nextEdgeId = rebuilt.nextEdgeId;
         meta.kind = 'replace';
@@ -651,7 +783,7 @@ export const createDocumentModule = (initial: CanonicalResult) => {
     graphIndex.childrenByParent.clear();
     graphIndex.edgeById.clear();
     workflowStartIds.clear();
-    document = { nodes: [], edges: [], chatConfig: {} };
+    document = { nodes: [], edges: [], chatConfig: {}, referenceSnapshots: [] };
   };
 
   rebuildGraphIndex();
@@ -673,6 +805,7 @@ export const createDocumentModule = (initial: CanonicalResult) => {
     rebuildWorkflowStartIds,
     getNextEdgeId,
     setNextEdgeId,
+    getPlacementContext,
     reduceCommand,
     applyWorkflowStartAutoFill,
     applyDerivedFields,

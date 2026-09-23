@@ -70,10 +70,13 @@ export const valuesEqual = (left: unknown, right: unknown): boolean => {
 
 export const getError = (
   code: WorkflowCommandError['code'],
-  message: string
+  message: string,
+  /** 容器拒绝码；host 用它翻译用户文案。 */
+  reason?: WorkflowCommandError['reason']
 ): WorkflowCommandError => ({
   code,
-  message
+  message,
+  ...(reason ? { reason } : {})
 });
 
 /** 复用工作流引用解析语义；结构字段中的二元 ID 数组属于普通数据。 */

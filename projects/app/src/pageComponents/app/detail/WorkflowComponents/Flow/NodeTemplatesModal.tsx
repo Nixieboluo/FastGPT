@@ -3,14 +3,11 @@ import { useReactFlow, type Node } from 'reactflow';
 import NodeTemplateListHeader from './components/NodeTemplates/header';
 import NodeTemplateList from './components/NodeTemplates/list';
 import { useNodeTemplates } from './components/NodeTemplates/useNodeTemplates';
-import { buildNodeTemplateContext } from '@fastgpt/global/core/workflow/template/context';
 import { useMemoizedFn } from 'ahooks';
 import React from 'react';
-import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { usePlacementContext, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
 import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/canvas';
 import AppDetailPanelModal from '../../components/AppDetailPanelModal';
-import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
-import { useDocumentGetNodeById, useWorkflowDocument } from './nodes/render/useWorkflowDocument';
 
 type ModuleTemplateListProps = {
   isOpen: boolean;
@@ -22,24 +19,8 @@ export const sliderWidth = 460;
 const NodeTemplatesModal = ({ isOpen, onClose }: ModuleTemplateListProps) => {
   const workflow = useWorkflowAdapter();
   const { setNodes } = useReactFlow();
-  const getNodeById = useDocumentGetNodeById();
-  const nodeList = useWorkflowDocument().reader?.nodes;
-  // 模板目录按画布级存在性标记过滤：工具调用与循环执行入口容器各自唯一。
-  const hasToolNode = !!nodeList?.some((node) => node.flowNodeType === FlowNodeTypeEnum.toolCall);
-  const hasLoopRunNode = !!nodeList?.some((node) => node.flowNodeType === FlowNodeTypeEnum.loopRun);
-
-  const templateContext = React.useMemo(
-    () =>
-      buildNodeTemplateContext({
-        sourceNode: undefined,
-        edges: workflow.edges,
-        getNodeById,
-        isSidebar: true,
-        hasToolNode,
-        hasLoopRunNode
-      }),
-    [workflow.edges, getNodeById, hasToolNode, hasLoopRunNode]
-  );
+  // 侧边栏是 root context：候选集与 unique 过滤全部由 Runtime 按文档根派生。
+  const templateContext = usePlacementContext({ isSidebar: true });
 
   const {
     templateType,
@@ -60,7 +41,7 @@ const NodeTemplatesModal = ({ isOpen, onClose }: ModuleTemplateListProps) => {
   const onAddNode = useMemoizedFn(async ({ newNodes }: { newNodes: Node<FlowNodeItemType>[] }) => {
     setNodes((state) => state.map((node) => ({ ...node, selected: false })));
     // 新增节点的问题由 Runtime 在 addNode 事务后自行刷新，画布不需要额外触发。
-    workflow.addNodes(newNodes.map(canvasNodeToStoreNode));
+    return workflow.addNodes(newNodes.map(canvasNodeToStoreNode));
   });
 
   return (

@@ -5,10 +5,12 @@ export {
   serializeWorkflowEditor
 } from '@fastgpt/global/core/workflow/editor';
 export type { StoreWorkflow } from '@fastgpt/global/core/workflow/editor';
+export { isConnectionTargetAllowed } from '@fastgpt/global/core/workflow/editor';
 export {
   useCanvas,
   useField,
   useNode,
+  usePlacementContext,
   useWorkflow,
   WorkflowEditorProvider,
   type WorkflowCanvasHandle,
@@ -24,6 +26,7 @@ export type {
   DeepReadonly,
   HistorySnapshot,
   NodeViewState,
+  PlacementRequest,
   RuntimeEdgeId,
   WorkflowChange,
   WorkflowCommand,

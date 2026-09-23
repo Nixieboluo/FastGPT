@@ -7,8 +7,17 @@ import { AppContext } from '@/pageComponents/app/detail/context';
 import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { useWorkflowDemoTrack } from '@/web/common/middle/tracks/workflowDemoTrack';
 import type { OnConnectStartParams } from 'reactflow';
+import type { NodeTemplateContext } from '@fastgpt/global/core/workflow/type/node';
 
 type MousePosition = { x: number; y: number };
+
+/**
+ * 连线拖拽状态：源 handle 参数 + 拖拽开始时由 Runtime 算好的 placement context。
+ * context 只算一次，目标柄按 target 应用纯规则；null 表示无法建立上下文，按「允许」处理。
+ */
+export type ConnectingEdgeState = OnConnectStartParams & {
+  context: NodeTemplateContext | null;
+};
 
 // 创建 Context
 type WorkflowUIContextValue = {
@@ -24,11 +33,11 @@ type WorkflowUIContextValue = {
   /** 设置悬停的边 ID */
   setHoverEdgeId: React.Dispatch<React.SetStateAction<string | undefined>>;
 
-  /** 正在拖拽连线的源 handle；连接柄高亮与可连接判定都读它 */
-  connectingEdge?: OnConnectStartParams;
+  /** 正在拖拽连线的源 handle 与 placement context；连接柄高亮与可连接判定都读它 */
+  connectingEdge?: ConnectingEdgeState;
 
   /** 设置正在拖拽连线的源 handle */
-  setConnectingEdge: React.Dispatch<React.SetStateAction<OnConnectStartParams | undefined>>;
+  setConnectingEdge: React.Dispatch<React.SetStateAction<ConnectingEdgeState | undefined>>;
 
   /** 鼠标是否在 Canvas 中 */
   mouseInCanvas: boolean;
@@ -65,7 +74,7 @@ export const WorkflowUIContext = createContext<WorkflowUIContextValue>({
     throw new Error('Function not implemented.');
   },
   setConnectingEdge: function (
-    _value: React.SetStateAction<OnConnectStartParams | undefined>
+    _value: React.SetStateAction<ConnectingEdgeState | undefined>
   ): void {
     throw new Error('Function not implemented.');
   },
@@ -97,7 +106,7 @@ export const WorkflowUIProvider: React.FC<PropsWithChildren> = ({ children }) =>
   const [hoverNodeId, setHoverNodeId] = useState<string>();
   const [hoverEdgeId, setHoverEdgeId] = useState<string>();
   // 拖拽连线是纯 renderer 交互状态：只在手势期间存在，不进文档。
-  const [connectingEdge, setConnectingEdge] = useState<OnConnectStartParams>();
+  const [connectingEdge, setConnectingEdge] = useState<ConnectingEdgeState>();
 
   // Canvas 交互
   const [mouseInCanvas, setMouseInCanvas] = useState(false);

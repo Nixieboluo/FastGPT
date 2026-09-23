@@ -6,9 +6,10 @@ import { type Connection, Handle, Position } from 'reactflow';
 import { useCallback, useMemo } from 'react';
 import { useContextSelector } from 'use-context-selector';
 import { WorkflowUIContext } from '../../../context/workflowUIContext';
-import { moduleTemplatesFlat } from '@fastgpt/global/core/workflow/template/constants';
-import { isNodeConnectionAllowed } from '@fastgpt/global/core/workflow/template/context';
-import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import {
+  isConnectionTargetAllowed,
+  useWorkflow as useWorkflowAdapter
+} from '@/web/core/workflow/editor';
 import { useWorkflowDocument } from '../useWorkflowDocument';
 
 const handleSize = '20px';
@@ -30,24 +31,18 @@ export const ToolTargetHandle = ({ show, nodeId }: ToolHandleProps) => {
   const active = useMemo(() => {
     if (!show || !reader || connectingEdge?.handleId !== handleId) return false;
 
-    const { edges, getNodeById } = reader;
-
+    const { getNodeById } = reader;
     const sourceNode = getNodeById(connectingEdge.nodeId);
     const targetNode = getNodeById(nodeId);
-    const targetTemplate = targetNode
-      ? moduleTemplatesFlat.find((item) => item.id === targetNode.flowNodeType)
-      : undefined;
 
     return (
       !!sourceNode &&
       !!targetNode &&
-      isNodeConnectionAllowed({
-        targetTemplate,
+      // context 在连线拖拽开始时由 Runtime 算好，工具柄只按 target 应用纯规则。
+      isConnectionTargetAllowed({
+        context: connectingEdge.context,
         targetNode,
-        sourceNode,
-        edges,
-        handleId: connectingEdge.handleId,
-        getNodeById
+        sourceParentNodeId: sourceNode.parentNodeId
       })
     );
   }, [connectingEdge, nodeId, reader, show]);

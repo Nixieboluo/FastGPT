@@ -1,4 +1,5 @@
 export { createWorkflowEditor } from './runtime/runtime';
+export { isConnectionTargetAllowed } from './utils';
 export {
   hydrateWorkflowEditor,
   migrateStoreWorkflow,
@@ -9,6 +10,7 @@ export type {
   DeepReadonly,
   HistorySnapshot,
   NodeViewState,
+  PlacementRequest,
   RuntimeEdgeId,
   WorkflowChange,
   WorkflowCommand,

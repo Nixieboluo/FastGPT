@@ -28,11 +28,7 @@ import {
   isNestedParentNodeType
 } from '@fastgpt/global/core/workflow/node/constant';
 import { moduleTemplatesFlat } from '@fastgpt/global/core/workflow/template/constants';
-import {
-  buildNodeTemplateContext,
-  getNodeContainerCheckError,
-  translateNodeContainerCheckError
-} from '@fastgpt/global/core/workflow/template/context';
+import { translateNodeContainerCheckError } from '@fastgpt/global/core/workflow/template/context';
 import { LoopEndNode } from '@fastgpt/global/core/workflow/template/system/loop/loopEnd';
 import { LoopStartNode } from '@fastgpt/global/core/workflow/template/system/loop/loopStart';
 import { LoopRunStartNode } from '@fastgpt/global/core/workflow/template/system/loopRun/loopRunStart';
@@ -56,11 +52,8 @@ import React, { useCallback, useMemo } from 'react';
 import type { Node } from 'reactflow';
 import { useReactFlow } from 'reactflow';
 import { useContextSelector } from 'use-context-selector';
-import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
-import {
-  useDocumentGetNodeById,
-  useWorkflowDocument
-} from '../../nodes/render/useWorkflowDocument';
+import type { WorkflowDispatchResult } from '@/web/core/workflow/editor';
+import { useDocumentGetNodeById } from '../../nodes/render/useWorkflowDocument';
 import { WorkflowModalContext } from '../../context/workflowModalContext';
 import { useWorkflowUtils } from '../../hooks/useUtils';
 import { sliderWidth } from '../../NodeTemplatesModal';
@@ -69,7 +62,12 @@ import { normalizeFlowNodeInputType } from '@fastgpt/global/core/app/formEdit/ut
 import type { ScrollListType } from '@fastgpt/web/hooks/useScrollPagination';
 
 export type TemplateListProps = {
-  onAddNode: ({ newNodes }: { newNodes: Node<FlowNodeItemType>[] }) => void;
+  /** 返回本次添加的 dispatch 结果；被拒时由列表统一按 error.reason 出提示。 */
+  onAddNode: ({
+    newNodes
+  }: {
+    newNodes: Node<FlowNodeItemType>[];
+  }) => Promise<WorkflowDispatchResult | undefined>;
   isPopover?: boolean;
   templates: NodeTemplateListItemType[];
   templateType: TemplateTypeEnum;
@@ -258,10 +256,8 @@ const NodeTemplateList = ({
   const handleParams = useContextSelector(WorkflowModalContext, (v) => v.handleParams);
   const isToolSelector = handleParams?.handleId === NodeOutputKeyEnum.selectedTools;
   const { getIntersectingNodes } = useReactFlow();
-  // 容器归属与嵌套限制校验读文档：结构快照给连线，reader 给节点类型与父子关系。
-  const { edges } = useWorkflowAdapter();
+  // 落点归属读文档：只用来解析来源节点的父容器，容器合法性由 runtime 判定。
   const getNodeById = useDocumentGetNodeById();
-  const nodeList = useWorkflowDocument().reader?.nodes;
   const [lastSelectedModelId] = useLocalStorageState<string>('workflow_default_llm_model', {
     defaultValue: ''
   });
@@ -319,8 +315,8 @@ const NodeTemplateList = ({
         // 工具选择器保留历史可选项；未声明 isTool 的节点按普通节点初始化输入类型。
         const isToolMode = isToolSelector && templateNode.isTool === true;
 
-        // 快捷添加继承源节点所在容器；侧边栏添加（点击/拖拽）没有源节点，按落点命中容器，
-        // 保证拖入容器内部与快捷添加走同一套嵌套限制校验，无法通过拖拽绕过。
+        // 快捷添加继承源节点所在容器；侧边栏添加（点击/拖拽）没有源节点，按落点命中容器。
+        // 这里只决定落点，不做容器校验：拖入容器与快捷添加走同一套 runtime 规则，无法通过拖拽绕过。
         let effectiveParentNodeId: string | undefined = currentNode?.parentNodeId;
         if (!effectiveParentNodeId && !handleParams) {
           const dropContainer = getIntersectingNodes({
@@ -331,40 +327,6 @@ const NodeTemplateList = ({
           }).find((n) => isNestedParentNodeType(n.type ?? '') && !n.data?.isFolded);
           if (dropContainer) {
             effectiveParentNodeId = dropContainer.id;
-          }
-        }
-        const effectiveParentNode = effectiveParentNodeId
-          ? getNodeById(effectiveParentNodeId)
-          : undefined;
-
-        const containerChildNodes = effectiveParentNode
-          ? (nodeList ?? []).filter((item) => item.parentNodeId === effectiveParentNode.nodeId)
-          : [];
-        const containerContext = buildNodeTemplateContext({
-          sourceNode: handleParams ? currentNode : undefined,
-          edges,
-          getNodeById,
-          handleId: handleParams?.handleId,
-          isSidebar: !handleParams,
-          targetParentType: effectiveParentNode?.flowNodeType,
-          hasToolNode: containerChildNodes.some(
-            (item) => item.flowNodeType === FlowNodeTypeEnum.toolCall
-          ),
-          hasLoopRunNode: containerChildNodes.some(
-            (item) => item.flowNodeType === FlowNodeTypeEnum.loopRun
-          )
-        });
-        if (containerContext) {
-          const checkError = getNodeContainerCheckError({
-            node: templateNode,
-            context: containerContext
-          });
-          if (checkError) {
-            toast({
-              status: 'warning',
-              title: translateNodeContainerCheckError(checkError, t)
-            });
-            return;
           }
         }
 
@@ -479,9 +441,14 @@ const NodeTemplateList = ({
         }
 
         if (newNodes && newNodes.length > 0) {
-          onAddNode({
-            newNodes
-          });
+          // 拒绝原因由 dispatch 结果携带，app 只负责翻译。
+          const reason = (await onAddNode({ newNodes }))?.error?.reason;
+          if (reason) {
+            toast({
+              status: 'warning',
+              title: translateNodeContainerCheckError(reason, t)
+            });
+          }
         }
       } catch (error) {
         console.error('Failed to create node template:', error);
@@ -490,8 +457,6 @@ const NodeTemplateList = ({
     [
       computedNewNodeName,
       getNodeById,
-      nodeList,
-      edges,
       handleParams,
       isToolSelector,
       getIntersectingNodes,

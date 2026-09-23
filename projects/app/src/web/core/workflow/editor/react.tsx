@@ -8,6 +8,7 @@ import React, {
 } from 'react';
 import type {
   DeepReadonly,
+  PlacementRequest,
   WorkflowChange,
   WorkflowDispatchResult,
   WorkflowEdgeSnapshot,
@@ -24,7 +25,10 @@ import type {
 // issue-only 通知类型直接从定义模块引入，不经过 editor barrel。
 import type { WorkflowIssueUpdate } from '@fastgpt/global/core/workflow/editor/types';
 import type { StoreEdgeItemType } from '@fastgpt/global/core/workflow/type/edge';
-import type { StoreNodeItemType } from '@fastgpt/global/core/workflow/type/node';
+import type {
+  NodeTemplateContext,
+  StoreNodeItemType
+} from '@fastgpt/global/core/workflow/type/node';
 
 export type WorkflowNodeIdentity = {
   nodeId: string;
@@ -156,6 +160,10 @@ export type WorkflowEditorAdapter = {
   getFieldSnapshot: (query: WorkflowFieldQuery) => WorkflowFieldHandle | undefined;
   subscribeField: (query: WorkflowFieldQuery, listener: Listener) => () => void;
   getCanvasHandle: () => WorkflowCanvasHandle;
+  /** 按当前 Document 派生 placement context；模板目录、落点与连线判定共用同一份规则输入。 */
+  getPlacementContext: (request: PlacementRequest) => NodeTemplateContext | null;
+  /** 文档内容版本：语义事务递增，几何提交与 issue 刷新不变。 */
+  getDocumentVersion: () => number;
   dispose: () => void;
 };
 
@@ -451,6 +459,8 @@ export const createWorkflowEditorAdapter = (
       return subscribeRegistry(fieldListeners, getFieldQueryKey(query), listener);
     },
     getCanvasHandle: () => canvasHandle,
+    getPlacementContext: (request) => runtime.getPlacementContext(request),
+    getDocumentVersion: () => (runtime.isDisposed() ? 0 : runtime.getSavepoint().contentRevision),
     dispose: () => {
       if (disposed) return;
       disposed = true;
@@ -559,4 +569,33 @@ export function useField(
 export const useCanvas = (): WorkflowCanvasHandle => {
   const adapter = useWorkflowEditorAdapter();
   return adapter.getCanvasHandle();
+};
+
+/**
+ * 读取当前文档下的 placement context：侧边栏、handle 快捷添加、模板落点与连线校验共用。
+ * host 不再从画布数组重建 nodes/edges map，也不自己跑一遍容器校验。
+ *
+ * useWorkflow 只作为订阅触发器（结构或节点类型变化才重渲染），memo key 用文档内容版本。
+ * 几何提交同样会 bump contentRevision，所以拖拽落点后会重算一次 context；issue 刷新不会。
+ */
+export const usePlacementContext = ({
+  node,
+  isSidebar
+}: PlacementRequest): NodeTemplateContext | null => {
+  const adapter = useWorkflowEditorAdapter();
+  useWorkflow();
+  const sourceNodeId = node?.nodeId;
+  const sourceHandleId = node?.handleId ?? null;
+  const documentVersion = adapter.getDocumentVersion();
+
+  return useMemo(
+    () =>
+      adapter.getPlacementContext({
+        node: sourceNodeId ? { nodeId: sourceNodeId, handleId: sourceHandleId } : undefined,
+        isSidebar
+      }),
+    // documentVersion 是刻意的 memo key：context 由 runtime 内部索引派生，闭包里不读它。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [adapter, documentVersion, sourceNodeId, sourceHandleId, isSidebar]
+  );
 };

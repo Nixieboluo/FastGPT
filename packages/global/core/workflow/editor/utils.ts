@@ -7,13 +7,15 @@ import {
 } from '../constants';
 import { FlowNodeOutputTypeEnum, FlowNodeTypeEnum } from '../node/constant';
 import { getHandleId, nodeInputIsReference } from '../utils';
+import { moduleTemplatesFlat } from '../template/constants';
+import { isNodeConnectionAllowed } from '../template/context';
 import type {
   FlowNodeInputItemType,
   FlowNodeOutputItemType,
   ReferenceItemValueType,
   ReferenceValueType
 } from '../type/io';
-import type { FlowNodeItemType } from '../type/node';
+import type { FlowNodeItemType, NodeTemplateContext } from '../type/node';
 import type { AppChatConfigType } from '../../app/type';
 import type { WorkflowReferenceStatus } from './types';
 import { getWorkflowGlobalVariables } from './variables';
@@ -131,6 +133,27 @@ export const isWorkflowEdgeSourceHandleValid = (
 
   return true;
 };
+
+/**
+ * 目标节点在给定 placement context 下能否被连接：解析目标模板后应用容器与可见性规则。
+ * runtime 的 connectEdge 校验与画布目标柄的可连接判定共用这一条，模板解析不再各写一遍。
+ */
+export const isConnectionTargetAllowed = ({
+  context,
+  targetNode,
+  sourceParentNodeId
+}: {
+  /** 来源节点的 placement context；null 表示建不出上下文，按「允许」处理。 */
+  context: NodeTemplateContext | null;
+  targetNode: Pick<FlowNodeItemType, 'flowNodeType' | 'parentNodeId'>;
+  sourceParentNodeId?: string;
+}) =>
+  isNodeConnectionAllowed({
+    context,
+    targetTemplate: moduleTemplatesFlat.find((item) => item.id === targetNode.flowNodeType),
+    targetNode,
+    sourceParentNodeId
+  });
 
 /** 过滤引用选择器和 Runtime 可见的输出。 */
 export const filterSelectableWorkflowNodeOutputs = ({

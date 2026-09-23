@@ -4,12 +4,11 @@ import { MySourceHandle, MyTargetHandle } from '.';
 import { getHandleId } from '@fastgpt/global/core/workflow/utils';
 import { NodeInputKeyEnum, NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { moduleTemplatesFlat } from '@fastgpt/global/core/workflow/template/constants';
-import { isNodeConnectionAllowed } from '@fastgpt/global/core/workflow/template/context';
 import { useContextSelector } from 'use-context-selector';
 import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import type { IfElseListItemType } from '@fastgpt/global/core/workflow/template/system/ifElse/type';
 import { getIfElseBranchHandleKey } from '@fastgpt/global/core/workflow/template/system/ifElse/utils';
-import { useNode, useWorkflow } from '@/web/core/workflow/editor';
+import { isConnectionTargetAllowed, useNode, useWorkflow } from '@/web/core/workflow/editor';
 import { WorkflowUIContext } from '../../../context/workflowUIContext';
 import { useWorkflowDocument } from '../useWorkflowDocument';
 
@@ -143,20 +142,14 @@ export const ConnectionTargetHandle = React.memo(function ConnectionTargetHandle
       }
     }
 
-    // 目标节点容器或模板上下文不允许时禁止连接（与 Tool 柄及最终提交共用规则）
-    const sourceNode = connectingEdge ? getNodeById(connectingEdge.nodeId) : undefined;
-    const targetTemplate = node
-      ? moduleTemplatesFlat.find((item) => item.id === node.flowNodeType)
-      : undefined;
-    if (node && sourceNode && connectingEdge) {
+    // 目标节点容器或模板上下文不允许时禁止连接（与 Tool 柄及最终提交共用规则）；
+    // context 在连线拖拽开始时由 Runtime 算好，这里只按 target 应用纯规则。
+    if (node && connectingNode && connectingEdge) {
       if (
-        !isNodeConnectionAllowed({
-          targetTemplate,
+        !isConnectionTargetAllowed({
+          context: connectingEdge.context,
           targetNode: node,
-          sourceNode,
-          edges,
-          handleId: connectingEdge.handleId,
-          getNodeById
+          sourceParentNodeId: connectingNode.parentNodeId
         })
       ) {
         forbidConnect = true;

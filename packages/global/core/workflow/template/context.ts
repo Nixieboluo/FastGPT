@@ -1,5 +1,4 @@
 import { FlowNodeTypeEnum, isInteractiveNodeType, isNestedParentNodeType } from '../node/constant';
-import { NodeOutputKeyEnum } from '../constants';
 import type {
   FlowNodeTemplateType,
   FlowNodeItemType,
@@ -51,46 +50,35 @@ export const isTemplateVisible = (
   return !template.isShowInContext || template.isShowInContext(ctx);
 };
 
-/** 连接上下文判定只读端点与目标 handle；画布边与 Runtime 文档边（只读快照）都满足。 */
-type NodeTemplateEdge = { source?: string; target: string; targetHandle?: string | null };
-
-/** 校验节点连接的容器和模板上下文，供目标柄展示与最终提交共用。 */
+/**
+ * 校验节点连接的容器和模板上下文，供目标柄展示与 Runtime 连线提交共用。
+ * context 由 Runtime 按来源节点派生（连线拖拽开始时算一次），目标柄只按 target 应用纯规则。
+ */
 export const isNodeConnectionAllowed = ({
+  context,
   targetTemplate,
   targetNode,
-  sourceNode,
-  edges,
-  handleId,
-  getNodeById
+  sourceParentNodeId
 }: {
+  /** 来源节点的 placement context；null 表示无法建立上下文，按「允许」处理。 */
+  context: NodeTemplateContext | null;
   targetTemplate?: Pick<FlowNodeTemplateType, 'flowNodeType' | 'isShowInContext'>;
   targetNode: Pick<FlowNodeItemType, 'parentNodeId'>;
-  sourceNode: Pick<FlowNodeItemType, 'nodeId' | 'flowNodeType' | 'isTool' | 'parentNodeId'>;
-  edges: readonly NodeTemplateEdge[];
-  handleId?: string | null;
-  getNodeById: (nodeId: string | undefined | null) => FlowNodeItemType | undefined;
+  sourceParentNodeId?: string;
 }) => {
-  if (sourceNode.parentNodeId !== targetNode.parentNodeId) return false;
-
-  const sourceContext = buildNodeTemplateContext({
-    sourceNode,
-    edges,
-    handleId,
-    getNodeById
-  });
-
-  if (!sourceContext || !targetTemplate) return true;
+  if (sourceParentNodeId !== targetNode.parentNodeId) return false;
+  if (!context || !targetTemplate) return true;
 
   if (
     getNodeContainerCheckError({
       node: targetTemplate,
-      context: sourceContext
+      context
     })
   ) {
     return false;
   }
 
-  return isTemplateVisible(targetTemplate, sourceContext);
+  return isTemplateVisible(targetTemplate, context);
 };
 
 export type NodeContainerCheckError =
@@ -163,74 +151,4 @@ export const getNodeContainerCheckError = ({
   if (!isTemplateVisible(node, context)) return 'can_not_add_inside_container';
 
   return undefined;
-};
-
-/**
- * 构建快捷添加、侧边栏或容器落点共用的展示上下文；会沿入边追溯工具根边，无法建立上下文时返回 null。
- */
-export const buildNodeTemplateContext = ({
-  sourceNode,
-  edges,
-  handleId,
-  getNodeById,
-  isSidebar = false,
-  hasToolNode = false,
-  hasLoopRunNode = false,
-  targetParentType
-}: {
-  sourceNode:
-    | Pick<FlowNodeItemType, 'nodeId' | 'flowNodeType' | 'isTool' | 'parentNodeId'>
-    | undefined;
-  edges: readonly NodeTemplateEdge[];
-  handleId?: string | null;
-  getNodeById: (nodeId: string | undefined | null) => FlowNodeItemType | undefined;
-  isSidebar?: boolean;
-  hasToolNode?: boolean;
-  hasLoopRunNode?: boolean;
-  /** 目标容器类型；用于侧边栏或画布拖拽落点校验。 */
-  targetParentType?: FlowNodeTypeEnum | null;
-}): NodeTemplateContext | null => {
-  if (!sourceNode && !isSidebar) return null;
-  const parentNode = sourceNode?.parentNodeId ? getNodeById(sourceNode.parentNodeId) : undefined;
-  const isConnectedTool = (() => {
-    if (!sourceNode) return false;
-
-    const incomingEdges = new Map<string, NodeTemplateEdge[]>();
-    for (const edge of edges) {
-      const targetEdges = incomingEdges.get(edge.target);
-      if (targetEdges) {
-        targetEdges.push(edge);
-      } else {
-        incomingEdges.set(edge.target, [edge]);
-      }
-    }
-
-    // 工具子流程可经过多个普通节点，沿入边找到任一 selectedTools 根边即可。
-    const pendingNodeIds = [sourceNode.nodeId];
-    const visitedNodeIds = new Set<string>();
-    while (pendingNodeIds.length) {
-      const nodeId = pendingNodeIds.pop()!;
-      if (visitedNodeIds.has(nodeId)) continue;
-      visitedNodeIds.add(nodeId);
-
-      for (const edge of incomingEdges.get(nodeId) ?? []) {
-        if (edge.targetHandle === NodeOutputKeyEnum.selectedTools) return true;
-        if (edge.source) pendingNodeIds.push(edge.source);
-      }
-    }
-
-    return false;
-  })();
-  return {
-    isSidebar,
-    sourceNodeId: sourceNode?.nodeId ?? null,
-    sourceType: sourceNode?.flowNodeType ?? null,
-    sourceIsTool: !!sourceNode?.isTool,
-    isConnectedTool,
-    handleId: handleId ?? null,
-    parentType:
-      targetParentType === undefined ? (parentNode?.flowNodeType ?? null) : targetParentType,
-    hasToolNode,
-    hasLoopRunNode
-  };
 };

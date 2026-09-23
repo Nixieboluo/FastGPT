@@ -6,44 +6,30 @@ import {
   isNestedChildSystemNodeType
 } from '@fastgpt/global/core/workflow/node/constant';
 import { NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
-import { buildNodeTemplateContext } from '@fastgpt/global/core/workflow/template/context';
 import type { FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import MyBox from '@fastgpt/web/components/common/MyBox';
 import { useMemoizedFn } from 'ahooks';
 import React from 'react';
 import { useReactFlow, type Node } from 'reactflow';
 import { useContextSelector } from 'use-context-selector';
-import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { usePlacementContext, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
 import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/canvas';
 import { WorkflowModalContext } from './context/workflowModalContext';
 import NodeTemplateListHeader from './components/NodeTemplates/header';
 import NodeTemplateList from './components/NodeTemplates/list';
 import { useNodeTemplates } from './components/NodeTemplates/useNodeTemplates';
 import { popoverHeight, popoverWidth } from './hooks/useWorkflow';
-import { useDocumentGetNodeById, useWorkflowDocument } from './nodes/render/useWorkflowDocument';
 
 const NodeTemplatesPopover = () => {
   const { handleParams, setHandleParams } = useContextSelector(WorkflowModalContext, (v) => v);
 
   const workflow = useWorkflowAdapter();
   const { setNodes } = useReactFlow();
-  const getNodeById = useDocumentGetNodeById();
-  const nodeList = useWorkflowDocument().reader?.nodes;
-  // 模板目录按画布级存在性标记过滤：工具调用与循环执行入口容器各自唯一。
-  const hasToolNode = !!nodeList?.some((node) => node.flowNodeType === FlowNodeTypeEnum.toolCall);
-  const hasLoopRunNode = !!nodeList?.some((node) => node.flowNodeType === FlowNodeTypeEnum.loopRun);
-
-  const nodeTemplateContext = React.useMemo(
-    () =>
-      buildNodeTemplateContext({
-        sourceNode: handleParams?.nodeId ? getNodeById(handleParams.nodeId) : undefined,
-        edges: workflow.edges,
-        handleId: handleParams?.handleId,
-        getNodeById,
-        hasToolNode,
-        hasLoopRunNode
-      }),
-    [handleParams, workflow.edges, getNodeById, hasToolNode, hasLoopRunNode]
+  // 快捷添加是 handle context：候选集由来源节点与 handle 决定，作用域取来源节点所在容器。
+  const nodeTemplateContext = usePlacementContext(
+    handleParams?.nodeId
+      ? { node: { nodeId: handleParams.nodeId, handleId: handleParams.handleId } }
+      : {}
   );
 
   const {
@@ -80,9 +66,14 @@ const NodeTemplatesPopover = () => {
 
     const storeNodes = validNewNodes.map(canvasNodeToStoreNode);
     setNodes((state) => state.map((node) => ({ ...node, selected: false })));
-    workflow.addNodes(storeNodes);
+    const result = workflow.addNodes(storeNodes);
+    // 添加被拒时不再连边：节点没进文档，连边只会产生一串无效命令。
+    if (!result.ok) {
+      setHandleParams(null);
+      return result;
+    }
 
-    if (!handleParams) return;
+    if (!handleParams) return result;
 
     const newEdges = validNewNodes
       .filter((node) => !isNestedChildSystemNodeType(node.data.flowNodeType))
@@ -105,6 +96,7 @@ const NodeTemplatesPopover = () => {
     );
 
     setHandleParams(null);
+    return result;
   });
 
   if (!handleParams) return null;

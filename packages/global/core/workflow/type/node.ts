@@ -261,16 +261,20 @@ export type NodeTemplateContext = {
   isSidebar: boolean;
   sourceNodeId: string | null;
   sourceType: FlowNodeTypeEnum | null;
-  sourceIsTool: boolean;
   /** 源节点是否已被 selectedTools 边挂载到工具调用（工具子流程）。 */
   isConnectedTool: boolean;
   handleId: string | null;
   /** 源节点所在容器（loopRun/parallelRun 等）的节点类型。 */
   parentType: FlowNodeTypeEnum | null;
-  /** 画布上是否已有工具调用节点。 */
+  /** 目标父容器（root context 即文档根）的直接子节点里是否已有工具调用节点。 */
   hasToolNode: boolean;
-  /** 画布上是否已有循环执行节点。 */
+  /** 目标父容器（root context 即文档根）的直接子节点里是否已有循环执行节点。 */
   hasLoopRunNode: boolean;
+  /**
+   * 目标作用域内已被占用的唯一节点类型：root context 是根级唯一节点（workflowStart/pluginInput/pluginOutput），
+   * 容器 context 是容器内系统子节点（nestedStart/nestedEnd/loopRunStart）。模板目录据此过滤 unique 模板。
+   */
+  takenUniqueTypes: FlowNodeTypeEnum[];
 };
 export type NodeTemplateContextPredicate = (ctx: NodeTemplateContext | null) => boolean;
 

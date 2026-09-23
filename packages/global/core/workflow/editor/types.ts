@@ -7,9 +7,10 @@ import type {
   ReferenceValueType
 } from '../type/io';
 import type { StoreEdgeItemType } from '../type/edge';
-import type { StoreNodeItemType, WorkflowCheckIssue } from '../type/node';
+import type { NodeTemplateContext, StoreNodeItemType, WorkflowCheckIssue } from '../type/node';
 import type { WorkflowIOValueTypeEnum } from '../constants';
 import type { ModelTypeEnum } from '../../ai/constants';
+import type { NodeContainerCheckError } from '../template/context';
 
 /** 递归只读类型，用于阻止调用方通过 scoped snapshot 修改运行时数据。 */
 export type DeepReadonly<T> = T extends (...args: any[]) => any
@@ -253,6 +254,25 @@ export type WorkflowCommandError = {
     | 'invalid_edge'
     | 'invalid_placement';
   message: string;
+  /**
+   * `invalid_placement` 的容器拒绝码，供 host 翻译成用户文案；runtime 不接触 i18n。
+   * 唯一性拒绝（根级唯一、每容器一个系统子节点）不带 reason：目录侧已按 takenUniqueTypes 过滤。
+   */
+  reason?: NodeContainerCheckError;
+};
+
+/**
+ * placement context 请求。`node` 表示来源节点：
+ * 缺省即全局/root context（侧边栏添加，添加后由用户自行连线），存在即 handle context
+ * （普通 handle 与 tool handle 共用）。无法建立上下文时 runtime 返回 null，调用方按「允许」处理。
+ */
+export type PlacementRequest = {
+  node?: {
+    nodeId: string;
+    handleId?: string | null;
+  };
+  /** 侧边栏与画布落点没有来源节点，仍要产出 root context。 */
+  isSidebar?: boolean;
 };
 
 /** dispatch 的结果；拒绝命令不抛出，也不产生事件或 history。 */
@@ -291,6 +311,11 @@ export type WorkflowRuntimePort = {
   refreshIssues: (scope?: WorkflowIssueScope) => WorkflowIssueUpdate;
   /** 订阅 issue-only 刷新；语义、几何与 replace 事件仍走 subscribe。 */
   subscribeIssues: (listener: (update: WorkflowIssueUpdate) => void) => () => void;
+  /**
+   * 按当前 Document 推导模板展示上下文：侧边栏、handle 快捷添加、模板落点、拖入容器与连线校验共用。
+   * host 不再从画布数组重建 nodes/edges map。
+   */
+  getPlacementContext: (request: PlacementRequest) => NodeTemplateContext | null;
   isDisposed: () => boolean;
   dispose: () => void;
 };

@@ -20,7 +20,6 @@ import {
   pluginSystemModuleTemplates
 } from '@fastgpt/global/core/workflow/template/constants';
 import { useScrollPagination } from '@fastgpt/web/hooks/useScrollPagination';
-import { useWorkflowDocument } from '../../nodes/render/useWorkflowDocument';
 
 export const useNodeTemplates = (context: NodeTemplateContext | null = null) => {
   const [templateType, setTemplateType] = useState(TemplateTypeEnum.basic);
@@ -40,8 +39,6 @@ export const useNodeTemplates = (context: NodeTemplateContext | null = null) => 
   // 不再从数据层 Context 透传。
   const basicNodeTemplates =
     appType === AppTypeEnum.workflowTool ? pluginSystemModuleTemplates : appSystemModuleTemplates;
-  const nodeList = useWorkflowDocument().reader?.nodes;
-  const nodeAmount = nodeList?.length ?? 0;
 
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const { data: toolTags = [] } = useRequest(getPluginToolTags, {
@@ -91,12 +88,10 @@ export const useNodeTemplates = (context: NodeTemplateContext | null = null) => 
         return basicNodeTemplates
           .filter((item) => {
             if (item.flowNodeType === FlowNodeTypeEnum.queryExtension) return false;
-            // unique node filter
-            if (item.unique) {
-              const nodeExist = nodeList?.some((node) => node.flowNodeType === item.flowNodeType);
-              if (nodeExist) {
-                return false;
-              }
+            // unique 过滤读 context 的作用域占用集合（root 或目标容器），不再画布级扫描；
+            // 模板标记只是目录输入，runtime 仍是唯一性的最终拒绝方。
+            if (item.unique && context?.takenUniqueTypes.includes(item.flowNodeType)) {
+              return false;
             }
             return isTemplateVisible(item, context);
           })
@@ -114,7 +109,7 @@ export const useNodeTemplates = (context: NodeTemplateContext | null = null) => 
     {
       manual: false,
       throttleWait: 100,
-      refreshDeps: [basicNodeTemplates, nodeAmount, templateType, context]
+      refreshDeps: [basicNodeTemplates, templateType, context]
     }
   );
 

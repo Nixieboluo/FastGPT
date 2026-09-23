@@ -11,12 +11,19 @@ import {
   isNestedChildSystemNodeType,
   isNestedParentNodeType
 } from '../../node/constant';
-import type { StoreNodeItemType } from '../../type/node';
+import type { NodeTemplateContext, StoreNodeItemType } from '../../type/node';
 import type { FlowNodeInputItemType } from '../../type/io';
 import type { AppChatConfigType } from '../../../app/type';
 import { isValidArrayReferenceValue } from '../../utils';
-import { buildNodeTemplateContext, getNodeContainerCheckError } from '../../template/context';
-import type { NodeViewState, WorkflowFieldIdentity, WorkflowNodeData } from '../types';
+import { getNodeContainerCheckError } from '../../template/context';
+import type { NodeContainerCheckError } from '../../template/context';
+import { moduleTemplatesFlat } from '../../template/constants';
+import type {
+  NodeViewState,
+  WorkflowCommandError,
+  WorkflowFieldIdentity,
+  WorkflowNodeData
+} from '../types';
 import { getWorkflowGlobalVariables } from '../variables';
 import {
   addFieldIdentity,
@@ -58,6 +65,24 @@ const uniqueRootNodeTypes = new Set<FlowNodeTypeEnum>([
   FlowNodeTypeEnum.pluginInput,
   FlowNodeTypeEnum.pluginOutput
 ]);
+
+/** 根级唯一节点类型判定：root context 的 takenUniqueTypes 只统计这一批。 */
+export const isUniqueRootNodeType = (flowNodeType: FlowNodeTypeEnum) =>
+  uniqueRootNodeTypes.has(flowNodeType);
+
+/**
+ * placement 拒绝码：容器拒绝沿用模板规则的结构化码（host 可翻译成用户文案），
+ * 其余硬规则（根级放系统子节点、父节点不是容器、系统子节点与容器不匹配）只有开发期 message。
+ */
+export type PlacementReject = NodeContainerCheckError | 'invalid_placement';
+
+/** 把 placement 拒绝码转成命令错误；reason 只承载容器拒绝码。 */
+export const placementError = (reject: PlacementReject): WorkflowCommandError =>
+  getError(
+    'invalid_placement',
+    'Node placement is not allowed',
+    reject === 'invalid_placement' ? undefined : reject
+  );
 
 export const hasForbidDelete = (value: unknown): boolean =>
   isObject(value) && value.forbidDelete === true;
@@ -281,16 +306,23 @@ export const documentToCanonical = ({
 const isForbiddenDeleteNode = (node: NodeRecord) =>
   node.forbidDelete === true || systemProtectedDeleteTypes.has(node.data.flowNodeType);
 
-/** 判断节点在指定容器下的放置是否合法；Issue module 也直接复用这条纯规则。 */
+/**
+ * 判断节点在指定容器下的放置是否合法。
+ * context 由 Document 按目标父容器派生（documentModule.derivePlacementContext）；
+ * 派生不出 context 时按允许处理，与模板规则「无上下文即不限制」保持一致。
+ */
 export const getPlacementError = ({
   working,
   node,
-  parentId
+  parentId,
+  context
 }: {
   working: RuntimeDocument;
   node: NodeRecord;
   parentId?: string;
-}): 'invalid_placement' | undefined => {
+  /** 目标父容器的 placement context；root 放置不使用。 */
+  context?: NodeTemplateContext | null;
+}): PlacementReject | undefined => {
   if (!parentId) {
     return isNestedChildSystemNodeType(node.data.flowNodeType) ||
       node.data.flowNodeType === FlowNodeTypeEnum.loopRunBreak
@@ -315,37 +347,33 @@ export const getPlacementError = ({
   }
   if (isValidSystemChild) return undefined;
 
-  const context = buildNodeTemplateContext({
-    sourceNode: undefined,
-    edges: [],
-    getNodeById: () => undefined,
-    isSidebar: true,
-    targetParentType: parentType,
-    hasToolNode: working.nodes.some(
-      ({ data }) =>
-        data.parentNodeId === parentId && data.flowNodeType === FlowNodeTypeEnum.toolCall
-    ),
-    hasLoopRunNode: working.nodes.some(
-      ({ data }) => data.parentNodeId === parentId && data.flowNodeType === FlowNodeTypeEnum.loopRun
-    )
+  if (!context) return undefined;
+
+  // 文档节点不携带模板展示字段，按类型解析模板补齐 isShowInContext：
+  // 侧边栏目录过滤、目标柄判定与 placement 拒绝因此共用同一条可见性规则。
+  const template = moduleTemplatesFlat.find((item) => item.id === node.data.flowNodeType);
+  return getNodeContainerCheckError({
+    node: { ...node.data, isShowInContext: template?.isShowInContext },
+    context
   });
-  return context && getNodeContainerCheckError({ node: node.data, context })
-    ? 'invalid_placement'
-    : undefined;
 };
 
 /** 校验新增或替换节点的容器、系统节点唯一性，保证 placement 规则只有一个入口。 */
 export const validateNodePlacement = ({
   working,
   node,
-  excludeNodeId
+  excludeNodeId,
+  context
 }: {
   working: RuntimeDocument;
   node: NodeRecord;
   excludeNodeId?: string;
+  /** 目标父容器的 placement context；root 放置不需要。 */
+  context?: NodeTemplateContext | null;
 }) => {
-  if (getPlacementError({ working, node, parentId: node.data.parentNodeId })) {
-    throw getError('invalid_placement', 'Node placement is not allowed');
+  const reject = getPlacementError({ working, node, parentId: node.data.parentNodeId, context });
+  if (reject) {
+    throw placementError(reject);
   }
   if (
     uniqueRootNodeTypes.has(node.data.flowNodeType) &&
@@ -427,6 +455,9 @@ export const resolveStructureChanged = (meta: MutationMeta): boolean =>
       !valuesEqual(before.data.outputs, after.data.outputs)
   );
 
+/** childrenByParent 里文档根对应的桶：parentNodeId 为空即根级子节点。 */
+export const ROOT_PARENT_KEY = '';
+
 /** 构建私有邻接索引；索引只服务于 runtime 内部 BFS，不对外暴露。 */
 export const buildGraphIndex = (nodes: NodeRecord[], edges: EdgeRecord[]): GraphIndex => {
   const bySource = new Map<string, EdgeRecord[]>();
@@ -435,11 +466,11 @@ export const buildGraphIndex = (nodes: NodeRecord[], edges: EdgeRecord[]): Graph
   const childrenByParent = new Map<string, string[]>();
   const edgeById = new Map<string, EdgeRecord>();
   nodes.forEach(({ data }) => {
-    if (!data.parentNodeId) return;
-    parentByChild.set(data.nodeId, data.parentNodeId);
-    const children = childrenByParent.get(data.parentNodeId) ?? [];
+    const parentKey = data.parentNodeId || ROOT_PARENT_KEY;
+    const children = childrenByParent.get(parentKey) ?? [];
     children.push(data.nodeId);
-    childrenByParent.set(data.parentNodeId, children);
+    childrenByParent.set(parentKey, children);
+    if (data.parentNodeId) parentByChild.set(data.nodeId, data.parentNodeId);
   });
   edges.forEach((edge) => {
     edgeById.set(edge.id, edge);
@@ -478,22 +509,25 @@ export const applyGraphIndexChanges = (graphIndex: GraphIndex, meta: MutationMet
   meta.removedEdges.forEach(removeEdge);
   meta.addedEdges.forEach(addEdge);
   meta.nodeChanges.forEach(({ before, after }) => {
-    if (before?.data.parentNodeId && before.data.parentNodeId !== after?.data.parentNodeId) {
-      graphIndex.parentByChild.delete(before.data.nodeId);
-      const children = graphIndex.childrenByParent.get(before.data.parentNodeId) ?? [];
+    const beforeKey = before?.data.parentNodeId || ROOT_PARENT_KEY;
+    const afterKey = after?.data.parentNodeId || ROOT_PARENT_KEY;
+    // 根级子节点也要维护：placement context 的 root 作用域直接读 ROOT_PARENT_KEY 桶。
+    if (before && (!after || beforeKey !== afterKey)) {
+      const children = graphIndex.childrenByParent.get(beforeKey) ?? [];
       const next = children.filter((nodeId) => nodeId !== before.data.nodeId);
-      if (next.length > 0) graphIndex.childrenByParent.set(before.data.parentNodeId, next);
-      else graphIndex.childrenByParent.delete(before.data.parentNodeId);
+      if (next.length > 0) graphIndex.childrenByParent.set(beforeKey, next);
+      else graphIndex.childrenByParent.delete(beforeKey);
+      graphIndex.parentByChild.delete(before.data.nodeId);
     }
-    if (after?.data.parentNodeId && before?.data.parentNodeId !== after.data.parentNodeId) {
-      graphIndex.parentByChild.set(after.data.nodeId, after.data.parentNodeId);
-      const children = graphIndex.childrenByParent.get(after.data.parentNodeId) ?? [];
-      graphIndex.childrenByParent.set(after.data.parentNodeId, [...children, after.data.nodeId]);
+    if (after && (!before || beforeKey !== afterKey)) {
+      if (after.data.parentNodeId) {
+        graphIndex.parentByChild.set(after.data.nodeId, after.data.parentNodeId);
+      }
+      const children = graphIndex.childrenByParent.get(afterKey) ?? [];
+      graphIndex.childrenByParent.set(afterKey, [...children, after.data.nodeId]);
     }
-    if (!after) {
-      graphIndex.parentByChild.delete(before?.data.nodeId ?? '');
-      graphIndex.childrenByParent.delete(before?.data.nodeId ?? '');
-    }
+    // 被删掉的节点自己可能就是某个容器桶的 key。
+    if (!after && before) graphIndex.childrenByParent.delete(before.data.nodeId);
   });
 };
 
