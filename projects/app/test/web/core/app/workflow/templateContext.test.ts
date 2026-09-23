@@ -6,6 +6,7 @@ import {
   createShowInContext,
   getNodeContainerCheckError,
   isNodeConnectionAllowed,
+  isTemplateAddable,
   isTemplateVisible
 } from '@fastgpt/global/core/workflow/template/context';
 import { AiChatModule } from '@fastgpt/global/core/workflow/template/system/aiChat';
@@ -17,6 +18,7 @@ import { StopToolNode } from '@fastgpt/global/core/workflow/template/system/stop
 import { ToolParamsNode } from '@fastgpt/global/core/workflow/template/system/toolParams';
 import { RunToolSetNode } from '@fastgpt/global/core/workflow/template/system/runToolSet';
 import { UserSelectNode } from '@fastgpt/global/core/workflow/template/system/interactive/userSelect';
+import { WorkflowStart } from '@fastgpt/global/core/workflow/template/system/workflowStart';
 import type { NodeTemplateContext } from '@fastgpt/global/core/workflow/type/node';
 
 const ctx = (patch: Partial<NodeTemplateContext>): NodeTemplateContext => ({
@@ -66,6 +68,35 @@ describe('template context', () => {
   it('未声明谓词的模板为顶级节点，处处可见', () => {
     expect(isTemplateVisible(AiChatModule, null)).toBe(true);
     expect(isTemplateVisible(AiChatModule, ctx({ sourceType: FlowNodeTypeEnum.toolCall }))).toBe(
+      true
+    );
+  });
+
+  it('unique 模板只在根作用域且未被占用时提供', () => {
+    // 根作用域已有「流程开始」：目录不再提供，画布上只会存在一个开始节点。
+    expect(
+      isTemplateAddable(
+        WorkflowStart,
+        ctx({ isSidebar: true, takenUniqueTypes: [FlowNodeTypeEnum.workflowStart] })
+      )
+    ).toBe(false);
+    // 容器作用域的 takenUniqueTypes 只统计容器内系统子节点，根级唯一节点必须直接隐藏，
+    // 否则容器内点 handle 展开的快捷添加面板会出现「流程开始」。
+    expect(
+      isTemplateAddable(
+        WorkflowStart,
+        ctx({
+          parentType: FlowNodeTypeEnum.loopRun,
+          takenUniqueTypes: [FlowNodeTypeEnum.loopRunStart]
+        })
+      )
+    ).toBe(false);
+    // 建不出上下文时同样不提供。
+    expect(isTemplateAddable(WorkflowStart, null)).toBe(false);
+    // 根作用域没有开始节点（异常文档）时仍提供，保留修复入口。
+    expect(isTemplateAddable(WorkflowStart, ctx({ isSidebar: true }))).toBe(true);
+    // 普通模板不受影响。
+    expect(isTemplateAddable(AiChatModule, ctx({ parentType: FlowNodeTypeEnum.loopRun }))).toBe(
       true
     );
   });

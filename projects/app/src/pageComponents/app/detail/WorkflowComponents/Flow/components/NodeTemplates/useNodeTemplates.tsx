@@ -4,7 +4,10 @@ import type {
   NodeTemplateContext,
   NodeTemplateListItemType
 } from '@fastgpt/global/core/workflow/type/node';
-import { isTemplateVisible } from '@fastgpt/global/core/workflow/template/context';
+import {
+  isTemplateAddable,
+  isTemplateVisible
+} from '@fastgpt/global/core/workflow/template/context';
 import { getTeamAppTemplatesV2, getAppToolTemplates } from '@/web/core/app/api/tool';
 import { TemplateTypeEnum } from './header';
 import { useContextSelector } from 'use-context-selector';
@@ -88,11 +91,9 @@ export const useNodeTemplates = (context: NodeTemplateContext | null = null) => 
         return basicNodeTemplates
           .filter((item) => {
             if (item.flowNodeType === FlowNodeTypeEnum.queryExtension) return false;
-            // unique 过滤读 context 的作用域占用集合（root 或目标容器），不再画布级扫描；
+            // unique 模板只按作用域提供（容器内不给「流程开始」这类根级系统节点），
             // 模板标记只是目录输入，runtime 仍是唯一性的最终拒绝方。
-            if (item.unique && context?.takenUniqueTypes.includes(item.flowNodeType)) {
-              return false;
-            }
+            if (!isTemplateAddable(item, context)) return false;
             return isTemplateVisible(item, context);
           })
           .map<NodeTemplateListItemType>((item) => ({

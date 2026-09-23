@@ -51,6 +51,21 @@ export const isTemplateVisible = (
 };
 
 /**
+ * 目录是否提供该模板给用户手动添加。
+ * unique 模板（流程开始 / 插件输入输出）随应用自动创建且禁止删除，只能存在于文档根：
+ * 容器作用域与建不出上下文时一律不提供，根作用域按已占用类型过滤。
+ * 目录只是候选集，重复添加最终仍由 Runtime 的 validateNodePlacement 拒绝。
+ */
+export const isTemplateAddable = (
+  template: Pick<FlowNodeTemplateType, 'flowNodeType' | 'unique'>,
+  ctx: NodeTemplateContext | null
+): boolean => {
+  if (!template.unique) return true;
+  if (!ctx || ctx.parentType) return false;
+  return !ctx.takenUniqueTypes.includes(template.flowNodeType);
+};
+
+/**
  * 校验节点连接的容器和模板上下文，供目标柄展示与 Runtime 连线提交共用。
  * context 由 Runtime 按来源节点派生（连线拖拽开始时算一次），目标柄只按 target 应用纯规则。
  */
