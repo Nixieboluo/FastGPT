@@ -26,7 +26,6 @@ import { type FieldErrors, useForm } from 'react-hook-form';
 import { useContextSelector } from 'use-context-selector';
 import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { useWorkflowDocument } from '../nodes/render/useWorkflowDocument';
-import { useReactFlow } from 'reactflow';
 import { AppContext } from '../../../context';
 import { WorkflowDebugContext } from '../../context/workflowDebugContext';
 import {
@@ -54,10 +53,9 @@ export const useDebug = () => {
   const { t: workflowT } = useTranslation();
 
   const { reader } = useWorkflowDocument();
-  const { getNodes } = useReactFlow();
-  const patchViewData = useContextSelector(WorkflowHostContext, (v) => v.patchViewData);
   const onStartNodeDebug = useContextSelector(WorkflowDebugContext, (v) => v.onStartNodeDebug);
   const setDebugChatId = useContextSelector(WorkflowDebugContext, (v) => v.setDebugChatId);
+  const onOpenNodeDebug = useContextSelector(WorkflowDebugContext, (v) => v.onOpenNodeDebug);
   // 调试输入改读 host 出站边界（与保存发布同一个 codec）。
   const serializeWorkflowAndCheck = useContextSelector(
     WorkflowHostContext,
@@ -99,12 +97,8 @@ export const useDebug = () => {
       // 每次打开调试弹窗生成独立的会话 chatId，文件上传与调试运行共用，保证文件归属校验通过
       setDebugChatId(getNanoid());
 
-      patchViewData(
-        getNodes().map((node) => ({
-          nodeId: node.data.nodeId,
-          values: { debugResult: undefined }
-        }))
-      );
+      // 只清上一轮 debug session 写过 overlay 的节点，不再对整份画布做全量清除
+      onOpenNodeDebug();
       const serialized = await serializeWorkflowAndCheck();
       if (!serialized) return;
       const { nodes, edges }: { nodes: StoreNodeItemType[]; edges: StoreEdgeItemType[] } =
@@ -127,7 +121,7 @@ export const useDebug = () => {
       setRuntimeNodes(runtimeNodes);
       setRuntimeEdges(runtimeEdges);
     },
-    [serializeWorkflowAndCheck, getNodes, patchViewData, setDebugChatId]
+    [serializeWorkflowAndCheck, onOpenNodeDebug, setDebugChatId]
   );
 
   const DebugInputModal = useCallback(() => {
