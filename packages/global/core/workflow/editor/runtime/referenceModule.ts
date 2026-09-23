@@ -15,7 +15,8 @@ import { getWorkflowGlobalVariables } from '../variables';
 import type {
   FlowNodeInputItemType,
   FlowNodeOutputItemType,
-  ReferenceItemValueType
+  ReferenceItemValueType,
+  WorkflowReferenceSnapshot
 } from '../../type/io';
 import type {
   WorkflowFieldIdentity,
@@ -35,12 +36,12 @@ import {
 } from './kernel';
 import type {
   DocumentReadApi,
-  EdgeRecord,
   FieldStatusCache,
   MutationMeta,
   NodeRecord,
   ReferenceGraph,
-  ReferenceSource
+  ReferenceSource,
+  RuntimeDocument
 } from './types';
 
 /**
@@ -50,6 +51,9 @@ import type {
 
 const getSourceIdentityKey = ([nodeId, outputId]: ReferenceItemValueType) =>
   `${nodeId}\0${outputId}`;
+
+const toSnapshotMap = (snapshots: readonly WorkflowReferenceSnapshot[]) =>
+  new Map(snapshots.map((snapshot) => [getSourceIdentityKey(snapshot.reference), snapshot]));
 
 const createReferenceGraph = (): ReferenceGraph => ({
   consumersBySource: new Map(),
@@ -209,22 +213,32 @@ const hasMalformedReferenceArray = (value: unknown): boolean => {
 };
 
 /**
- * 按稳定引用身份读取当前来源展示元数据；来源被删除时由实时状态报告 invalid_reference。
+ * 来源解析作用域：解析一个引用只需要这三样，实时文档与定格的历史文档都能提供。
+ * 实时侧由 Document 的节点索引与 GraphIndex 支撑，不再对 nodes / edges 做线性扫描。
+ */
+type ReferenceSourceScope = {
+  chatConfig: AppChatConfigType;
+  getNodeById: (nodeId: string) => NodeRecord | undefined;
+  /** 节点是否被 Agent 挂成工具：HTTP 节点的参数输出只在挂载时才是可选来源。 */
+  isMountedTool: (nodeId: string) => boolean;
+};
+
+/**
+ * 按稳定引用身份读取来源展示元数据：实时来源优先，来源缺失时回落历史快照。
+ * 回落只补展示字段，output 依然为空，因此状态判定照旧报 invalid_reference。
  */
 const getReferenceSource = ({
   reference,
-  nodes,
-  chatConfig,
-  edges
+  scope,
+  snapshots
 }: {
   reference: ReferenceItemValueType;
-  nodes: NodeRecord[];
-  chatConfig: AppChatConfigType;
-  edges: EdgeRecord[];
+  scope: ReferenceSourceScope;
+  snapshots?: readonly WorkflowReferenceSnapshot[];
 }): ReferenceSource => {
   const [sourceNodeId, outputId] = reference;
   if (sourceNodeId === VARIABLE_NODE_ID) {
-    const variable = getWorkflowGlobalVariables({ chatConfig }).find(
+    const variable = getWorkflowGlobalVariables({ chatConfig: scope.chatConfig }).find(
       (item) => item.key === outputId
     );
     if (variable) {
@@ -242,14 +256,11 @@ const getReferenceSource = ({
       };
     }
   } else {
-    const node = nodes.find(({ data }) => data.nodeId === sourceNodeId);
-    const isMountedTool = edges.some(
-      ({ data }) =>
-        data.target === sourceNodeId && data.targetHandle === NodeOutputKeyEnum.selectedTools
-    );
+    const node = scope.getNodeById(sourceNodeId);
     const outputs = [
       ...((node?.data.outputs ?? []) as FlowNodeOutputItemType[]),
-      ...(node?.data.flowNodeType === FlowNodeTypeEnum.httpRequest468 && isMountedTool
+      ...(node?.data.flowNodeType === FlowNodeTypeEnum.httpRequest468 &&
+      scope.isMountedTool(sourceNodeId)
         ? node.data.inputs.filter(isToolParamInput).map((input) => ({
             id: input.key,
             key: input.key,
@@ -270,7 +281,18 @@ const getReferenceSource = ({
     }
   }
 
-  return {};
+  const sourceKey = getSourceIdentityKey(reference);
+  // ponytail: 线性扫快照数组。只在来源缺失的 miss 路径走到，条数等于「仍被引用的已删来源」，
+  // 实测 1000 节点链上 50 条快照对 refreshIssues('all') 是噪声级（1.87ms -> 1.96ms）。
+  // 真出现成百上千条快照时，再按数组身份缓存一份 Map：快照数组整体替换、从不原地改，身份可直接当 key。
+  const snapshot = snapshots?.find((item) => getSourceIdentityKey(item.reference) === sourceKey);
+  return snapshot
+    ? {
+        ...(snapshot.sourceLabel ? { sourceLabel: snapshot.sourceLabel } : {}),
+        ...(snapshot.outputLabel ? { outputLabel: snapshot.outputLabel } : {}),
+        ...(snapshot.icon ? { icon: snapshot.icon } : {})
+      }
+    : {};
 };
 
 /** 把来源节点的下游消费字段并入 affected records；graph 可以是 committed 或 staged 版本。 */
@@ -303,6 +325,33 @@ export const createReferenceModule = (document: DocumentReadApi) => {
   let referenceGraph = buildReferenceGraph(document.getDocument().nodes);
   const fieldStatusCache = new Map<string, FieldStatusCache>();
 
+  /**
+   * 每轮派生共享的上游可达性记忆化：同一字段的多个引用、同一轮 rebuild 里的多个节点
+   * 命中同一份结果，长链上不再重复跑反向 BFS。
+   * 返回的 Set 是共享只读对象，调用方只能读（.has 或展开后排序），不要原地修改。
+   */
+  const incomingSourcesCache = new Map<string, ReadonlySet<string>>();
+  /** 边、引用输入或整份文档变化都会让上游集合失效，因此各失效点统一整体清空。 */
+  const invalidateIncomingSources = () => incomingSourcesCache.clear();
+
+  /** 读当前已提交文档的来源元数据；来源缺失时回落文档上的历史快照。 */
+  const resolveCurrentSource = (reference: ReferenceItemValueType): ReferenceSource => {
+    const { chatConfig, referenceSnapshots } = document.getDocument();
+    const byTarget = document.getGraphIndex().byTarget;
+    return getReferenceSource({
+      reference,
+      scope: {
+        chatConfig,
+        getNodeById: document.getNodeById,
+        isMountedTool: (nodeId) =>
+          (byTarget.get(nodeId) ?? []).some(
+            ({ data }) => data.targetHandle === NodeOutputKeyEnum.selectedTools
+          )
+      },
+      snapshots: referenceSnapshots
+    });
+  };
+
   const getGraph = () => referenceGraph;
   const forkGraph = () => forkReferenceGraph(referenceGraph);
   const commitStagedGraph = (graph: ReferenceGraph) => {
@@ -310,6 +359,7 @@ export const createReferenceModule = (document: DocumentReadApi) => {
   };
   const rebuildGraph = () => {
     referenceGraph = buildReferenceGraph(document.getDocument().nodes);
+    invalidateIncomingSources();
   };
 
   /**
@@ -327,6 +377,8 @@ export const createReferenceModule = (document: DocumentReadApi) => {
     beforeGraph: ReferenceGraph;
   }): Map<string, WorkflowFieldIdentity> => {
     commitStagedGraph(stagedGraph);
+    // 本笔事务可能改了边或引用输入，上游可达性记忆化整体作废，下一轮派生重新计算。
+    invalidateIncomingSources();
     const committedGraph = referenceGraph;
     const cacheOnlyFieldIds = new Map<string, WorkflowFieldIdentity>();
     addAffectedConsumerFields({ meta, graph: beforeGraph, sourceNodeIds: meta.changedNodeIds });
@@ -403,8 +455,13 @@ export const createReferenceModule = (document: DocumentReadApi) => {
     });
   };
 
-  /** 从目标节点反向遍历所有上游节点，visited 保证循环图有限终止。 */
-  const getIncomingSources = (nodeId: string) => {
+  /**
+   * 从目标节点反向遍历所有上游节点，visited 保证循环图有限终止。
+   * 结果按 nodeId 记忆化到本轮派生结束；返回的 Set 共享只读，调用方不得原地修改。
+   */
+  const getIncomingSources = (nodeId: string): ReadonlySet<string> => {
+    const memoized = incomingSourcesCache.get(nodeId);
+    if (memoized) return memoized;
     const graphIndex = document.getGraphIndex();
     const sourceIds = new Set<string>();
     const containerNodeIds = [nodeId];
@@ -440,6 +497,7 @@ export const createReferenceModule = (document: DocumentReadApi) => {
         queue.push(edge.data.source);
       });
     }
+    incomingSourcesCache.set(nodeId, sourceIds);
     return sourceIds;
   };
 
@@ -453,14 +511,8 @@ export const createReferenceModule = (document: DocumentReadApi) => {
     targetType?: WorkflowIOValueTypeEnum;
     targetNodeId: string;
   }): WorkflowReferenceStatus => {
-    const current = document.getDocument();
     const [sourceNodeId] = reference;
-    const source = getReferenceSource({
-      reference,
-      nodes: current.nodes,
-      chatConfig: current.chatConfig,
-      edges: current.edges
-    });
+    const source = resolveCurrentSource(reference);
     const sourceMetadata = {
       ...(source.sourceLabel ? { sourceLabel: source.sourceLabel } : {}),
       ...(source.outputLabel ? { outputLabel: source.outputLabel } : {}),
@@ -563,13 +615,7 @@ export const createReferenceModule = (document: DocumentReadApi) => {
   /** 引用来源的值类型；来源缺失返回 undefined，调用方按 any 处理。 */
   const getReferenceValueType = (reference: unknown) => {
     if (!isWorkflowReferenceItem(reference)) return undefined;
-    const current = document.getDocument();
-    return getReferenceSource({
-      reference,
-      nodes: current.nodes,
-      chatConfig: current.chatConfig,
-      edges: current.edges
-    }).output?.valueType;
+    return resolveCurrentSource(reference).output?.valueType;
   };
 
   /** 返回当前字段可选的实时来源；失效引用不会重新出现在选择列表。 */
@@ -630,8 +676,130 @@ export const createReferenceModule = (document: DocumentReadApi) => {
     return options;
   };
 
+  /**
+   * 语义事务里增量捕获引用来源快照，只扫描本轮受影响的 source key：
+   * `meta.changedNodeIds`、selectedTools 边变化、chatConfig 变化（映射到全局变量）。
+   * 来源仍可解析就丢掉旧快照；来源刚消失就从 before 文档抓展示元数据；
+   * 最后只保留 after Reference Graph 里仍有 consumer 的项，因此捕获结果天然没有孤立索引。
+   *
+   * 调用时机有约束：必须在 Document 提交与索引更新之后、Issue 重算之前，
+   * 实时侧读到的才是本轮结果，Issue View 才能拿到历史展示字段。geometry 事务不进这里。
+   */
+  const captureSnapshots = ({
+    previous,
+    beforeGraph,
+    afterGraph,
+    meta
+  }: {
+    /** 事务开始前的文档；来源刚消失时从它读历史展示元数据。 */
+    previous: RuntimeDocument;
+    beforeGraph: ReferenceGraph;
+    afterGraph: ReferenceGraph;
+    meta: MutationMeta;
+  }): WorkflowReferenceSnapshot[] => {
+    const changedSourceNodeIds = new Set(meta.changedNodeIds);
+    [...meta.addedEdges.values(), ...meta.removedEdges.values()].forEach((edge) => {
+      if (edge.data.targetHandle === NodeOutputKeyEnum.selectedTools) {
+        changedSourceNodeIds.add(edge.data.target);
+      }
+    });
+    if (meta.chatConfigChanged) changedSourceNodeIds.add(VARIABLE_NODE_ID);
+
+    const sourceKeys = new Set<string>();
+    changedSourceNodeIds.forEach((nodeId) => {
+      getReferenceGraphSet(beforeGraph, 'sourceKeysByNode', nodeId)?.forEach((key) =>
+        sourceKeys.add(key)
+      );
+      getReferenceGraphSet(afterGraph, 'sourceKeysByNode', nodeId)?.forEach((key) =>
+        sourceKeys.add(key)
+      );
+    });
+    // 本轮没有引用来源被动过：直接沿用上一份数组，连 Map 都不建。
+    if (sourceKeys.size === 0) return document.getDocument().referenceSnapshots;
+
+    const parseSourceIdentityKey = (sourceKey: string): ReferenceItemValueType | undefined => {
+      const separator = sourceKey.indexOf('\0');
+      if (separator < 0) return undefined;
+      return [sourceKey.slice(0, separator), sourceKey.slice(separator + 1)];
+    };
+    /** 为定格文档建来源作用域；两张索引都惰性构建，本轮没有来源消失时不付代价。 */
+    const createFrozenSourceScope = (frozen: RuntimeDocument): ReferenceSourceScope => {
+      let nodeIndex: Map<string, NodeRecord> | undefined;
+      let mountedToolIds: Set<string> | undefined;
+      return {
+        chatConfig: frozen.chatConfig,
+        getNodeById: (nodeId) =>
+          (nodeIndex ??= new Map(frozen.nodes.map((node) => [node.data.nodeId, node]))).get(nodeId),
+        isMountedTool: (nodeId) =>
+          (mountedToolIds ??= new Set(
+            frozen.edges
+              .filter(({ data }) => data.targetHandle === NodeOutputKeyEnum.selectedTools)
+              .map(({ data }) => data.target)
+          )).has(nodeId)
+      };
+    };
+
+    const snapshots = toSnapshotMap(previous.referenceSnapshots);
+    let previousScope: ReferenceSourceScope | undefined;
+    sourceKeys.forEach((sourceKey) => {
+      const reference = parseSourceIdentityKey(sourceKey);
+      if (!reference) return;
+      if (resolveCurrentSource(reference).output) {
+        // 来源还在或被恢复：内存里也不留冗余，导出压缩少一项要过滤。
+        snapshots.delete(sourceKey);
+        return;
+      }
+      const previousSource = getReferenceSource({
+        reference,
+        scope: (previousScope ??= createFrozenSourceScope(previous)),
+        snapshots: previous.referenceSnapshots
+      });
+      // 两侧都解析不出来（例如导入的死引用）时不凭空造快照，保留已有的即可。
+      if (!previousSource.output) return;
+      snapshots.set(sourceKey, {
+        reference,
+        ...(previousSource.sourceLabel ? { sourceLabel: previousSource.sourceLabel } : {}),
+        ...(previousSource.outputLabel ? { outputLabel: previousSource.outputLabel } : {}),
+        ...(previousSource.icon ? { icon: previousSource.icon } : {})
+      });
+    });
+
+    return [...snapshots].flatMap(([sourceKey, snapshot]) =>
+      getReferenceGraphSet(afterGraph, 'consumersBySource', sourceKey)?.size ? [snapshot] : []
+    );
+  };
+
+  /**
+   * 导出压缩：只保留「实时来源已不可解析且当前文档仍有 consumer」的快照，按首次引用顺序去重。
+   * consumer 直接来自文档里现存的引用，来源判定只走节点索引，
+   * 因此不会像 getReferenceStatus 那样再跑一轮全量上游 BFS。
+   */
+  const compactSnapshots = (): WorkflowReferenceSnapshot[] => {
+    const { nodes, referenceSnapshots } = document.getDocument();
+    if (referenceSnapshots.length === 0) return [];
+    const snapshots = toSnapshotMap(referenceSnapshots);
+    const compacted: WorkflowReferenceSnapshot[] = [];
+    const seen = new Set<string>();
+    nodes.forEach(({ data }) => {
+      data.inputs.forEach((input) => {
+        getInputReferences(input).forEach((reference) => {
+          const sourceKey = getSourceIdentityKey(reference);
+          // 同一来源被多个 consumer 引用只导出一条，顺序取首次引用。
+          if (seen.has(sourceKey)) return;
+          seen.add(sourceKey);
+          const snapshot = snapshots.get(sourceKey);
+          if (!snapshot) return;
+          if (resolveCurrentSource(reference).output) return;
+          compacted.push(snapshot);
+        });
+      });
+    });
+    return compacted;
+  };
+
   /** 事务提交后按字段身份丢弃缓存，避免 scoped snapshot 复用过期状态。 */
   const invalidateFieldStatuses = (fields: Iterable<WorkflowFieldIdentity>) => {
+    invalidateIncomingSources();
     for (const field of fields) {
       fieldStatusCache.delete(getFieldIdentityKey(field));
     }
@@ -639,6 +807,7 @@ export const createReferenceModule = (document: DocumentReadApi) => {
 
   /** 全量重建后按字段对象身份清理缓存；字段对象已替换的条目不再有效。 */
   const pruneFieldStatusCache = () => {
+    invalidateIncomingSources();
     fieldStatusCache.forEach((cached, cacheKey) => {
       const identity = parseFieldIdentityKey(cacheKey);
       const field =
@@ -651,10 +820,15 @@ export const createReferenceModule = (document: DocumentReadApi) => {
     });
   };
 
-  const clearFieldStatusCache = () => fieldStatusCache.clear();
+  /** undo / redo 恢复整份文档：字段状态与上游可达性记忆化一起作废，不依赖调用方再补一次 rebuild。 */
+  const clearFieldStatusCache = () => {
+    fieldStatusCache.clear();
+    invalidateIncomingSources();
+  };
 
   const clear = () => {
     fieldStatusCache.clear();
+    invalidateIncomingSources();
     referenceGraph = createReferenceGraph();
   };
 
@@ -663,6 +837,8 @@ export const createReferenceModule = (document: DocumentReadApi) => {
     forkGraph,
     rebuildGraph,
     commitTransaction,
+    captureSnapshots,
+    compactSnapshots,
     getStructureInvalidationFields,
     getFieldStatuses,
     getValueStatuses,

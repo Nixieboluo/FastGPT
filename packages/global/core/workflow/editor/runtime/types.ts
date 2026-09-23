@@ -9,7 +9,11 @@ import type {
   WorkflowReferenceStatus
 } from '../types';
 import type { StoreEdgeItemType } from '../../type/edge';
-import type { FlowNodeInputItemType, FlowNodeOutputItemType } from '../../type/io';
+import type {
+  FlowNodeInputItemType,
+  FlowNodeOutputItemType,
+  WorkflowReferenceSnapshot
+} from '../../type/io';
 import type { AppChatConfigType } from '../../../app/type';
 import type { WorkflowIOValueTypeEnum } from '../../constants';
 
@@ -46,12 +50,19 @@ export type RuntimeDocument = {
   nodes: NodeRecord[];
   edges: EdgeRecord[];
   chatConfig: AppChatConfigType;
+  /**
+   * 已删除引用来源的历史展示元数据。放在文档里而不是单独状态，
+   * 语义事务的 checkpoint 就会连同它一起被 undo / redo 恢复。
+   * 数组按事务整体替换，不要原地修改。
+   */
+  referenceSnapshots: WorkflowReferenceSnapshot[];
 };
 
 export type GraphIndex = {
   bySource: Map<string, EdgeRecord[]>;
   byTarget: Map<string, EdgeRecord[]>;
   parentByChild: Map<string, string>;
+  /** 父容器 id -> 直接子节点 id；根级子节点收在 ROOT_PARENT_KEY（空串）桶里。 */
   childrenByParent: Map<string, string[]>;
   edgeById: Map<string, EdgeRecord>;
 };

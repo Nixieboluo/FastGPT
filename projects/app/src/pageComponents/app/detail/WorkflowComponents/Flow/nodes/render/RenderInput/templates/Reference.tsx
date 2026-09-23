@@ -236,15 +236,15 @@ const SingleReferenceSelector = ({
     (value: ReferenceValueType) => {
       if (!value) return undefined;
 
-      // 给出字段引用状态时按状态展示：只有仍可选（valid）的引用显示名称，
-      // 失效或类型不匹配的引用与旧行为一致地回落到占位符。
+      // 给出字段引用状态时按状态展示：来源被删除时状态里带的是 Reference Snapshot 的
+      // 历史名字与图标，因此失效引用同样可读，只有连历史元数据都没有的才回落占位符。
       if (reference) {
         const status = reference[0];
-        if (status?.code !== 'valid') return undefined;
-        const nodeText = status.sourceLabel ? t(status.sourceLabel) : '';
-        const outputText = status.outputLabel ? t(status.outputLabel) : '';
+        const nodeText = status?.sourceLabel ? t(status.sourceLabel) : '';
+        const outputText = status?.outputLabel ? t(status.outputLabel) : '';
+        if (!nodeText && !outputText) return undefined;
         return {
-          avatar: status.icon,
+          avatar: status?.icon,
           text: nodeText && outputText ? `${nodeText} > ${outputText}` : nodeText || outputText
         };
       }
@@ -360,13 +360,14 @@ const MultipleReferenceSelector = ({
   // Get valid item and remove invalid item
   const formatList = useMemo(() => {
     // 给出字段引用状态时按状态解析展示名，此时 list 可以是懒加载的空数组。
+    // 失效引用不再被抹成空名：来源被删除时状态里带的是 Reference Snapshot 的历史名字与图标。
     if (reference) {
       return reference.map((status) => {
-        const isValid = status.code === 'valid';
         return {
           rawValue: status.reference,
-          nodeName: isValid && status.sourceLabel ? t(status.sourceLabel) : '',
-          outputName: isValid && status.outputLabel ? t(status.outputLabel) : ''
+          nodeName: status.sourceLabel ? t(status.sourceLabel) : '',
+          outputName: status.outputLabel ? t(status.outputLabel) : '',
+          icon: status.icon
         };
       });
     }
@@ -378,7 +379,8 @@ const MultipleReferenceSelector = ({
       return {
         rawValue: item,
         nodeName,
-        outputName
+        outputName,
+        icon: undefined
       };
     });
   }, [getSelectValue, reference, t, value]);
@@ -411,7 +413,7 @@ const MultipleReferenceSelector = ({
                 }
               }}
             >
-              {invalidList.map(({ nodeName, outputName }, index) => {
+              {invalidList.map(({ nodeName, outputName, icon, rawValue }, index) => {
                 return (
                   <Flex
                     key={index}
@@ -424,6 +426,7 @@ const MultipleReferenceSelector = ({
                     rounded={'sm'}
                   >
                     <Flex alignItems={'center'} flex={'1 0 0'} className="textEllipsis">
+                      {!!icon && <Avatar src={icon} w={'1rem'} mr={1} borderRadius={'xs'} />}
                       {nodeName}
                       <MyIcon
                         name={'common/rightArrowLight'}
@@ -446,7 +449,13 @@ const MultipleReferenceSelector = ({
                       }}
                       onClick={(e) => {
                         e.stopPropagation();
-                        onSelect(value?.filter((_, i) => i !== index));
+                        // 按引用身份删，不用列表下标：invalidList 是过滤后的列表，
+                        // 且字段状态里的引用已去重，下标与 value 不是 1:1。
+                        onSelect(
+                          value?.filter(
+                            (item) => item?.[0] !== rawValue?.[0] || item?.[1] !== rawValue?.[1]
+                          )
+                        );
                       }}
                     />
                   </Flex>

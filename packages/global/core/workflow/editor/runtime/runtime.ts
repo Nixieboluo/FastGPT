@@ -342,7 +342,9 @@ export const createWorkflowEditor = (
     const working: RuntimeDocument = {
       nodes: before.nodes.slice(),
       edges: before.edges.slice(),
-      chatConfig: before.chatConfig
+      chatConfig: before.chatConfig,
+      // 快照默认原样继承；本轮真有来源消失时由 reference.captureSnapshots 整体替换。
+      referenceSnapshots: before.referenceSnapshots
     };
     const views = new Map(nodeView.getViews());
     const meta = createMutationMeta();
@@ -399,6 +401,14 @@ export const createWorkflowEditor = (
         meta,
         stagedGraph: workingReferenceGraph,
         beforeGraph: beforeReferenceGraph
+      });
+      // working 已经通过 setDocument 成为当前文档，这里补齐它的快照字段。
+      // 必须早于下面的 Issue 重算，历史展示字段才能进 Issue View 与字段状态。
+      working.referenceSnapshots = reference.captureSnapshots({
+        previous: before,
+        beforeGraph: beforeReferenceGraph,
+        afterGraph: workingReferenceGraph,
+        meta
       });
       document.addAffectedStructure(meta);
       invalidateFieldCaches([
@@ -509,8 +519,13 @@ export const createWorkflowEditor = (
     /** 返回不含 runtime-only state 的 canonical 深拷贝；runtime disposed 后拒绝读取。 */
     getWorkflowData: () => {
       ensureActive();
+      const current = document.getDocument();
       return cloneValue(
-        documentToCanonical({ document: document.getDocument(), views: nodeView.getViews() })
+        documentToCanonical({
+          // 出站前压缩：内存里允许留冗余快照，导出的只保留来源仍缺失且仍有 consumer 的项。
+          document: { ...current, referenceSnapshots: reference.compactSnapshots() },
+          views: nodeView.getViews()
+        })
       );
     },
     getNode: (nodeId) => getNodeSnapshot(nodeId),
@@ -567,6 +582,11 @@ export const createWorkflowEditor = (
       issueListeners.add(listener);
       return () => issueListeners.delete(listener);
     },
+    /**
+     * placement context 是渲染路径上的只读派生：runtime 释放后返回 null（调用方按「不限制」处理），
+     * 不与其他 getter 一样抛错，避免卸载竞态把页面打崩。
+     */
+    getPlacementContext: (request) => (disposed ? null : document.getPlacementContext(request)),
     undo: () => replayHistory('undo'),
     redo: () => replayHistory('redo'),
     isDisposed: () => disposed,

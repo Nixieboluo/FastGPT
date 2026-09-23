@@ -200,6 +200,8 @@ function Reference({
         value={input.value}
         onSelect={onSelect}
         isArray={input.valueType?.includes('array')}
+        // 字段引用状态带上 Reference Snapshot 的历史名字与图标，来源被删后仍可读。
+        reference={field?.reference}
       />
 
       {!!editField && (

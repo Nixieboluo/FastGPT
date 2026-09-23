@@ -246,7 +246,8 @@ export const buildDocument = (input: unknown, edgeIdStart = 0): CanonicalResult 
     document: {
       nodes,
       edges,
-      chatConfig: cloneValue(canonical.chatConfig)
+      chatConfig: cloneValue(canonical.chatConfig),
+      referenceSnapshots: cloneValue(canonical.referenceSnapshots)
     },
     views,
     nextEdgeId
@@ -273,7 +274,8 @@ export const documentToCanonical = ({
     };
   }),
   edges: document.edges.map((edge) => cloneValue(edge.data)),
-  chatConfig: cloneValue(document.chatConfig)
+  chatConfig: cloneValue(document.chatConfig),
+  referenceSnapshots: cloneValue(document.referenceSnapshots)
 });
 
 const isForbiddenDeleteNode = (node: NodeRecord) =>

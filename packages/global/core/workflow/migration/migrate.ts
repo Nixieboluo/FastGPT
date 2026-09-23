@@ -93,5 +93,10 @@ export const migrateWorkflowToCurrent = (input: LegacyWorkflowDataInput): Canoni
     };
   });
 
-  return CanonicalWorkflowDataSchema.parse({ ...workflow, nodes });
+  // 结构迁移只处理 nodes/edges/chatConfig，根级快照要显式带上，否则入站就被剥掉。
+  return CanonicalWorkflowDataSchema.parse({
+    ...workflow,
+    nodes,
+    referenceSnapshots: input.referenceSnapshots
+  });
 };

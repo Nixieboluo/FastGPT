@@ -330,7 +330,7 @@ describe('WorkflowComponents utils', () => {
       expect(result.nodes[1].inputs[0].value).toEqual(referenceValue);
     });
 
-    it('should filter only unselectable values from reference inputs', () => {
+    it('should keep unselectable reference values when saving workflow', () => {
       const nodes = [
         {
           data: {
@@ -429,11 +429,16 @@ describe('WorkflowComponents utils', () => {
         'sourceNode',
         'text'
       ]);
-      expect(
-        storedInputs.find((input) => input.key === 'invalidSingleReference')?.value
-      ).toBeUndefined();
+      // 失效引用原样持久化：抹掉它会让 Reference Snapshots 失去 consumer，
+      // 重开后连“这里曾引用过什么”都无从展示。
+      expect(storedInputs.find((input) => input.key === 'invalidSingleReference')?.value).toEqual([
+        'missingNode',
+        'text'
+      ]);
       expect(storedInputs.find((input) => input.key === 'multipleReferences')?.value).toEqual([
-        ['sourceNode', 'files']
+        ['sourceNode', 'files'],
+        ['sourceNode', 'count'],
+        ['missingNode', 'files']
       ]);
       expect(storedInputs.find((input) => input.key === 'textareaValue')?.value).toBe(
         '{{missingNode.text}}'
@@ -493,7 +498,7 @@ describe('WorkflowComponents utils', () => {
       expect(result.nodes[0].inputs[0].value).toEqual(['childNode', 'result']);
     });
 
-    it('should remove code node custom input references to its own tool params', () => {
+    it('should keep code node custom input references to its own tool params', () => {
       const nodes = [
         {
           data: {
@@ -529,9 +534,10 @@ describe('WorkflowComponents utils', () => {
 
       const result = uiWorkflow2StoreWorkflow({ nodes, edges: [] });
 
-      expect(result.nodes[0].inputs.find((input) => input.key === 'customInput')?.value).toBe(
-        undefined
-      );
+      expect(result.nodes[0].inputs.find((input) => input.key === 'customInput')?.value).toEqual([
+        'codeNode',
+        'arg1'
+      ]);
     });
 
     it('should preserve a canonical input selection when saving workflow', () => {

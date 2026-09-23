@@ -1,7 +1,6 @@
 import { getNodeAllSource, type WorkflowGraphEdge } from '@/web/core/workflow/utils';
-import { workflowReferenceValueIsSelectable } from '@fastgpt/global/core/workflow/editor/utils';
 import { workflowSystemVariables } from '@/web/core/app/utils';
-import { type AppChatConfigType, type AppDetailType } from '@fastgpt/global/core/app/type';
+import { type AppDetailType } from '@fastgpt/global/core/app/type';
 import {
   NodeInputKeyEnum,
   NodeOutputKeyEnum,
@@ -16,11 +15,6 @@ import {
   type FlowNodeItemType,
   type StoreNodeItemType
 } from '@fastgpt/global/core/workflow/type/node';
-import type {
-  FlowNodeInputItemType,
-  ReferenceItemValueType,
-  ReferenceValueType
-} from '@fastgpt/global/core/workflow/type/io';
 import {
   getSelectedInputRenderType,
   nodeInputIsReference
@@ -45,22 +39,11 @@ const normalizeStoreNodeInput = (input: StoreNodeItemType['inputs'][number], isT
 
 export const uiWorkflow2StoreWorkflow = ({
   nodes,
-  edges,
-  chatConfig
+  edges
 }: {
   nodes: Node<FlowNodeItemType, string | undefined>[];
   edges: Edge<any>[];
-  chatConfig?: AppChatConfigType;
 }) => {
-  const getNodeById = (nodeId: string | null | undefined) =>
-    nodes.find((node) => node.data.nodeId === nodeId)?.data;
-  const childrenNodeIdListMap = nodes.reduce<Record<string, string[]>>((map, node) => {
-    const parentNodeId = node.data.parentNodeId;
-    if (!parentNodeId) return map;
-
-    map[parentNodeId] = [...(map[parentNodeId] ?? []), node.data.nodeId];
-    return map;
-  }, {});
   const toolNodeIds = new Set(
     edges
       .filter((edge) => edge.targetHandle === NodeOutputKeyEnum.selectedTools)
@@ -99,14 +82,9 @@ export const uiWorkflow2StoreWorkflow = ({
       showStatus: item.data.showStatus,
       position: item.position,
       version: item.data.version,
-      inputs: filterUnselectableReferenceInputs({
-        node: item.data,
-        inputs,
-        edges,
-        chatConfig,
-        getNodeById,
-        childrenNodeIdListMap
-      }),
+      // 引用值原样持久化：抹掉失效引用会让 Reference Snapshots 失去 consumer，
+      // 重开后连“这里曾引用过什么”都无从展示。
+      inputs,
       // 仅用于画布的函数不能持久化，也不属于严格 API Schema。
       outputs: item.data.outputs.map(({ invalidCondition: _, ...output }) => output),
       pluginId: item.data.pluginId,
@@ -136,74 +114,6 @@ export const uiWorkflow2StoreWorkflow = ({
     nodes: formatNodes,
     edges: formatEdges
   };
-};
-
-const emptyT = ((key: string) => key) as TFunction;
-
-/**
- * 保存时仅持久化当前引用选择器仍能选中的引用项。
- * 已删除来源、已删除输出、类型不再匹配的引用在 UI 上不会展示标签，也不应继续写入 JSON。
- */
-const filterUnselectableReferenceInputs = ({
-  node,
-  inputs,
-  edges,
-  chatConfig,
-  getNodeById,
-  childrenNodeIdListMap
-}: {
-  node: FlowNodeItemType;
-  inputs: FlowNodeInputItemType[];
-  edges: Edge<any>[];
-  chatConfig?: AppChatConfigType;
-  getNodeById: (nodeId: string | null | undefined) => FlowNodeItemType | undefined;
-  childrenNodeIdListMap: Record<string, string[]>;
-}) => {
-  return inputs.map((input) => {
-    if (!nodeInputIsReference(input)) return input;
-
-    const sourceNodes = getNodeAllSource({
-      nodeId: node.nodeId,
-      getNodeById,
-      edges,
-      chatConfig: chatConfig ?? ({} as AppChatConfigType),
-      t: emptyT,
-      includeChildren: input.canEdit === true,
-      childrenNodeIdListMap
-    });
-
-    const value = input.value as ReferenceValueType | undefined;
-    if (!Array.isArray(value)) return input;
-
-    if (typeof value[0] === 'string') {
-      const keepValue = workflowReferenceValueIsSelectable({
-        value,
-        sourceNodes,
-        valueType: input.valueType
-      });
-      return keepValue
-        ? input
-        : {
-            ...input,
-            value: undefined
-          };
-    }
-
-    const filteredValue = (value as ReferenceItemValueType[]).filter((item) =>
-      workflowReferenceValueIsSelectable({
-        value: item,
-        sourceNodes,
-        valueType: input.valueType
-      })
-    );
-
-    if (filteredValue.length === value.length) return input;
-
-    return {
-      ...input,
-      value: filteredValue
-    };
-  });
 };
 
 export const filterExportModules = (modules: StoreNodeItemType[]) => {

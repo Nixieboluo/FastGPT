@@ -53,7 +53,9 @@ export type LegacyWorkflowData = z.infer<typeof LegacyWorkflowDataSchema>;
 export const StoreWorkflowInputSchema = z.object({
   nodes: z.array(z.unknown()),
   edges: z.unknown().optional(),
-  chatConfig: z.unknown().optional()
+  chatConfig: z.unknown().optional(),
+  // 外部输入边界只声明过的字段才不会被剥掉；具体校验交给 canonical schema。
+  referenceSnapshots: z.unknown().optional()
 });
 export type StoreWorkflowInput = z.input<typeof StoreWorkflowInputSchema>;
 export type LegacyWorkflowDataInput = StoreWorkflowInput;

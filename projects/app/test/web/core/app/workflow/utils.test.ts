@@ -1069,7 +1069,7 @@ describe('storeNode2FlowNode', () => {
       item: storeNode,
       t: ((key: string) => key) as any
     });
-    const result = uiWorkflow2StoreWorkflow({ nodes: [node], edges: [], chatConfig: {} });
+    const result = uiWorkflow2StoreWorkflow({ nodes: [node], edges: [] });
 
     expect(result.nodes[0].inputs[0]).toMatchObject({
       selectedType: FlowNodeInputTypeEnum.input,

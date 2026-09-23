@@ -482,14 +482,13 @@ const expectedIssues = (name: string) => {
 const check = (fixture: Fixture) => {
   const store = uiWorkflow2StoreWorkflow({
     nodes: fixture.nodes,
-    edges: fixture.edges ?? [],
-    chatConfig: fixture.chatConfig
+    edges: fixture.edges ?? []
   });
   const canonical = migrateStoreWorkflow({
     nodes: store.nodes,
     edges: store.edges,
-    // uiWorkflow2StoreWorkflow 不透传 chatConfig，直接用 fixture 的原始配置。
-    chatConfig: fixture.chatConfig ?? store.chatConfig ?? {}
+    // uiWorkflow2StoreWorkflow 只输出 nodes 与 edges，chatConfig 直接用 fixture 的原始配置。
+    chatConfig: fixture.chatConfig ?? {}
   });
   fixture.mutate?.(canonical);
 

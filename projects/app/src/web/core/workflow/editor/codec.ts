@@ -64,7 +64,13 @@ export const materializeWorkflow = ({
   });
 
   // 物化会重新引入模板默认的容器尺寸字段，再走一次 migration 统一清理，保证严格 canonical。
-  return migrateStoreWorkflow({ nodes, edges: canonicalEdges, chatConfig: workflow.chatConfig });
+  return migrateStoreWorkflow({
+    nodes,
+    edges: canonicalEdges,
+    chatConfig: workflow.chatConfig,
+    // 第二次 migration 只会保留声明过的根字段，快照必须显式带上。
+    referenceSnapshots: workflow.referenceSnapshots
+  });
 };
 
 /**
@@ -81,7 +87,8 @@ export const hydrateRuntime = ({
 
 /**
  * 出站边界：读取 Runtime 完整导出，并用旧保存路径的 Workflow Normalization 原样包住
- * （工具输入模式归一、工具选择序列化、图相关不可选引用裁剪、按节点存在性过滤边、剥离画布函数字段）。
+ * （工具输入模式归一、工具选择序列化、按节点存在性过滤边、剥离画布函数字段）。
+ * 失效引用不再被裁剪：它们要留在数据里，配合根级 Reference Snapshots 展示历史名字。
  */
 export const serializeRuntime = (runtime: WorkflowRuntimePort): StoreWorkflow => {
   const data = serializeWorkflowEditor(runtime);
@@ -93,9 +100,13 @@ export const serializeRuntime = (runtime: WorkflowRuntimePort): StoreWorkflow =>
       position: node.position ?? { x: 0, y: 0 },
       data: node
     })) as Node<FlowNodeItemType, string | undefined>[],
-    edges: data.edges as Edge<any>[],
-    chatConfig: data.chatConfig
+    edges: data.edges as Edge<any>[]
   });
 
-  return { ...normalized, chatConfig: data.chatConfig } as StoreWorkflow;
+  // uiWorkflow2StoreWorkflow 只输出 nodes 与 edges，根级字段要在这里显式补齐。
+  return {
+    ...normalized,
+    chatConfig: data.chatConfig,
+    referenceSnapshots: data.referenceSnapshots
+  } as StoreWorkflow;
 };

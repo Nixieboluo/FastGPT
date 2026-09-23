@@ -29,7 +29,7 @@ const legacyPersist = (input: ReturnType<typeof createStoreWorkflow>) => {
     storeNode2FlowNode({ item: node as never, isTool: toolNodeIds.has(node.nodeId), t })
   );
   const edges = input.edges.map((edge) => storeEdge2RenderEdge({ edge: edge as never }));
-  return uiWorkflow2StoreWorkflow({ nodes, edges, chatConfig: input.chatConfig as never });
+  return uiWorkflow2StoreWorkflow({ nodes, edges });
 };
 
 /**
@@ -296,5 +296,88 @@ describe('workflow editor codec', () => {
     expect(output.nodes).toHaveLength(1);
     expect(output.nodes[0].flowNodeType).toBe(FlowNodeTypeEnum.emptyNode);
     expect(output.nodes[0].avatar).toBe('');
+  });
+
+  it('keeps dead references and exports their snapshots at the outbound boundary', () => {
+    const runtime = hydrateRuntime({
+      input: {
+        nodes: [
+          {
+            nodeId: 'start',
+            flowNodeType: FlowNodeTypeEnum.workflowStart,
+            name: 'Start',
+            inputs: [],
+            outputs: [
+              {
+                id: NodeOutputKeyEnum.userChatInput,
+                key: NodeOutputKeyEnum.userChatInput,
+                type: FlowNodeOutputTypeEnum.source,
+                valueType: WorkflowIOValueTypeEnum.string
+              }
+            ]
+          },
+          {
+            nodeId: 'mid',
+            flowNodeType: FlowNodeTypeEnum.answerNode,
+            name: 'Middle',
+            avatar: 'core/workflow/template/answer',
+            inputs: [],
+            outputs: [
+              {
+                id: 'text',
+                key: 'text',
+                type: FlowNodeOutputTypeEnum.source,
+                valueType: WorkflowIOValueTypeEnum.string,
+                label: 'Middle Text'
+              }
+            ]
+          },
+          {
+            nodeId: 'answer',
+            flowNodeType: FlowNodeTypeEnum.answerNode,
+            name: 'Answer',
+            inputs: [
+              {
+                key: NodeInputKeyEnum.answerText,
+                label: 'Answer',
+                renderTypeList: [FlowNodeInputTypeEnum.reference],
+                selectedType: FlowNodeInputTypeEnum.reference,
+                valueType: WorkflowIOValueTypeEnum.string,
+                value: [['mid', 'text']]
+              }
+            ],
+            outputs: []
+          }
+        ],
+        edges: [
+          { source: 'start', target: 'mid', sourceHandle: 'source', targetHandle: 'target' },
+          { source: 'mid', target: 'answer', sourceHandle: 'source', targetHandle: 'target' }
+        ],
+        chatConfig: {}
+      },
+      t
+    });
+    expect(serializeRuntime(runtime).referenceSnapshots).toEqual([]);
+
+    expect(runtime.dispatch({ type: 'removeNodes', nodeIds: ['mid'] }).ok).toBe(true);
+    const output = serializeRuntime(runtime);
+
+    // 出站裁剪已删：死引用原样进保存数据，否则快照没有 consumer，重开后无从展示历史名字
+    expect(
+      output.nodes
+        .find((node) => node.nodeId === 'answer')
+        ?.inputs.find((item) => item.key === NodeInputKeyEnum.answerText)?.value
+    ).toEqual([['mid', 'text']]);
+    expect(output.referenceSnapshots).toHaveLength(1);
+    expect(output.referenceSnapshots[0]).toMatchObject({
+      reference: ['mid', 'text'],
+      sourceLabel: 'Middle',
+      outputLabel: 'Middle Text'
+    });
+
+    // 保存产物重新入站后历史元数据仍在，重开不会退化成空白 chip
+    expect(serializeRuntime(hydrateRuntime({ input: output, t })).referenceSnapshots).toEqual(
+      output.referenceSnapshots
+    );
   });
 });
