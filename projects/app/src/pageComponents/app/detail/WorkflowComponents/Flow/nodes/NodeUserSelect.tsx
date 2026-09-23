@@ -58,16 +58,14 @@ const NodeUserSelect = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
               }}
               onDelete={(key) => {
                 // 删除选项要同时断开该分支 handle 上的连线：同一事务提交，撤销只需一步。
-                const documentInputs = node?.data.inputs;
-                if (!documentInputs) return;
                 node?.updateNode(
-                  {
-                    inputs: documentInputs.map((input) =>
+                  (current) => ({
+                    inputs: current.inputs.map((input) =>
                       input.key === optionKey
                         ? { ...input, value: options.filter((option) => option.key !== key) }
                         : input
                     )
-                  },
+                  }),
                   {
                     disconnectEdges: getOutputDisconnectCommands({ edges, nodeId, outputKey: key })
                   }

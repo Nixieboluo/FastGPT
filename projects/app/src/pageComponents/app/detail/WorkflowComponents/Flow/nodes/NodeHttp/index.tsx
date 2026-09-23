@@ -139,17 +139,15 @@ const RenderHttpMethodAndUrl = React.memo(function RenderHttpMethodAndUrl({
         }
       });
 
-      const documentInputs = node?.data.inputs;
-      if (!documentInputs) return;
-      node?.updateNode({
-        inputs: documentInputs.map((input) => {
+      node?.updateNode((current) => ({
+        inputs: current.inputs.map((input) => {
           if (input.key === NodeInputKeyEnum.httpParams) {
             return { ...input, value: concatParams };
           }
           if (input.key === NodeInputKeyEnum.httpReqUrl) return { ...input, value: url };
           return input;
         })
-      });
+      }));
 
       toast({
         status: 'success',
@@ -726,11 +724,9 @@ const RenderBody = ({
 
   useEffect(() => {
     if (typeInput !== undefined) return;
-    const documentInputs = node?.data.inputs;
-    if (!documentInputs) return;
     // 旧文档缺少 contentType 字段时补齐：整表提交，写入后 typeInput 有值，effect 不再重入。
-    node?.updateNode({
-      inputs: documentInputs.concat({
+    node?.updateNode((current) => ({
+      inputs: current.inputs.concat({
         key: NodeInputKeyEnum.httpContentType,
         renderTypeList: [FlowNodeInputTypeEnum.hidden],
         valueType: WorkflowIOValueTypeEnum.string,
@@ -738,7 +734,7 @@ const RenderBody = ({
         label: '',
         required: false
       })
-    });
+    }));
   }, [node, typeInput]);
 
   const Render = useMemo(() => {

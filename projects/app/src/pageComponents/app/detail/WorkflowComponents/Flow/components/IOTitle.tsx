@@ -33,21 +33,18 @@ const IOTitle = ({
     if (!nodeId || !node) return;
 
     const catchHandle = getHandleId(nodeId, 'source_catch', Position.Right);
-    node.updateNode(
-      { catchError: checked },
-      {
-        disconnectEdges: workflow.edges
-          .filter((edge) => edge.sourceHandle === catchHandle)
-          .map((edge) => ({
-            edge: {
-              source: edge.source,
-              target: edge.target,
-              sourceHandle: edge.sourceHandle || '',
-              targetHandle: edge.targetHandle || ''
-            }
-          }))
-      }
-    );
+    node.updateNode(() => ({ catchError: checked }), {
+      disconnectEdges: workflow.edges
+        .filter((edge) => edge.sourceHandle === catchHandle)
+        .map((edge) => ({
+          edge: {
+            source: edge.source,
+            target: edge.target,
+            sourceHandle: edge.sourceHandle || '',
+            targetHandle: edge.targetHandle || ''
+          }
+        }))
+    });
   };
 
   return (

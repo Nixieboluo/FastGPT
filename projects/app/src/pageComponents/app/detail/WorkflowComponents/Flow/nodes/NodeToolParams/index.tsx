@@ -84,16 +84,13 @@ const NodeToolParams = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                             cursor={'pointer'}
                             onClick={() => {
                               // 参数与其同名 output 一起删除，旧 handle 连线同事务断开。
-                              const documentInputs = node?.data.inputs;
-                              const documentOutputs = node?.data.outputs;
-                              if (!documentInputs || !documentOutputs) return;
                               node?.updateNode(
-                                {
-                                  inputs: documentInputs.filter((input) => input.key !== item.key),
-                                  outputs: documentOutputs.filter(
+                                (current) => ({
+                                  inputs: current.inputs.filter((input) => input.key !== item.key),
+                                  outputs: current.outputs.filter(
                                     (output) => output.key !== item.key
                                   )
-                                },
+                                }),
                                 {
                                   disconnectEdges: getOutputDisconnectCommands({
                                     edges,

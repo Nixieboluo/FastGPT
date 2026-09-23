@@ -88,11 +88,9 @@ const NodeCode = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                 onChange={(newLang) => {
                   openSwitchLangConfirm({
                     onConfirm: () => {
-                      const documentInputs = node?.data.inputs;
-                      if (!documentInputs) return;
                       // 语言与模板代码必须一起换：同一事务提交，撤销一次回到旧语言。
-                      node?.updateNode({
-                        inputs: documentInputs.map((input) => {
+                      node?.updateNode((current) => ({
+                        inputs: current.inputs.map((input) => {
                           if (input.key === NodeInputKeyEnum.codeType) {
                             return { ...input, value: newLang };
                           }
@@ -101,7 +99,7 @@ const NodeCode = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                           }
                           return input;
                         })
-                      });
+                      }));
                     }
                   })();
                 }}

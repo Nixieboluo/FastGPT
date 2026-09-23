@@ -94,12 +94,10 @@ const RenderToolInput = ({
                         w={'16px'}
                         cursor={'pointer'}
                         onClick={() => {
-                          // 删除工具参数是记录级变更：读文档当前 inputs 后整份提交。
-                          const documentInputs = node?.data.inputs;
-                          if (!documentInputs) return;
-                          node?.updateNode({
-                            inputs: documentInputs.filter((input) => input.key !== item.key)
-                          });
+                          // 删除工具参数是记录级变更：以派发瞬间的 inputs 为基线整份提交。
+                          node?.updateNode((current) => ({
+                            inputs: current.inputs.filter((input) => input.key !== item.key)
+                          }));
                         }}
                       />
                     </Flex>

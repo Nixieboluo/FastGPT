@@ -34,10 +34,12 @@ vi.mock('@/web/core/workflow/editor', () => ({
     mocks.doc
       ? {
           data: mocks.doc,
-          updateNode: (patch: Partial<DocNode>) => {
+          // patch 是函数：对齐 adapter，用派发瞬间的记录求值。
+          updateNode: (patch: (node: DocNode) => Partial<DocNode>) => {
             if (!mocks.doc) return;
-            mocks.updateCalls.push(patch);
-            mocks.doc = { ...mocks.doc, ...patch };
+            const resolved = patch(mocks.doc);
+            mocks.updateCalls.push(resolved);
+            mocks.doc = { ...mocks.doc, ...resolved };
           }
         }
       : undefined

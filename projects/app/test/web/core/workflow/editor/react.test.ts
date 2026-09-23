@@ -59,7 +59,7 @@ describe('WorkflowNodeHandle.updateNode', () => {
     const nextInputs = inputs.map((input, index) =>
       index === 0 ? { ...input, value: 'changed' } : input
     );
-    const res = handle.updateNode({ inputs: nextInputs });
+    const res = handle.updateNode(() => ({ inputs: nextInputs }));
 
     expect(res.ok).toBe(true);
     expect(res.change?.changedRecords.fieldIds).toEqual([
@@ -77,7 +77,7 @@ describe('WorkflowNodeHandle.updateNode', () => {
     const adapter = createWorkflowEditorAdapter(runtime);
     const handle = adapter.getNodeSnapshot('answer')!;
 
-    const res = handle.updateNode({ inputs: handle.data.inputs });
+    const res = handle.updateNode((current) => ({ inputs: current.inputs }));
 
     expect(res.ok).toBe(true);
     expect(res.change).toBeUndefined();
@@ -94,7 +94,9 @@ describe('WorkflowNodeHandle.updateNode', () => {
     const undoCount = runtime.getHistory().undoCount;
 
     // 删除/替换输出字段时连线要和 patch 同事务消失，否则撤销要按两下。
-    const res = handle.updateNode({ name: 'Renamed' }, { disconnectEdges: [{ index: 0 }] });
+    const res = handle.updateNode(() => ({ name: 'Renamed' }), {
+      disconnectEdges: [{ index: 0 }]
+    });
 
     expect(res.ok).toBe(true);
     expect(runtime.getWorkflow().edges).toHaveLength(0);
@@ -121,7 +123,7 @@ describe('WorkflowNodeHandle.updateNode', () => {
 
     // 节点删除后旧句柄仍可调用，但 Runtime 拒绝写入且不产生历史。
     const undoCount = runtime.getHistory().undoCount;
-    const staleRes = handle.updateNode({ name: 'Renamed' });
+    const staleRes = handle.updateNode(() => ({ name: 'Renamed' }));
     expect(staleRes.ok).toBe(false);
     expect(staleRes.error?.code).toBe('not_found');
     expect(runtime.getHistory().undoCount).toBe(undoCount);

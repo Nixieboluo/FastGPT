@@ -83,15 +83,13 @@ const NodeDatasetConcat = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                 iconSpacing={1}
                 size={'sm'}
                 onClick={() => {
-                  // 新增引用记录属于记录级变更：读文档当前 inputs、拼完整数组后提交。
-                  const documentInputs = node?.data.inputs;
-                  if (!documentInputs) return;
-                  node?.updateNode({
+                  // 新增引用记录属于记录级变更：以派发瞬间的 inputs 为基线拼完整数组。
+                  node?.updateNode((current) => ({
                     inputs: [
-                      ...documentInputs,
+                      ...current.inputs,
                       getOneQuoteInputTemplate({ index: quoteList.length + 1 })
                     ]
-                  });
+                  }));
                 }}
               >
                 {t('common:add_new')}
@@ -155,12 +153,10 @@ const VariableSelector = ({
   );
 
   const onDel = useCallback(() => {
-    // 删除引用记录属于记录级变更：读文档当前 inputs、过滤后整份提交。
-    const documentInputs = node?.data.inputs;
-    if (!documentInputs) return;
-    node?.updateNode({
-      inputs: documentInputs.filter((input) => input.key !== inputChildren.key)
-    });
+    // 删除引用记录属于记录级变更：以派发瞬间的 inputs 为基线过滤后整份提交。
+    node?.updateNode((current) => ({
+      inputs: current.inputs.filter((input) => input.key !== inputChildren.key)
+    }));
   }, [inputChildren.key, node]);
 
   return (

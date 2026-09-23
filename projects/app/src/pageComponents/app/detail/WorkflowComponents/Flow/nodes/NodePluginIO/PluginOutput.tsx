@@ -78,10 +78,8 @@ const NodePluginOutput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
           keys={inputs.map((input) => input.key)}
           onClose={() => setEditField(undefined)}
           onSubmit={({ data }) => {
-            const documentInputs = node?.data.inputs;
-            if (!documentInputs) return;
             // 新增插件输出等于追加一条 input 记录，整表提交保持单条历史。
-            node?.updateNode({ inputs: documentInputs.concat(data) });
+            node?.updateNode((current) => ({ inputs: current.inputs.concat(data) }));
           }}
         />
       )}
@@ -124,21 +122,17 @@ function Reference({
     ({ data }: { data: FlowNodeInputItemType }) => {
       if (!data.key) return;
 
-      const documentInputs = node?.data.inputs;
-      if (!documentInputs) return;
       // 改名等结构性编辑整条替换记录，仍按旧 key 定位。
-      node?.updateNode({
-        inputs: documentInputs.map((item) => (item.key === input.key ? data : item))
-      });
+      node?.updateNode((current) => ({
+        inputs: current.inputs.map((item) => (item.key === input.key ? data : item))
+      }));
     },
     [input.key, node]
   );
   const onDel = useCallback(() => {
-    const documentInputs = node?.data.inputs;
-    if (!documentInputs) return;
-    node?.updateNode({
-      inputs: documentInputs.filter((item) => item.key !== input.key)
-    });
+    node?.updateNode((current) => ({
+      inputs: current.inputs.filter((item) => item.key !== input.key)
+    }));
   }, [input.key, node]);
 
   return (

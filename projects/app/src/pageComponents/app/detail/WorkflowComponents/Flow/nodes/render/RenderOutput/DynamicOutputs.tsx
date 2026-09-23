@@ -39,12 +39,10 @@ const DynamicOutputs = ({ nodeId, outputs, addOutput }: DynamicOutputsProps) => 
   // 替换与删除会让旧 source handle 失效，连线必须同事务断开，否则撤销要按两下。
   const handleUpdateOutput = useCallback(
     (originalKey: string, updatedOutput: FlowNodeOutputItemType) => {
-      const documentOutputs = node?.data.outputs;
-      if (!documentOutputs) return;
       node?.updateNode(
-        {
-          outputs: documentOutputs.map((item) => (item.key === originalKey ? updatedOutput : item))
-        },
+        (current) => ({
+          outputs: current.outputs.map((item) => (item.key === originalKey ? updatedOutput : item))
+        }),
         {
           disconnectEdges: getOutputDisconnectCommands({ edges, nodeId, outputKey: originalKey })
         }
@@ -55,10 +53,8 @@ const DynamicOutputs = ({ nodeId, outputs, addOutput }: DynamicOutputsProps) => 
 
   const handleDeleteOutput = useCallback(
     (key: string) => {
-      const documentOutputs = node?.data.outputs;
-      if (!documentOutputs) return;
       node?.updateNode(
-        { outputs: documentOutputs.filter((item) => item.key !== key) },
+        (current) => ({ outputs: current.outputs.filter((item) => item.key !== key) }),
         { disconnectEdges: getOutputDisconnectCommands({ edges, nodeId, outputKey: key }) }
       );
     },
@@ -67,9 +63,7 @@ const DynamicOutputs = ({ nodeId, outputs, addOutput }: DynamicOutputsProps) => 
 
   const handleAddOutput = useCallback(
     (newOutput: FlowNodeOutputItemType) => {
-      const documentOutputs = node?.data.outputs;
-      if (!documentOutputs) return;
-      node?.updateNode({ outputs: [...documentOutputs, newOutput] });
+      node?.updateNode((current) => ({ outputs: [...current.outputs, newOutput] }));
     },
     [node]
   );

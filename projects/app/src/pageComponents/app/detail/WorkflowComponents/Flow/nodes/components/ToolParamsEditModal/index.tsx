@@ -120,9 +120,7 @@ const ToolParamsEditModal = ({
         customJsonSchema: customParam?.schema
       };
       const { customJsonSchema: _customJsonSchema, ...outputConfig } = inputConfig;
-      const documentInputs = node?.data.inputs;
-      const documentOutputs = node?.data.outputs;
-      if (!node || !documentInputs || !documentOutputs) return;
+      if (!node) return;
       const outputValue = {
         ...outputConfig,
         id: key,
@@ -135,18 +133,18 @@ const ToolParamsEditModal = ({
         // edit：output 记录被替换，旧 handle 上的连线随本次提交一起断开（与旧 replaceOutput 一致）。
         const originalKey = defaultValue.key;
         node.updateNode(
-          {
-            inputs: documentInputs.map((input) =>
+          (current) => ({
+            inputs: current.inputs.map((input) =>
               input.key === originalKey ? inputConfig : input
             ),
             ...(syncOutput
               ? {
-                  outputs: documentOutputs.map((output) =>
+                  outputs: current.outputs.map((output) =>
                     output.key === originalKey ? outputValue : output
                   )
                 }
               : {})
-          },
+          }),
           syncOutput
             ? {
                 disconnectEdges: getOutputDisconnectCommands({
@@ -159,10 +157,10 @@ const ToolParamsEditModal = ({
         );
       } else {
         // create
-        node.updateNode({
-          inputs: [...documentInputs, inputConfig],
-          ...(syncOutput ? { outputs: [...documentOutputs, outputValue] } : {})
-        });
+        node.updateNode((current) => ({
+          inputs: [...current.inputs, inputConfig],
+          ...(syncOutput ? { outputs: [...current.outputs, outputValue] } : {})
+        }));
       }
     },
     {

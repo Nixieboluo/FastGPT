@@ -479,16 +479,14 @@ const NodeAgent = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
           isPlus={feConfigs?.isPlus}
           onChangeSandbox={onChangeAgentSandbox}
           onChangeEntrypoint={(value) => {
-            const documentInputs = node?.data.inputs;
-            if (!documentInputs) return;
             // 入口字段可能尚未创建：存在则改值，不存在则整条追加。
-            node?.updateNode({
+            node?.updateNode((current) => ({
               inputs: sandboxEntrypointInput
-                ? documentInputs.map((input) =>
+                ? current.inputs.map((input) =>
                     input.key === NodeInputKeyEnum.sandboxEntrypoint ? { ...input, value } : input
                   )
-                : documentInputs.concat(createSandboxEntrypointInput(value))
-            });
+                : current.inputs.concat(createSandboxEntrypointInput(value))
+            }));
           }}
         />
 
@@ -580,11 +578,9 @@ const NodeAgent = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                 <SkillSelectModal
                   selectedSkills={selectedAgentSkills}
                   onAddSkill={(skill: SelectedAgentSkillItemType) => {
-                    const documentInputs = node?.data.inputs;
-                    if (!documentInputs) return;
                     // 添加技能会顺带打开沙箱：两个字段同一事务提交，撤销一次回到添加前。
-                    node?.updateNode({
-                      inputs: documentInputs.map((input) => {
+                    node?.updateNode((current) => ({
+                      inputs: current.inputs.map((input) => {
                         if (input.key === NodeInputKeyEnum.skills) {
                           return { ...input, value: [skill, ...selectedAgentSkills] };
                         }
@@ -593,7 +589,7 @@ const NodeAgent = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                         }
                         return input;
                       })
-                    });
+                    }));
                     if (sandboxInput && !sandboxInput.value) {
                       toast({
                         status: 'success',
@@ -803,15 +799,13 @@ const NodeAgent = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
           maxTokens={llmMaxQuoteContext}
           onClose={onCloseDatasetParams}
           onSuccess={(e) => {
-            const documentInputs = node?.data.inputs;
-            if (!documentInputs) return;
             // 参数弹窗一次提交多个字段：整表写入，撤销一步回到旧参数。
             const nextValues = e as Record<string, unknown>;
-            node?.updateNode({
-              inputs: documentInputs.map((input) =>
+            node?.updateNode((current) => ({
+              inputs: current.inputs.map((input) =>
                 input.key in nextValues ? { ...input, value: nextValues[input.key] } : input
               )
-            });
+            }));
           }}
         />
       )}

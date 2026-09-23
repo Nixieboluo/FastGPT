@@ -155,7 +155,7 @@ export const DatasetTagFilterLogic = React.memo(function DatasetTagFilterLogic({
               }),
             commit: (upgradedNode) =>
               // 持久化成功后再把升级结果写回文档：整份 inputs 替换，一次提交。
-              node?.updateNode({ inputs: upgradedNode.inputs })
+              node?.updateNode(() => ({ inputs: upgradedNode.inputs }))
           });
         }}
       />

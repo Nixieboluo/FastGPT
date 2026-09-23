@@ -35,6 +35,9 @@ const NodeIfElse = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
     [inputs]
   );
 
+  // 单分支时 ListItem 不渲染拖拽手柄，必须显式禁用拖拽，否则 rbd 会抛 "Unable to find drag handle"。
+  const canDrag = ifElseList.length > 1;
+
   /** 分支列表整体就是 ifElseList 字段的值：增删改都按完整数组提交，一次交互一条历史。 */
   const onUpdateIfElseList = useCallback(
     (value: IfElseListItemType[]) => {
@@ -49,18 +52,17 @@ const NodeIfElse = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
    */
   const onDeleteBranch = useCallback(
     (conditionIndex: number) => {
-      const documentInputs = node?.data.inputs;
       const branch = ifElseList[conditionIndex];
-      if (!documentInputs || !branch) return;
+      if (!branch) return;
 
       node?.updateNode(
-        {
-          inputs: documentInputs.map((input) =>
+        (current) => ({
+          inputs: current.inputs.map((input) =>
             input.key === NodeInputKeyEnum.ifElseList
               ? { ...input, value: ifElseList.filter((_, index) => index !== conditionIndex) }
               : input
           )
-        },
+        }),
         {
           disconnectEdges: getOutputDisconnectCommands({
             edges,
@@ -99,6 +101,7 @@ const NodeIfElse = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                   key={getIfElseBranchHandleKey(conditionItem)}
                   draggableId={getIfElseBranchHandleKey(conditionItem)}
                   index={conditionIndex}
+                  isDragDisabled={!canDrag}
                 >
                   {(provided, snapshot) => (
                     <ListItem

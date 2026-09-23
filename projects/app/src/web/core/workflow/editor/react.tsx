@@ -52,12 +52,15 @@ export type WorkflowNodeHandle = {
   setName: (name: string) => WorkflowDispatchResult;
   setFolded: (isFolded: boolean) => WorkflowDispatchResult;
   /**
-   * 提交节点语义数据 patch（updateNode 命令）：记录级增删改由调用方读当前记录、
-   * 拼完整数组后走这里，差异记录仍由 Runtime 按字段粒度发布。
-   * patch 接受只读快照形状，位置与折叠不在此提交（只走 commitGeometry）。
+   * 提交节点语义数据 patch（updateNode 命令），差异记录仍由 Runtime 按字段粒度发布。
+   * 只接受函数形式：入参是派发瞬间的当前记录，返回值是只读快照形状的 patch。
+   *
+   * 记录级数组（inputs / outputs）必须基于这份当前记录整表拼装。拿渲染期快照当基线
+   * 会覆盖掉同一 tick 内的其他写入，多行同时提交时互相丢改动。
+   * 位置与折叠不在此提交（只走 commitGeometry）。
    */
   updateNode: (
-    patch: Partial<DeepReadonly<WorkflowNodeData>>,
+    patch: (node: WorkflowNodeSnapshot) => Partial<DeepReadonly<WorkflowNodeData>>,
     options?: WorkflowNodeUpdateOptions
   ) => WorkflowDispatchResult;
 };
@@ -224,14 +227,17 @@ export const createWorkflowEditorAdapter = (
 
   const updateNode = (
     nodeId: string,
-    patch: Partial<DeepReadonly<WorkflowNodeData>>,
+    patch: (node: WorkflowNodeSnapshot) => Partial<DeepReadonly<WorkflowNodeData>>,
     options?: WorkflowNodeUpdateOptions
   ): WorkflowDispatchResult => {
     const disconnects = options?.disconnectEdges;
+    // 派发瞬间读当前记录；节点已删除时提交空 patch，由 Runtime 报 not_found。
+    const current = runtime.getNode(nodeId);
+    const resolved = current ? patch(current) : {};
     // Runtime 会 clone patch，只读快照可以原样透传。
     return runtime.dispatch([
       ...(disconnects?.map((command) => ({ type: 'disconnectEdge' as const, ...command })) ?? []),
-      { type: 'updateNode', nodeId, patch: patch as Partial<WorkflowNodeData> }
+      { type: 'updateNode', nodeId, patch: resolved as Partial<WorkflowNodeData> }
     ]);
   };
 
@@ -255,7 +261,7 @@ export const createWorkflowEditorAdapter = (
     const previous = updateNodeActions.get(nodeId);
     if (previous) return previous;
     const action = (
-      patch: Partial<DeepReadonly<WorkflowNodeData>>,
+      patch: (node: WorkflowNodeSnapshot) => Partial<DeepReadonly<WorkflowNodeData>>,
       options?: WorkflowNodeUpdateOptions
     ) => updateNode(nodeId, patch, options);
     updateNodeActions.set(nodeId, action);

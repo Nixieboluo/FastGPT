@@ -48,16 +48,16 @@ const SelectDatasetParam = ({ inputs = [], nodeId }: RenderInputProps) => {
           maxTokens={llmMaxQuoteContext}
           onClose={onClose}
           onSuccess={(e) => {
-            const documentInputs = node?.data.inputs;
-            if (!documentInputs) return;
-            // 记录级增改：以文档当前 inputs 为基准合并后一次提交，避免逐条提交产生多条历史。
-            const nextInputs = [...documentInputs];
-            getDatasetSearchParamInputs({ inputs, values: e }).forEach((input) => {
-              const index = nextInputs.findIndex((item) => item.key === input.key);
-              if (index >= 0) nextInputs[index] = input;
-              else nextInputs.push(input);
+            // 记录级增改：以派发瞬间的 inputs 为基准合并后一次提交，避免逐条提交产生多条历史。
+            node?.updateNode((current) => {
+              const nextInputs = [...current.inputs];
+              getDatasetSearchParamInputs({ inputs, values: e }).forEach((input) => {
+                const index = nextInputs.findIndex((item) => item.key === input.key);
+                if (index >= 0) nextInputs[index] = input;
+                else nextInputs.push(input);
+              });
+              return { inputs: nextInputs };
             });
-            node?.updateNode({ inputs: nextInputs });
           }}
         />
       )}

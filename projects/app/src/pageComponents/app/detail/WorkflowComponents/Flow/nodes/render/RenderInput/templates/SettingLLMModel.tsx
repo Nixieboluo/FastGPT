@@ -21,47 +21,52 @@ const SelectAiModelRender = ({ inputs = [], nodeId, settingLLMModelProps }: Rend
 
   const onChangeModel = useCallback(
     (e: SettingAIDataType) => {
-      const documentInputs = node?.data.inputs;
-      if (!documentInputs) return;
+      // 本地默认模型缓存是副作用，放在 patch 之外，保持 patch 函数纯粹。
+      // aiModelId 声明为 string；顺带挡掉 undefined，避免写坏缓存。
+      const modelIdValue = (e as Record<string, unknown>)[NodeInputKeyEnum.aiModelId];
+      if (typeof modelIdValue === 'string') setDefaultModel(modelIdValue);
 
-      const nextInputs = [...documentInputs];
-      const setValueByKey = (key: string, value: unknown) => {
-        const index = nextInputs.findIndex((input) => input.key === key);
-        if (index >= 0) nextInputs[index] = { ...nextInputs[index], value };
-      };
+      // 整表合并以派发瞬间的 inputs 为基线，避免覆盖同一 tick 内的其他写入。
+      node?.updateNode((current) => {
+        const nextInputs = [...current.inputs];
+        const setValueByKey = (key: string, value: unknown) => {
+          const index = nextInputs.findIndex((input) => input.key === key);
+          if (index >= 0) nextInputs[index] = { ...nextInputs[index], value };
+        };
 
-      for (const key in e) {
-        const value = e[key as keyof SettingAIDataType];
+        for (const key in e) {
+          const value = e[key as keyof SettingAIDataType];
 
-        if (key !== NodeInputKeyEnum.aiModelId) {
-          setValueByKey(key, value);
-          continue;
+          if (key !== NodeInputKeyEnum.aiModelId) {
+            setValueByKey(key, value);
+            continue;
+          }
+
+          if (typeof value !== 'string') continue;
+          const legacyIndex = nextInputs.findIndex(
+            (input) => input.key === NodeInputKeyEnum.aiModel
+          );
+          const modelIdIndex = nextInputs.findIndex(
+            (input) => input.key === NodeInputKeyEnum.aiModelId
+          );
+          if (modelIdIndex >= 0) {
+            nextInputs[modelIdIndex] = { ...nextInputs[modelIdIndex], value };
+            // 迁移后同时存在旧字段时删除，避免两份模型值。
+            if (legacyIndex >= 0) nextInputs.splice(legacyIndex, 1);
+          } else if (legacyIndex >= 0) {
+            // 旧 aiModel 记录原地改名为 aiModelId，保留其余元数据。
+            nextInputs[legacyIndex] = {
+              ...nextInputs[legacyIndex],
+              key: NodeInputKeyEnum.aiModelId,
+              value
+            };
+          } else {
+            nextInputs.push({ ...Input_Template_SettingAiModel, value });
+          }
         }
 
-        // aiModelId 声明为 string；顺带挡掉 undefined，避免写坏本地默认模型缓存。
-        if (typeof value !== 'string') continue;
-        setDefaultModel(value);
-        const legacyIndex = nextInputs.findIndex((input) => input.key === NodeInputKeyEnum.aiModel);
-        const modelIdIndex = nextInputs.findIndex(
-          (input) => input.key === NodeInputKeyEnum.aiModelId
-        );
-        if (modelIdIndex >= 0) {
-          nextInputs[modelIdIndex] = { ...nextInputs[modelIdIndex], value };
-          // 迁移后同时存在旧字段时删除，避免两份模型值。
-          if (legacyIndex >= 0) nextInputs.splice(legacyIndex, 1);
-        } else if (legacyIndex >= 0) {
-          // 旧 aiModel 记录原地改名为 aiModelId，保留其余元数据。
-          nextInputs[legacyIndex] = {
-            ...nextInputs[legacyIndex],
-            key: NodeInputKeyEnum.aiModelId,
-            value
-          };
-        } else {
-          nextInputs.push({ ...Input_Template_SettingAiModel, value });
-        }
-      }
-
-      node?.updateNode({ inputs: nextInputs });
+        return { inputs: nextInputs };
+      });
     },
     [node, setDefaultModel]
   );

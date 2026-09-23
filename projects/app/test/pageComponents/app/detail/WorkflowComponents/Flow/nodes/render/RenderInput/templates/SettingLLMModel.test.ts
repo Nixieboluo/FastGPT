@@ -38,8 +38,9 @@ describe('workflow model initialization', () => {
     mocks.nodeInputs = inputs;
     return (Wrapper as any).type({ nodeId: 'node', inputs }).props;
   };
-  /** 写入统一走整份 inputs 提交，取出本次提交的数组做断言。 */
-  const submittedInputs = () => mocks.updateNode.mock.calls[0][0].inputs;
+  /** 写入统一走整份 inputs 提交：patch 是函数，用当前文档记录求值后取数组断言。 */
+  const submittedInputs = () =>
+    mocks.updateNode.mock.calls[0][0]({ inputs: mocks.nodeInputs }).inputs;
   it.each([undefined, '', null])(
     'does not initialize a model or change remembered selection on mount (%s)',
     (value) => {
@@ -90,9 +91,9 @@ describe('workflow model initialization', () => {
     expect(mocks.updateNode).not.toHaveBeenCalled();
 
     props.onChange({ modelId: 'system-default' });
-    expect(mocks.updateNode).toHaveBeenCalledWith({
-      inputs: [{ ...legacyInput, key: NodeInputKeyEnum.aiModelId, value: 'system-default' }]
-    });
+    expect(submittedInputs()).toEqual([
+      { ...legacyInput, key: NodeInputKeyEnum.aiModelId, value: 'system-default' }
+    ]);
   });
   it('never replaces missing or configured values from remembered storage during rendering', () => {
     mocks.remembered = 'deleted';

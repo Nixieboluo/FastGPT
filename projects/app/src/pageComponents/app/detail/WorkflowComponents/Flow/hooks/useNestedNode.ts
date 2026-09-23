@@ -86,14 +86,12 @@ export const useNestedNode = ({
 
   useEffect(() => {
     if (!nestedInputArray || !arrayInputKey || nestedInputArray.valueType === newValueType) return;
-    // 记录级替换：基准取文档 inputs（不是 props 里过滤后的子集），只换命中 key 的那一条。
-    const documentInputs = node?.data.inputs;
-    if (!documentInputs) return;
-    node?.updateNode({
-      inputs: documentInputs.map((input) =>
+    // 记录级替换：基准取派发瞬间的文档 inputs（不是 props 里过滤后的子集），只换命中 key 的那一条。
+    node?.updateNode((current) => ({
+      inputs: current.inputs.map((input) =>
         input.key === arrayInputKey ? { ...input, valueType: newValueType } : input
       )
-    });
+    }));
   }, [nestedInputArray, newValueType, node, arrayInputKey]);
 
   // ── 3. Measure input-box height locally ────────────────────────────────────

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import type { RenderInputProps } from '../type';
 import { Flex, Box, type ButtonProps, Grid } from '@chakra-ui/react';
 import MyIcon from '@fastgpt/web/components/common/Icon';
@@ -16,6 +16,7 @@ import type {
   ReferenceValueType
 } from '@fastgpt/global/core/workflow/type/io';
 import type { WorkflowFieldSnapshot } from '@fastgpt/global/core/workflow/editor/types';
+import { getWorkflowReferenceItems } from '@fastgpt/global/core/workflow/editor/utils';
 import type { TFunction } from 'next-i18next';
 import dynamic from 'next/dynamic';
 import { isNestedParentNodeType } from '@fastgpt/global/core/workflow/node/constant';
@@ -267,22 +268,15 @@ const SingleReferenceSelector = ({
     [list, reference, t]
   );
 
-  // Adapt array type from old version
-  useEffect(() => {
-    if (
-      Array.isArray(value) &&
-      // @ts-ignore
-      value.length === 1 &&
-      Array.isArray(value[0]) &&
-      value[0].length === 2
-    ) {
-      // @ts-ignore
-      onSelect(value[0]);
-    }
-  }, [value, onSelect]);
+  // 存量数据可能是多选形态 [[nodeId, outputId]]：展示时取第一项即可，不回写文档。
+  // 挂载时回写会让同一节点的多行动态输入用同一份渲染基线互相覆盖，
+  // 打开工作流就触发提交风暴（见 editor/utils 的 getWorkflowReferenceItems）。
+  const selectorVal = useMemo(
+    () => getWorkflowReferenceItems(value)[0] as ReferenceItemValueType,
+    [value]
+  );
 
   const ItemSelector = useMemo(() => {
-    const selectorVal = value as ReferenceItemValueType;
     const selected = getSelectValue(selectorVal);
 
     return (
@@ -326,7 +320,16 @@ const SingleReferenceSelector = ({
         onOpenFunc={onOpenList}
       />
     );
-  }, [ButtonProps, getSelectValue, list, onOpenList, onSelect, placeholder, popDirection, value]);
+  }, [
+    ButtonProps,
+    getSelectValue,
+    list,
+    onOpenList,
+    onSelect,
+    placeholder,
+    popDirection,
+    selectorVal
+  ]);
 
   return ItemSelector;
 };
@@ -357,6 +360,9 @@ const MultipleReferenceSelector = ({
     [list]
   );
 
+  // 存量数据可能是单选形态 [nodeId, outputId]：展示时升级成引用数组，不回写文档。
+  const arrayVal = useMemo(() => getWorkflowReferenceItems(value), [value]);
+
   // Get valid item and remove invalid item
   const formatList = useMemo(() => {
     // 给出字段引用状态时按状态解析展示名，此时 list 可以是懒加载的空数组。
@@ -372,9 +378,7 @@ const MultipleReferenceSelector = ({
       });
     }
 
-    if (!value || !Array.isArray(value)) return [];
-
-    return value.map((item) => {
+    return arrayVal.map((item) => {
       const [nodeName, outputName] = getSelectValue(item);
       return {
         rawValue: item,
@@ -383,19 +387,11 @@ const MultipleReferenceSelector = ({
         icon: undefined
       };
     });
-  }, [getSelectValue, reference, t, value]);
+  }, [arrayVal, getSelectValue, reference, t]);
 
   const invalidList = useMemo(() => {
     return formatList.filter((item) => item.nodeName && item.outputName);
   }, [formatList]);
-
-  useEffect(() => {
-    // Adapt array type from old version
-    if (Array.isArray(value) && typeof value[0] === 'string') {
-      // @ts-ignore
-      onSelect([value]);
-    }
-  }, [formatList, onSelect, value]);
 
   const ArraySelector = useMemo(() => {
     return (
@@ -452,7 +448,7 @@ const MultipleReferenceSelector = ({
                         // 按引用身份删，不用列表下标：invalidList 是过滤后的列表，
                         // 且字段状态里的引用已去重，下标与 value 不是 1:1。
                         onSelect(
-                          value?.filter(
+                          arrayVal.filter(
                             (item) => item?.[0] !== rawValue?.[0] || item?.[1] !== rawValue?.[1]
                           )
                         );
@@ -468,7 +464,7 @@ const MultipleReferenceSelector = ({
             </Box>
           )
         }
-        value={value as any}
+        value={arrayVal}
         list={list}
         onSelect={(e) => {
           onSelect(e as any);
@@ -477,7 +473,7 @@ const MultipleReferenceSelector = ({
         onOpenFunc={onOpenList}
       />
     );
-  }, [invalidList, list, onOpenList, onSelect, placeholder, popDirection, value]);
+  }, [arrayVal, invalidList, list, onOpenList, onSelect, placeholder, popDirection]);
 
   return ArraySelector;
 };

@@ -286,7 +286,7 @@ const NodeCopilot = ({
         .flatMap((outputKey) => getOutputDisconnectCommands({ edges, nodeId, outputKey }))
         .sort((a, b) => b.index - a.index);
 
-      node?.updateNode({ inputs: nextInputs, outputs: nextOutputs }, { disconnectEdges });
+      node?.updateNode(() => ({ inputs: nextInputs, outputs: nextOutputs }), { disconnectEdges });
       setOptimizerInput('');
 
       toast({

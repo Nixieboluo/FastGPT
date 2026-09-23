@@ -728,7 +728,7 @@ const NodeIntro = React.memo(function NodeIntro({
     (newVal: string) => {
       const trimmed = newVal.trim();
       if (trimmed !== intro) {
-        nodeHandle?.updateNode({ intro: trimmed });
+        nodeHandle?.updateNode(() => ({ intro: trimmed }));
       }
       return true;
     },
@@ -844,18 +844,20 @@ const NodeVersion = React.memo(function NodeVersion({ node }: { node: FlowNodeIt
           // 切换版本 = 用新版本模板整体覆盖节点数据，保留位置、折叠与已配置的工具输入。
           // adapter 没有整节点替换句柄，这里拼出完整 patch 走 updateNode：Runtime 会用当前
           // Node View 覆盖 patch 里的 position/isFolded，教程地址等视图字段也不进文档。
+          // 覆盖基线取派发瞬间的记录：拉模板是异步的，用渲染期快照会把期间的其他写入冲掉。
           const sourceInputMap = new Map(node.inputs.map((input) => [input.key, input]));
           nodeHandle?.updateNode(
-            omit(
-              {
-                ...node,
-                ...versionTemplate,
-                inputs: versionTemplate.inputs.map((input) =>
-                  migrateToolInputConfig({ input, sourceInput: sourceInputMap.get(input.key) })
-                )
-              },
-              ['debugResult', 'searchedText', 'courseUrl', 'readmeUrl', 'userGuide']
-            ) as Partial<DeepReadonly<WorkflowNodeData>>
+            (current) =>
+              omit(
+                {
+                  ...current,
+                  ...versionTemplate,
+                  inputs: versionTemplate.inputs.map((input) =>
+                    migrateToolInputConfig({ input, sourceInput: sourceInputMap.get(input.key) })
+                  )
+                },
+                ['debugResult', 'searchedText', 'courseUrl', 'readmeUrl', 'userGuide']
+              ) as Partial<DeepReadonly<WorkflowNodeData>>
           );
         }
       }

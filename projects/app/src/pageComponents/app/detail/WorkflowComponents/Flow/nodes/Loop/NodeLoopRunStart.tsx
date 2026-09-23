@@ -53,13 +53,13 @@ const NodeLoopRunStart = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
     const currentItem = documentOutputs?.find((o) => o.key === NodeOutputKeyEnum.currentItem);
     if (!documentOutputs || !currentItem || currentItem.valueType === currentItemType) return;
 
-    node?.updateNode({
-      outputs: documentOutputs.map((output) =>
+    node?.updateNode((current) => ({
+      outputs: current.outputs.map((output) =>
         output.key === NodeOutputKeyEnum.currentItem
           ? { ...output, valueType: currentItemType }
           : output
       )
-    });
+    }));
   }, [currentItemType, node, parentMode]);
 
   return (

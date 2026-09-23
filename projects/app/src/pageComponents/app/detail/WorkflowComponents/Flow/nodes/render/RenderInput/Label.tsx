@@ -46,8 +46,6 @@ const InputLabel = ({ nodeId, input, RightComponent, rightInline, isTool }: Prop
   );
   const onChangeRenderType = useCallback(
     (e: string) => {
-      const documentInputs = node?.data.inputs;
-      if (!documentInputs) return;
       const nextInput = {
         ...input,
         ...getSelectedRenderTypeState({
@@ -58,9 +56,9 @@ const InputLabel = ({ nodeId, input, RightComponent, rightInline, isTool }: Prop
       };
 
       // 切换渲染类型整条替换输入记录（含清空 value），属于记录级变更。
-      node?.updateNode({
-        inputs: documentInputs.map((item) => (item.key === input.key ? nextInput : item))
-      });
+      node?.updateNode((current) => ({
+        inputs: current.inputs.map((item) => (item.key === input.key ? nextInput : item))
+      }));
     },
     [displayRenderTypeList, input, node]
   );
@@ -109,11 +107,9 @@ const InputLabel = ({ nodeId, input, RightComponent, rightInline, isTool }: Prop
                 bg: 'adora.100'
               }}
               onClick={() => {
-                const documentInputs = node?.data.inputs;
-                if (!documentInputs) return;
-                node?.updateNode({
-                  inputs: documentInputs.filter((item) => item.key !== input.key)
-                });
+                node?.updateNode((current) => ({
+                  inputs: current.inputs.filter((item) => item.key !== input.key)
+                }));
               }}
             >
               <MyIcon name={'common/info'} color={'adora.600'} w={4} mr={1} />

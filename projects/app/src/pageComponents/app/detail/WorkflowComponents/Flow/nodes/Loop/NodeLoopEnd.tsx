@@ -79,11 +79,11 @@ const NodeLoopEnd = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
     const newArrayType = typeMap[valueType] ?? WorkflowIOValueTypeEnum.arrayAny;
     if (!targetOutput || targetOutput.valueType === newArrayType) return;
 
-    parentNode?.updateNode({
-      outputs: parentOutputs.map((output) =>
+    parentNode?.updateNode((current) => ({
+      outputs: current.outputs.map((output) =>
         output.key === outputKey ? { ...output, valueType: newArrayType } : output
       )
-    });
+    }));
   }, [parentNode, valueType]);
 
   return (

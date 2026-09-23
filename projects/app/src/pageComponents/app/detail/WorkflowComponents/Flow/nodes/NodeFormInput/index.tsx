@@ -53,44 +53,43 @@ const NodeFormInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
          * 新增走追加，编辑按原 key 定位；只有改名时旧 handle 上的连线才需要一起断开。
          */
         const onSubmit = (data: UserInputFormItemType) => {
-          const documentInputs = node?.data.inputs;
-          const documentOutputs = node?.data.outputs;
-          if (!documentInputs || !documentOutputs) return;
-
           const editKey = editField?.key;
-          const nextOutput: FlowNodeOutputItemType = editKey
-            ? {
-                // 编辑态必然能按原 key 找到 output；找不到时 map 不命中，等价于旧 replaceOutput 的空操作。
-                ...(documentOutputs.find(
-                  (output) => output.key === editKey
-                ) as FlowNodeOutputItemType),
-                valueType: data.valueType,
-                key: data.key,
-                label: data.label
-              }
-            : {
-                id: data.key,
-                valueType: data.valueType,
-                key: data.key,
-                label: data.label,
-                type: FlowNodeOutputTypeEnum.static
-              };
 
           node?.updateNode(
-            {
-              inputs: documentInputs.map((input) =>
-                input.key === key
-                  ? {
-                      ...input,
-                      value: editKey
-                        ? inputs.map((item) => (item.key === editKey ? data : item))
-                        : inputs.concat(data)
-                    }
-                  : input
-              ),
-              outputs: editKey
-                ? documentOutputs.map((output) => (output.key === editKey ? nextOutput : output))
-                : documentOutputs.concat(nextOutput)
+            (current) => {
+              const nextOutput: FlowNodeOutputItemType = editKey
+                ? {
+                    // 编辑态必然能按原 key 找到 output；找不到时 map 不命中，等价于旧 replaceOutput 的空操作。
+                    ...(current.outputs.find(
+                      (output) => output.key === editKey
+                    ) as FlowNodeOutputItemType),
+                    valueType: data.valueType,
+                    key: data.key,
+                    label: data.label
+                  }
+                : {
+                    id: data.key,
+                    valueType: data.valueType,
+                    key: data.key,
+                    label: data.label,
+                    type: FlowNodeOutputTypeEnum.static
+                  };
+
+              return {
+                inputs: current.inputs.map((input) =>
+                  input.key === key
+                    ? {
+                        ...input,
+                        value: editKey
+                          ? inputs.map((item) => (item.key === editKey ? data : item))
+                          : inputs.concat(data)
+                      }
+                    : input
+                ),
+                outputs: editKey
+                  ? current.outputs.map((output) => (output.key === editKey ? nextOutput : output))
+                  : current.outputs.concat(nextOutput)
+              };
             },
             editKey && editKey !== data.key
               ? {
@@ -105,20 +104,16 @@ const NodeFormInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         };
 
         const onDelete = (valueKey: string) => {
-          const documentInputs = node?.data.inputs;
-          const documentOutputs = node?.data.outputs;
-          if (!documentInputs || !documentOutputs) return;
-
           // 删除字段时其 output 与 handle 连线同事务消失，撤销一步恢复。
-          node.updateNode(
-            {
-              inputs: documentInputs.map((input) =>
+          node?.updateNode(
+            (current) => ({
+              inputs: current.inputs.map((input) =>
                 input.key === key
                   ? { ...input, value: inputs.filter((item) => item.key !== valueKey) }
                   : input
               ),
-              outputs: documentOutputs.filter((output) => output.key !== valueKey)
-            },
+              outputs: current.outputs.filter((output) => output.key !== valueKey)
+            }),
             {
               disconnectEdges: getOutputDisconnectCommands({ edges, nodeId, outputKey: valueKey })
             }
@@ -174,26 +169,20 @@ const NodeFormInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                 </Thead>
                 <DndDrag<UserInputFormItemType>
                   onDragEndCb={(list) => {
-                    const documentInputs = node?.data.inputs;
-                    const documentOutputs = node?.data.outputs;
-                    if (!documentInputs || !documentOutputs) return;
-
-                    const sortedOutputs = [
-                      documentOutputs[0],
-                      ...documentOutputs.slice(1).sort((a, b) => {
-                        const aIndex = list.findIndex((item) => item.key === a.key);
-                        const bIndex = list.findIndex((item) => item.key === b.key);
-                        return aIndex - bIndex;
-                      })
-                    ];
-
                     // 拖拽排序：字段顺序与 output 顺序同事务写入，撤销一步回到旧顺序。
-                    node.updateNode({
-                      inputs: documentInputs.map((input) =>
+                    node?.updateNode((current) => ({
+                      inputs: current.inputs.map((input) =>
                         input.key === key ? { ...input, value: list } : input
                       ),
-                      outputs: sortedOutputs
-                    });
+                      outputs: [
+                        current.outputs[0],
+                        ...current.outputs.slice(1).sort((a, b) => {
+                          const aIndex = list.findIndex((item) => item.key === a.key);
+                          const bIndex = list.findIndex((item) => item.key === b.key);
+                          return aIndex - bIndex;
+                        })
+                      ]
+                    }));
                   }}
                   dataList={inputs}
                   renderClone={(provided, snapshot, rubric) => {

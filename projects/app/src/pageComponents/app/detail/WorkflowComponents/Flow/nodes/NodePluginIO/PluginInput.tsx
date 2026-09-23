@@ -47,34 +47,36 @@ const NodePluginInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const onSubmit = useCallback(
     (data: FlowNodeInputItemType) => {
       if (!editField) return;
-      const documentInputs = node?.data.inputs;
-      const documentOutputs = node?.data.outputs;
-      if (!documentInputs || !documentOutputs) return;
 
       const editKey = editField.key;
-      const newOutput: FlowNodeOutputItemType = editKey
-        ? {
-            ...(documentOutputs.find((output) => output.key === editKey) as FlowNodeOutputItemType),
-            valueType: data.valueType,
-            key: data.key,
-            label: data.label
-          }
-        : {
-            id: data.key,
-            valueType: data.valueType,
-            key: data.key,
-            label: data.label,
-            type: FlowNodeOutputTypeEnum.hidden
-          };
 
       node?.updateNode(
-        {
-          inputs: editKey
-            ? documentInputs.map((input) => (input.key === editKey ? data : input))
-            : documentInputs.concat(data),
-          outputs: editKey
-            ? documentOutputs.map((output) => (output.key === editKey ? newOutput : output))
-            : documentOutputs.concat(newOutput)
+        (current) => {
+          const newOutput: FlowNodeOutputItemType = editKey
+            ? {
+                ...(current.outputs.find(
+                  (output) => output.key === editKey
+                ) as FlowNodeOutputItemType),
+                valueType: data.valueType,
+                key: data.key,
+                label: data.label
+              }
+            : {
+                id: data.key,
+                valueType: data.valueType,
+                key: data.key,
+                label: data.label,
+                type: FlowNodeOutputTypeEnum.hidden
+              };
+
+          return {
+            inputs: editKey
+              ? current.inputs.map((input) => (input.key === editKey ? data : input))
+              : current.inputs.concat(data),
+            outputs: editKey
+              ? current.outputs.map((output) => (output.key === editKey ? newOutput : output))
+              : current.outputs.concat(newOutput)
+          };
         },
         editKey && editKey !== data.key
           ? {
@@ -127,16 +129,12 @@ const NodePluginInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
               setEditField(input);
             }}
             onDelete={(key) => {
-              const documentInputs = node?.data.inputs;
-              const documentOutputs = node?.data.outputs;
-              if (!documentInputs || !documentOutputs) return;
-
               // 删除字段时其对称 output 与 handle 连线同事务消失，撤销一步恢复。
-              node.updateNode(
-                {
-                  inputs: documentInputs.filter((input) => input.key !== key),
-                  outputs: documentOutputs.filter((output) => output.key !== key)
-                },
+              node?.updateNode(
+                (current) => ({
+                  inputs: current.inputs.filter((input) => input.key !== key),
+                  outputs: current.outputs.filter((output) => output.key !== key)
+                }),
                 {
                   disconnectEdges: getOutputDisconnectCommands({ edges, nodeId, outputKey: key })
                 }

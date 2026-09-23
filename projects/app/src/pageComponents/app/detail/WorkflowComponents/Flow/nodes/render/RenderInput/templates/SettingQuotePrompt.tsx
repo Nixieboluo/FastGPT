@@ -145,23 +145,23 @@ const EditModal = ({ onClose, ...props }: RenderInputProps & { onClose: () => vo
 
   const onSubmit = useCallback(
     (data: { quoteTemplate: string; quotePrompt: string; quoteRole: AiChatQuoteRoleType }) => {
-      const documentInputs = node?.data.inputs;
-      if (!documentInputs) return;
-
       // 三条引用配置记录一次提交：已存在的按模板整条替换，缺失的追加，与旧 replaceInput 一致。
-      const nextInputs = [...documentInputs];
-      (
-        [
-          { record: AiChatQuoteRole, value: data.quoteRole || 'system' },
-          { record: AiChatQuoteTemplate, value: data.quoteTemplate },
-          { record: AiChatQuotePrompt, value: data.quotePrompt }
-        ] as const
-      ).forEach(({ record, value }) => {
-        const index = nextInputs.findIndex((input) => input.key === record.key);
-        if (index >= 0) nextInputs[index] = { ...record, value };
-        else nextInputs.push({ ...record, value });
+      // 基线取派发瞬间的 inputs，避免覆盖同一 tick 内的其他写入。
+      node?.updateNode((current) => {
+        const nextInputs = [...current.inputs];
+        (
+          [
+            { record: AiChatQuoteRole, value: data.quoteRole || 'system' },
+            { record: AiChatQuoteTemplate, value: data.quoteTemplate },
+            { record: AiChatQuotePrompt, value: data.quotePrompt }
+          ] as const
+        ).forEach(({ record, value }) => {
+          const index = nextInputs.findIndex((input) => input.key === record.key);
+          if (index >= 0) nextInputs[index] = { ...record, value };
+          else nextInputs.push({ ...record, value });
+        });
+        return { inputs: nextInputs };
       });
-      node?.updateNode({ inputs: nextInputs });
 
       onClose();
     },

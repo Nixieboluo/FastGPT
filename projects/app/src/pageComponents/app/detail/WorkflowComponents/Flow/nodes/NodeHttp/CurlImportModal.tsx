@@ -22,8 +22,7 @@ const CurlImportModal = ({ nodeId, onClose }: { nodeId: string; onClose: () => v
 
   const handleFileProcessing = async (content: string) => {
     try {
-      const documentInputs = node?.data.inputs;
-      if (!documentInputs) return;
+      if (!node) return;
       const parsed = parseCurl(content);
 
       // 一次导入覆盖五个字段：同一事务提交，撤销一次回到导入前。
@@ -34,11 +33,11 @@ const CurlImportModal = ({ nodeId, onClose }: { nodeId: string; onClose: () => v
         [NodeInputKeyEnum.httpHeaders]: parsed.headers,
         [NodeInputKeyEnum.httpJsonBody]: parsed.body
       };
-      node?.updateNode({
-        inputs: documentInputs.map((input) =>
+      node.updateNode((current) => ({
+        inputs: current.inputs.map((input) =>
           input.key in parsedValues ? { ...input, value: parsedValues[input.key] } : input
         )
-      });
+      }));
 
       onClose();
 

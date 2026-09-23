@@ -75,7 +75,7 @@ const NodeLoopStart = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
     if (!nextOutputs) return;
 
     node?.updateNode(
-      { outputs: nextOutputs },
+      () => ({ outputs: nextOutputs }),
       // 删除该输出时，旧 handle 上的连线同事务断开。
       !loopItemInputType
         ? {

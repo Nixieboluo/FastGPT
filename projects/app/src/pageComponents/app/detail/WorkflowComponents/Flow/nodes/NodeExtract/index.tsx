@@ -132,12 +132,9 @@ const NodeExtract = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                           hoverColor={'red.500'}
                           onClick={() => {
                             // 抽取字段与其结果 output 一起删除，旧 handle 连线同事务断开。
-                            const documentInputs = node?.data.inputs;
-                            const documentOutputs = node?.data.outputs;
-                            if (!documentInputs || !documentOutputs) return;
                             node?.updateNode(
-                              {
-                                inputs: documentInputs.map((input) =>
+                              (current) => ({
+                                inputs: current.inputs.map((input) =>
                                   input.key === NodeInputKeyEnum.extractKeys
                                     ? {
                                         ...input,
@@ -147,8 +144,8 @@ const NodeExtract = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                                       }
                                     : input
                                 ),
-                                outputs: documentOutputs.filter((output) => output.key !== item.key)
-                              },
+                                outputs: current.outputs.filter((output) => output.key !== item.key)
+                              }),
                               {
                                 disconnectEdges: getOutputDisconnectCommands({
                                   edges,
@@ -202,8 +199,7 @@ const NodeExtract = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
           onClose={() => setEditExtractField(undefined)}
           onSubmit={(data) => {
             const documentInputs = node?.data.inputs;
-            const documentOutputs = node?.data.outputs;
-            if (!documentInputs || !documentOutputs) return;
+            if (!documentInputs) return;
 
             const input = documentInputs.find(
               (item) => item.key === NodeInputKeyEnum.extractKeys
@@ -223,19 +219,9 @@ const NodeExtract = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
             const replacedKey =
               exists && editExtractFiled.key !== data.key ? editExtractFiled.key : undefined;
 
-            const nextOutputs = replacedKey
-              ? documentOutputs.map((output) => (output.key === replacedKey ? newOutput : output))
-              : exists
-                ? documentOutputs.map((output) =>
-                    output.key === data.key
-                      ? { ...output, valueType: newOutput.valueType, label: newOutput.label }
-                      : output
-                  )
-                : documentOutputs.concat(newOutput);
-
             node?.updateNode(
-              {
-                inputs: documentInputs.map((item) =>
+              (current) => ({
+                inputs: current.inputs.map((item) =>
                   item.key === NodeInputKeyEnum.extractKeys
                     ? {
                         ...item,
@@ -247,8 +233,18 @@ const NodeExtract = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                       }
                     : item
                 ),
-                outputs: nextOutputs
-              },
+                outputs: replacedKey
+                  ? current.outputs.map((output) =>
+                      output.key === replacedKey ? newOutput : output
+                    )
+                  : exists
+                    ? current.outputs.map((output) =>
+                        output.key === data.key
+                          ? { ...output, valueType: newOutput.valueType, label: newOutput.label }
+                          : output
+                      )
+                    : current.outputs.concat(newOutput)
+              }),
               replacedKey
                 ? {
                     disconnectEdges: getOutputDisconnectCommands({

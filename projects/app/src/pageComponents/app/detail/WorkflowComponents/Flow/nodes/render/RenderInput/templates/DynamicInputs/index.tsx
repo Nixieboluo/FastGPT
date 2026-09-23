@@ -66,11 +66,9 @@ const DynamicInputs = ({ item, inputs = [], nodeId }: RenderInputProps) => {
                     bg: 'adora.100'
                   }}
                   onClick={() => {
-                    const documentInputs = node?.data.inputs;
-                    if (!documentInputs) return;
-                    node?.updateNode({
-                      inputs: documentInputs.filter((input) => input.key !== item.key)
-                    });
+                    node?.updateNode((current) => ({
+                      inputs: current.inputs.filter((input) => input.key !== item.key)
+                    }));
                   }}
                 >
                   <MyIcon name={'common/info'} color={'adora.600'} w={4} mr={1} />
@@ -159,9 +157,6 @@ const Reference = ({
       }
 
       setTimeout(() => {
-        const documentInputs = node?.data.inputs;
-        if (!documentInputs) return;
-
         if (isEmptyItem && label) {
           const newInput: FlowNodeInputItemType = {
             ...defaultInput,
@@ -171,13 +166,13 @@ const Reference = ({
             valueType: WorkflowIOValueTypeEnum.any,
             required: true
           };
-          node?.updateNode({ inputs: [...documentInputs, newInput] });
+          node?.updateNode((current) => ({ inputs: [...current.inputs, newInput] }));
         } else if (!isEmptyItem) {
-          node?.updateNode({
-            inputs: documentInputs.map((input) =>
+          node?.updateNode((current) => ({
+            inputs: current.inputs.map((input) =>
               input.key === inputChildren.key ? { ...input, label, key: label || input.key } : input
             )
-          });
+          }));
         }
       }, 50);
       setTempLabel('');
@@ -192,29 +187,25 @@ const Reference = ({
         .find((item) => item.value === e[0])
         ?.children.find((item) => item.value === e[1]);
 
-      const documentInputs = node?.data.inputs;
-      if (!documentInputs) return;
-
-      node?.updateNode({
-        inputs: documentInputs.map((input) =>
+      node?.updateNode((current) => ({
+        inputs: current.inputs.map((input) =>
           input.key === inputChildren.key
             ? {
                 ...input,
                 value: e,
-                valueType: referenceItem?.valueType || WorkflowIOValueTypeEnum.any
+                // 目标类型解析不到时保留原类型，不要静默降级成 any
+                valueType: referenceItem?.valueType ?? input.valueType
               }
             : input
         )
-      });
+      }));
     },
     [inputChildren.key, node, referenceList]
   );
   const onDeleteInput = useCallback(() => {
-    const documentInputs = node?.data.inputs;
-    if (!documentInputs) return;
-    node?.updateNode({
-      inputs: documentInputs.filter((input) => input.key !== inputChildren.key)
-    });
+    node?.updateNode((current) => ({
+      inputs: current.inputs.filter((input) => input.key !== inputChildren.key)
+    }));
   }, [inputChildren.key, node]);
 
   return (

@@ -82,14 +82,12 @@ const CommonInputForm = ({ item, nodeId }: RenderInputProps) => {
         ([legacyKey]) => legacyKey === item.key
       )?.[1];
       if (inputType === InputTypeEnum.selectLLMModel && modelIdKey) {
-        // 记录级改名：以文档当前 inputs 为基准整份替换，避免用 props 里的过滤后数组覆盖文档。
-        const inputs = node?.data.inputs;
-        if (!inputs) return;
-        node.updateNode({
-          inputs: inputs.map((input) =>
+        // 记录级改名：以派发瞬间的 inputs 为基准整份替换，避免用 props 里的过滤后数组覆盖文档。
+        node?.updateNode((current) => ({
+          inputs: current.inputs.map((input) =>
             input.key === item.key ? { ...input, key: modelIdKey, value } : input
           )
-        });
+        }));
         return;
       }
 
@@ -121,6 +119,10 @@ const CommonInputForm = ({ item, nodeId }: RenderInputProps) => {
     [item.value, handleChange]
   );
 
+  // item.key 是字段名，直接展开会被 React 当成元素 key：既触发 key-spread 警告，
+  // 也会在 aiModel → aiModelId 记录级改名时把输入框整个 remount 掉。
+  const { key: _itemKey, ...inputProps } = item;
+
   return (
     // 字段撤销由 Runtime 统一托管：打上标记后画布快捷键在捕获阶段接管，
     // 不再让编辑器本地历史（Lexical 按秒合并连续输入）与逐条记录的工作流历史互相覆盖。
@@ -133,7 +135,7 @@ const CommonInputForm = ({ item, nodeId }: RenderInputProps) => {
         variableLabels={editorVariables}
         ExtensionPopover={canOptimizePrompt ? [OptimizerPopverComponent] : undefined}
         menuPlacement={menuPlacement}
-        {...item}
+        {...inputProps}
       />
     </Box>
   );

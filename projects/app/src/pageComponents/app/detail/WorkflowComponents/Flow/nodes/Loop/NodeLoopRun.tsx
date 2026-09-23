@@ -145,20 +145,17 @@ const NodeLoopRun = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         const removedKeys = startOutputs
           .map((o) => o.key)
           .filter((key) => !nextOutputs.some((o) => o.key === key));
-        startChildNode?.updateNode(
-          { outputs: nextOutputs },
-          {
-            disconnectEdges: removedKeys
-              .flatMap((outputKey) =>
-                getOutputDisconnectCommands({
-                  edges: workflow.edges,
-                  nodeId: startChildId,
-                  outputKey
-                })
-              )
-              .sort((a, b) => b.index - a.index)
-          }
-        );
+        startChildNode?.updateNode(() => ({ outputs: nextOutputs }), {
+          disconnectEdges: removedKeys
+            .flatMap((outputKey) =>
+              getOutputDisconnectCommands({
+                edges: workflow.edges,
+                nodeId: startChildId,
+                outputKey
+              })
+            )
+            .sort((a, b) => b.index - a.index)
+        });
       }
     }
 
@@ -221,16 +218,13 @@ const NodeLoopRun = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
       updatedOutputs.some((o, index) => o !== keptOutputs[index]);
     if (!changed) return;
 
-    node?.updateNode(
-      { outputs: [...updatedOutputs, ...addedOutputs] },
-      {
-        disconnectEdges: removedKeys
-          .flatMap((outputKey) =>
-            getOutputDisconnectCommands({ edges: workflow.edges, nodeId, outputKey })
-          )
-          .sort((a, b) => b.index - a.index)
-      }
-    );
+    node?.updateNode(() => ({ outputs: [...updatedOutputs, ...addedOutputs] }), {
+      disconnectEdges: removedKeys
+        .flatMap((outputKey) =>
+          getOutputDisconnectCommands({ edges: workflow.edges, nodeId, outputKey })
+        )
+        .sort((a, b) => b.index - a.index)
+    });
   }, [node, nodeId, workflow.edges]);
 
   return (

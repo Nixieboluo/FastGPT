@@ -46,6 +46,6 @@ export const useNodeOutputValidity = (nodeId: string) => {
         : output
     );
     if (nextOutputs.every((output, index) => output.invalid === outputs[index].invalid)) return;
-    node.updateNode({ outputs: nextOutputs as FlowNodeOutputItemType[] });
+    node.updateNode(() => ({ outputs: nextOutputs as FlowNodeOutputItemType[] }));
   }, [node, inputs, outputs, needsModel, model, loading, error]);
 };

@@ -60,11 +60,11 @@ const OutputLabel = ({ nodeId, output }: { nodeId: string; output: FlowNodeOutpu
                   bg: 'adora.100'
                 }}
                 onClick={() => {
-                  const documentOutputs = node?.data.outputs;
-                  if (!documentOutputs) return;
                   // 输出字段删除是记录级变更；其 source handle 上的连线必须同事务断开。
                   node?.updateNode(
-                    { outputs: documentOutputs.filter((item) => item.key !== output.key) },
+                    (current) => ({
+                      outputs: current.outputs.filter((item) => item.key !== output.key)
+                    }),
                     {
                       disconnectEdges: getOutputDisconnectCommands({
                         edges,

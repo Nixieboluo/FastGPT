@@ -120,11 +120,9 @@ const NodeToolCall = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
               entrypointField.setValue(value);
               return;
             }
-            const documentInputs = node?.data.inputs;
-            if (!documentInputs) return;
-            node?.updateNode({
-              inputs: [...documentInputs, createSandboxEntrypointInput(value)]
-            });
+            node?.updateNode((current) => ({
+              inputs: [...current.inputs, createSandboxEntrypointInput(value)]
+            }));
           }}
         />
         <RenderInput nodeId={nodeId} flowInputList={afterSandboxInputs} isTool={isTool} />

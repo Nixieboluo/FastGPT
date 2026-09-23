@@ -97,8 +97,8 @@ describe('CommonInputForm model selection', () => {
       }
     });
     renderInputProps(element).onChange('chosen-id');
-    // 记录级改名：读文档当前 inputs，只改命中的那条，整份一次提交。
-    expect(mocks.updateNode).toHaveBeenCalledWith({
+    // 记录级改名：以派发瞬间的 inputs 为基线，只改命中的那条，整份一次提交。
+    expect(mocks.updateNode.mock.calls[0][0]({ inputs: mocks.nodeInputs })).toEqual({
       inputs: [
         { key: NodeInputKeyEnum.aiModelId, value: 'chosen-id' },
         { key: 'keep', value: 1 }

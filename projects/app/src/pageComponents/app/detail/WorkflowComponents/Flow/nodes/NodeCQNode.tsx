@@ -52,11 +52,9 @@ const NodeCQNode = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                       _hover={{ color: 'red.600' }}
                       onClick={() => {
                         // 删除分类要同时断开该分支 handle 上的连线：同一事务提交，撤销只需一步。
-                        const documentInputs = node?.data.inputs;
-                        if (!documentInputs) return;
                         node?.updateNode(
-                          {
-                            inputs: documentInputs.map((input) =>
+                          (current) => ({
+                            inputs: current.inputs.map((input) =>
                               input.key === agentKey
                                 ? {
                                     ...input,
@@ -64,7 +62,7 @@ const NodeCQNode = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                                   }
                                 : input
                             )
-                          },
+                          }),
                           {
                             disconnectEdges: getOutputDisconnectCommands({
                               edges,
