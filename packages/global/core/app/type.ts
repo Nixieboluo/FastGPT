@@ -8,6 +8,7 @@ import {
 } from '../dataset/workflowTagFilter';
 import type { ReasoningEffort } from '../ai/llm/type';
 import { StoreEdgeItemTypeSchema } from '../workflow/type/edge';
+import { WorkflowReferenceSnapshotSchema } from '../workflow/type/io';
 import type { AppPermission } from '../../support/permission/app/controller';
 import { ParentIdSchema, type ParentIdType } from '../../common/parentFolder/type';
 import type { WorkflowTemplateBasicType } from '../workflow/type';
@@ -210,6 +211,9 @@ export const AppStorageSchemaTypeSchema = z.object({
 
   modules: z.array(StoreNodeItemTypeSchema),
   edges: z.array(StoreEdgeItemTypeSchema),
+  referenceSnapshots: z.array(WorkflowReferenceSnapshotSchema).optional().meta({
+    description: '已删除引用来源的历史展示元数据，随工作流一起保存'
+  }),
   pluginData: z
     .object({
       nodeVersion: z.string().optional().meta({

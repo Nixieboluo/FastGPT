@@ -23,7 +23,8 @@ export const getAppLatestVersion = async (appId: string, app?: AppSchemaType) =>
     const normalizedWorkflow = migrateWorkflowToCurrent({
       nodes: decodeToolSetNodesFromStorage(version.nodes),
       edges: version.edges,
-      chatConfig: version.chatConfig
+      chatConfig: version.chatConfig,
+      referenceSnapshots: version.referenceSnapshots
     });
     return {
       versionId: String(version._id),
@@ -34,7 +35,8 @@ export const getAppLatestVersion = async (appId: string, app?: AppSchemaType) =>
   const normalizedWorkflow = migrateWorkflowToCurrent({
     nodes: decodeToolSetNodesFromStorage(migrationApp?.modules ?? []),
     edges: migrationApp?.edges ?? [],
-    chatConfig: migrationApp?.chatConfig
+    chatConfig: migrationApp?.chatConfig,
+    referenceSnapshots: migrationApp?.referenceSnapshots
   });
   return {
     versionId: migrationApp?.pluginData?.nodeVersion,
@@ -63,7 +65,8 @@ export const getAppVersionById = async ({
       const normalizedWorkflow = migrateWorkflowToCurrent({
         nodes: decodeToolSetNodesFromStorage(version.nodes),
         edges: version.edges,
-        chatConfig: version.chatConfig
+        chatConfig: version.chatConfig,
+        referenceSnapshots: version.referenceSnapshots
       });
       return {
         versionId: String(version._id),

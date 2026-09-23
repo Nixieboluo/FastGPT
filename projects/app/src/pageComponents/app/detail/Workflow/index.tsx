@@ -31,7 +31,8 @@ const WorkflowEdit = () => {
       materializeWorkflow({
         input: {
           nodes: cloneDeep(appDetail.modules || []),
-          edges: cloneDeep(appDetail.edges || [])
+          edges: cloneDeep(appDetail.edges || []),
+          referenceSnapshots: cloneDeep(appDetail.referenceSnapshots)
         },
         chatConfig: appDetail.chatConfig,
         t

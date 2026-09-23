@@ -12,6 +12,7 @@ export const AppVersionSchema = z.object({
   nodes: AppSchemaTypeSchema.shape.modules,
   edges: AppSchemaTypeSchema.shape.edges,
   chatConfig: AppSchemaTypeSchema.shape.chatConfig,
+  referenceSnapshots: AppSchemaTypeSchema.shape.referenceSnapshots,
   isPublish: z.boolean().optional(),
   isAutoSave: z.boolean().optional(),
   versionName: z.string(),
@@ -40,6 +41,7 @@ export const PublishAppBodySchema = z.object({
   nodes: AppSchemaTypeSchema.shape.modules.optional(),
   edges: AppSchemaTypeSchema.shape.edges.optional(),
   chatConfig: AppSchemaTypeSchema.shape.chatConfig.optional(),
+  referenceSnapshots: AppSchemaTypeSchema.shape.referenceSnapshots,
   isPublish: z.boolean().optional(),
   versionName: z.string().optional(),
   autoSave: z.boolean().optional()

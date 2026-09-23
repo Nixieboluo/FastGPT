@@ -489,7 +489,9 @@ export const UpdateAppBodySchema = z
     nodes: z.never().optional(),
     modules: z.never().optional(),
     edges: z.never().optional(),
-    chatConfig: z.never().optional()
+    chatConfig: z.never().optional(),
+    // 工作流内容只能走 publish 入口，更新应用基础信息时同样拒绝写入。
+    referenceSnapshots: z.never().optional()
   })
   .meta({
     example: {

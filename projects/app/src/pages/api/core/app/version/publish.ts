@@ -32,7 +32,15 @@ import { addAuditLog, getI18nAppType } from '@fastgpt/service/support/user/audit
 async function handler(req: ApiRequestProps<PostPublishAppProps>) {
   const {
     query: { appId },
-    body: { nodes = [], edges = [], chatConfig, isPublish, versionName, autoSave }
+    body: {
+      nodes = [],
+      edges = [],
+      chatConfig,
+      referenceSnapshots,
+      isPublish,
+      versionName,
+      autoSave
+    }
   } = parseApiInput({
     req,
     querySchema: PublishAppQuerySchema,
@@ -46,7 +54,12 @@ async function handler(req: ApiRequestProps<PostPublishAppProps>) {
     authToken: true
   });
 
-  const normalizedWorkflow = migrateWorkflowToCurrent({ nodes, edges, chatConfig });
+  const normalizedWorkflow = migrateWorkflowToCurrent({
+    nodes,
+    edges,
+    chatConfig,
+    referenceSnapshots
+  });
   const modelHandle = await getModelHandle();
   const models = await (async () => {
     if (!isPublish) return modelHandle.getActiveModels();
@@ -91,6 +104,7 @@ async function handler(req: ApiRequestProps<PostPublishAppProps>) {
           nodes: normalizedWorkflow.nodes,
           edges: normalizedWorkflow.edges,
           chatConfig: normalizedWorkflow.chatConfig,
+          referenceSnapshots: normalizedWorkflow.referenceSnapshots,
           versionName: i18nT('app:auto_save'),
           time: new Date(),
           resourceRefs
@@ -105,6 +119,7 @@ async function handler(req: ApiRequestProps<PostPublishAppProps>) {
           modules: normalizedWorkflow.nodes,
           edges: normalizedWorkflow.edges,
           chatConfig: normalizedWorkflow.chatConfig,
+          referenceSnapshots: normalizedWorkflow.referenceSnapshots,
           updateTime: new Date()
         },
         {
@@ -137,6 +152,7 @@ async function handler(req: ApiRequestProps<PostPublishAppProps>) {
           nodes: normalizedWorkflow.nodes,
           edges: normalizedWorkflow.edges,
           chatConfig: normalizedWorkflow.chatConfig,
+          referenceSnapshots: normalizedWorkflow.referenceSnapshots,
           isPublish,
           versionName,
           tmbId,
@@ -151,6 +167,7 @@ async function handler(req: ApiRequestProps<PostPublishAppProps>) {
       modules: normalizedWorkflow.nodes,
       edges: normalizedWorkflow.edges,
       chatConfig: normalizedWorkflow.chatConfig,
+      referenceSnapshots: normalizedWorkflow.referenceSnapshots,
       updateTime: new Date(),
       version: 'v2',
       ...(isPublish && { resourceRefs }),

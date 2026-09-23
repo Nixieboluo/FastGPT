@@ -79,6 +79,10 @@ const AppSchema = new Schema(
       type: Array,
       default: []
     },
+    // 已删除引用来源的历史展示元数据；老文档没有该字段，保存时整份覆盖。
+    referenceSnapshots: {
+      type: Array
+    },
     chatConfig: {
       type: chatConfigType
     },

@@ -403,7 +403,11 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
   const switchCloudVersion = useMemoizedFn((appVersion: AppVersionSchemaType) => {
     // 云端版本是存量 store 数据，必须走与打开工作流相同的入站边界（migration + 物化）。
     const content = materializeWorkflow({
-      input: { nodes: appVersion.nodes, edges: appVersion.edges },
+      input: {
+        nodes: appVersion.nodes,
+        edges: appVersion.edges,
+        referenceSnapshots: appVersion.referenceSnapshots
+      },
       chatConfig: appVersion.chatConfig,
       t
     });

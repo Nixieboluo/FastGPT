@@ -35,7 +35,8 @@ async function handler(req: NextApiRequest): Promise<GetAppDetailResponseType> {
   const workflow = migrateWorkflowToCurrent({
     nodes: decodeToolSetNodesFromStorage(app.modules),
     edges: app.edges,
-    chatConfig: app.chatConfig
+    chatConfig: app.chatConfig,
+    referenceSnapshots: app.referenceSnapshots
   });
   await rewriteAppWorkflowToDetail({
     nodes: workflow.nodes,
@@ -52,7 +53,8 @@ async function handler(req: NextApiRequest): Promise<GetAppDetailResponseType> {
       intro: app.intro ?? '',
       modules: [],
       edges: [],
-      chatConfig: undefined
+      chatConfig: undefined,
+      referenceSnapshots: undefined
     });
   }
 
@@ -62,7 +64,8 @@ async function handler(req: NextApiRequest): Promise<GetAppDetailResponseType> {
     intro: app.intro ?? '',
     modules: workflow.nodes,
     edges: workflow.edges,
-    chatConfig: workflow.chatConfig
+    chatConfig: workflow.chatConfig,
+    referenceSnapshots: workflow.referenceSnapshots
   });
 }
 
