@@ -4,7 +4,8 @@
  * 拥有 Runtime 生命周期与 adapter 挂载、版本列表与整文档替换切换、Savepoint 与出站序列化入口、
  * 环境事实注入（模型目录与 sandbox，供 Runtime 算 Issue View）、Issue View 刷新触发与
  * 标红焦点定位、本地草稿与离开保护。
- * overlay/patchViewData 是迁移期兼容面，随调用点迁移票逐步迁出。
+ * overlay/patchViewData 是正式的 renderer view 通道：debug 结果、搜索高亮与教程元信息
+ * 按节点合并进画布投影，不进 Runtime Document，也不参与 undo/redo。
  */
 import React, {
   useEffect,
@@ -68,8 +69,12 @@ export type WorkflowHostValue = {
   /** runtime 事件与 overlay 写入共用一个计数器，驱动投影重算与派生状态刷新。 */
   runtimeTick: number;
 
-  /** 迁移期兼容面：host 持有的按节点视图数据，投影时合并进画布节点。 */
+  /**
+   * renderer view 通道：host 持有的按节点视图数据（debug 结果、搜索高亮、教程元信息），
+   * 只在投影时合并进画布节点。生产者见 patchViewData；不写入 Runtime Document。
+   */
   overlaysRef: MutableRefObject<ViewDataOverlayMap>;
+  /** 写入 renderer view 数据并触发一次重投影；同节点多次 patch 按 key 合并。 */
   patchViewData: (patches: ViewOverlayPatch[]) => void;
 
   undo: () => void;

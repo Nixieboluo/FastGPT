@@ -1,5 +1,9 @@
 import type { Node } from 'reactflow';
-import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
+import {
+  Input_Template_NESTED_NODE_OFFSET,
+  Input_Template_Node_Height,
+  Input_Template_Node_Width
+} from '@fastgpt/global/core/workflow/template/input';
 import type { FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 
 export type ParentNodeLayout = {
@@ -10,6 +14,11 @@ export type ParentNodeLayout = {
   nodeWidth: number;
   nodeHeight: number;
 };
+
+// ponytail: 三个常量取自模板默认尺寸，与容器尺寸字段被剥离前的画布行为一致；测量重做后按真实尺寸计算。
+const CONTAINER_WIDTH = Number(Input_Template_Node_Width.value ?? 0);
+const CONTAINER_HEIGHT = Number(Input_Template_Node_Height.value ?? 0);
+const CONTAINER_INPUT_HEIGHT = Number(Input_Template_NESTED_NODE_OFFSET.value ?? 83);
 
 /**
  * 按子节点包围盒计算容器（Loop 系列）节点应有的位置与尺寸。
@@ -49,10 +58,8 @@ export const getParentNodeSizeAndPosition = ({
   // 任一子节点尚未被 ReactFlow 测量(width/height 未定义),直接放弃本次计算,
   // 由调用方在子节点尺寸到齐后再触发一次。
   if (childNodes.some((n) => !n.width || !n.height)) return;
-  const loopChilWidth =
-    loopNode.data.inputs.find((node) => node.key === NodeInputKeyEnum.nodeWidth)?.value ?? 0;
-  const loopChilHeight =
-    loopNode.data.inputs.find((node) => node.key === NodeInputKeyEnum.nodeHeight)?.value ?? 0;
+  const loopChilWidth = CONTAINER_WIDTH;
+  const loopChilHeight = CONTAINER_HEIGHT;
 
   // 初始化为第一个节点的边界
   let minX = childNodes[0].position.x;
@@ -79,9 +86,7 @@ export const getParentNodeSizeAndPosition = ({
   const targetNodeWidth = (loopNode.width ?? 0) + diffWidth;
   const targetNodeHeight = (loopNode.height ?? 0) + diffHeight;
 
-  const offsetHeight =
-    loopNode.data.inputs.find((input) => input.key === NodeInputKeyEnum.nestedNodeInputHeight)
-      ?.value ?? 83;
+  const offsetHeight = CONTAINER_INPUT_HEIGHT;
 
   return {
     parentX: Math.round(minX - 70),

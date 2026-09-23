@@ -1,21 +1,25 @@
 // Runtime snapshot -> ReactFlow renderer projection.
-// 画布节点 = Node Data（storeNode2FlowNode 物化）+ Node View State（位置/折叠）
+// 画布节点 = Runtime Node Data（入站边界已完成 Template Materialization，ADR 0001）
+// + 模板展示字段（不进文档，按 flowNodeType 浅合并回来）
+// + Node View State（位置/折叠）
 // + host 标红焦点
 // + host 视图 overlay（debugResult/searchedText/教程元信息）
 // + renderer 交互状态（选中、拖拽、测量尺寸、层级，从本地数组保留）。
 // 问题文案不进画布数组：节点组件直接读 Runtime snapshot 的 issues。
-import { pick } from 'lodash-es';
+import { omit, pick } from 'lodash-es';
 import type { Edge } from 'reactflow';
-import type { TFunction } from 'next-i18next';
-import { EDGE_TYPE } from '@fastgpt/global/core/workflow/node/constant';
-import { NodeOutputKeyEnum } from '@fastgpt/global/core/workflow/constants';
-import { StoreNodeItemTypeSchema } from '@fastgpt/global/core/workflow/type/node';
+import { EDGE_TYPE, type FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
+import { moduleTemplatesFlat } from '@fastgpt/global/core/workflow/template/constants';
+import { EmptyNode } from '@fastgpt/global/core/workflow/template/system/emptyNode';
+import type {
+  FlowNodeItemType,
+  FlowNodeTemplateType
+} from '@fastgpt/global/core/workflow/type/node';
 import type {
   WorkflowNodeSnapshot,
   WorkflowNodeViewSnapshot,
   WorkflowRuntimePort
 } from '@fastgpt/global/core/workflow/editor/types';
-import { storeNode2FlowNode } from '@/web/core/workflow/utils';
 import {
   encodeRuntimeEdgeId,
   normalizeEdgeHandles,
@@ -26,12 +30,23 @@ import {
 /** host 持有的按节点视图数据（不进文档）。 */
 export type ViewDataOverlayMap = Record<string, Partial<Record<ViewDataKey, unknown>>>;
 
+/**
+ * 模板展示字段目录：showSourceHandle / unique / forbidDelete / hasToolInput 等只属于模板，
+ * canonical 文档不携带（StoreNodeItemTypeSchema 会剥掉），投影时按 flowNodeType 浅合并回来。
+ * 模板目录是静态常量；同类型取首个匹配，与旧物化路径的 find 语义一致。
+ */
+const templateByNodeType = new Map<FlowNodeTypeEnum, FlowNodeTemplateType>();
+moduleTemplatesFlat.forEach((template) => {
+  if (!templateByNodeType.has(template.flowNodeType)) {
+    templateByNodeType.set(template.flowNodeType, template);
+  }
+});
+
 type NodeCacheEntry = {
   snapshot: WorkflowNodeSnapshot;
   view: WorkflowNodeViewSnapshot | undefined;
   overlay: Partial<Record<ViewDataKey, unknown>> | undefined;
   isError: boolean;
-  isTool: boolean;
   selected: boolean | undefined;
   dragging: boolean | undefined;
   width: number | null | undefined;
@@ -76,7 +91,6 @@ export const projectRuntimeCanvas = ({
   runtime,
   overlays,
   errorNodeId,
-  t,
   localNodes,
   localEdges,
   cache
@@ -85,17 +99,11 @@ export const projectRuntimeCanvas = ({
   overlays: ViewDataOverlayMap;
   /** host 问题焦点节点：该节点标红并强制选中，其余节点还原本地选中态。 */
   errorNodeId?: string;
-  t: TFunction;
   localNodes: CanvasNode[];
   localEdges: Edge<any>[];
   cache: ProjectionCache;
 }): { nodes: CanvasNode[]; edges: Edge<any>[] } => {
   const workflow = runtime.getWorkflow();
-  const toolNodeIds = new Set(
-    workflow.edges
-      .filter((edge) => edge.targetHandle === NodeOutputKeyEnum.selectedTools)
-      .map((edge) => edge.target)
-  );
   const localNodeById = new Map(localNodes.map((node) => [node.id, node]));
 
   const nodes = workflow.nodes.map((snapshot) => {
@@ -104,7 +112,6 @@ export const projectRuntimeCanvas = ({
     const overlay = overlays[nodeId];
     const isError = errorNodeId === nodeId;
     const local = localNodeById.get(nodeId);
-    const isTool = toolNodeIds.has(nodeId);
     const selected = local?.selected;
     const dragging = local?.dragging;
     // 拖拽中的位置以本地为准：几何要等手势结束才提交给 Runtime。
@@ -120,7 +127,6 @@ export const projectRuntimeCanvas = ({
       cached.view === view &&
       cached.overlay === overlay &&
       cached.isError === isError &&
-      cached.isTool === isTool &&
       cached.selected === selected &&
       cached.dragging === dragging &&
       cached.width === width &&
@@ -132,22 +138,21 @@ export const projectRuntimeCanvas = ({
       return cached.node;
     }
 
-    const flowNode = storeNode2FlowNode({
-      // StoreNodeItemType 不含 issues，parse 会自然剥掉 Issue View 字段。
-      item: StoreNodeItemTypeSchema.parse({ ...snapshot, position }),
-      isTool,
-      t
-    });
-    // isFolded 存在 Node View 上（语义快照不含），投影时合并，否则折叠状态在画布上丢失。
-    const data = {
-      ...flowNode.data,
-      isFolded: view?.isFolded,
-      ...overlay,
-      ...(isError ? { isError: true } : {})
-    } as typeof flowNode.data;
+    // Issue View 只留在 Runtime snapshot 上：节点组件直接读文档，画布数组不承载问题状态。
+    const nodeData = omit(snapshot, 'issues');
     const node: CanvasNode = {
-      ...flowNode,
-      data,
+      id: nodeId,
+      type: snapshot.flowNodeType,
+      // 文档节点在入站边界已物化，语义字段形状与画布 data 一致；
+      // 只读快照与模板展示字段浅合并后整体断言回画布形状。
+      data: {
+        ...(templateByNodeType.get(snapshot.flowNodeType) ?? EmptyNode),
+        ...nodeData,
+        // isFolded 存在 Node View 上（语义快照不含），投影时合并，否则折叠状态在画布上丢失。
+        isFolded: view?.isFolded,
+        ...overlay,
+        ...(isError ? { isError: true } : {})
+      } as unknown as FlowNodeItemType,
       position,
       selected,
       zIndex,
@@ -161,7 +166,6 @@ export const projectRuntimeCanvas = ({
       view,
       overlay,
       isError,
-      isTool,
       selected,
       dragging,
       width,

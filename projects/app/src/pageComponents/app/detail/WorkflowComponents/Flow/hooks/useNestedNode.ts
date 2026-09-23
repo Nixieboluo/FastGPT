@@ -7,6 +7,10 @@ import {
   WorkflowIOValueTypeEnum
 } from '@fastgpt/global/core/workflow/constants';
 import { isValidArrayReferenceValue } from '@fastgpt/global/core/workflow/utils';
+import {
+  Input_Template_Node_Height,
+  Input_Template_Node_Width
+} from '@fastgpt/global/core/workflow/template/input';
 import { type ReferenceArrayValueType } from '@fastgpt/global/core/workflow/type/io';
 import { type FlowNodeInputItemType } from '@fastgpt/global/core/workflow/type/io';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
@@ -28,6 +32,14 @@ type UseNestedNodeResult = {
   inputBoxRef: React.RefObject<HTMLDivElement>;
 };
 
+/**
+ * 容器外框尺寸：nodeWidth / nodeHeight 已被 migration 从文档剥离，画布投影也不再从模板补默认值，
+ * 因此外框直接沿用模板默认尺寸。
+ * ponytail: 常量外框，容器尺寸测量重做后改为按真实内容尺寸计算（见 Flow/utils/layout.ts 注释）。
+ */
+const CONTAINER_WIDTH = Number(Input_Template_Node_Width.value ?? 500);
+const CONTAINER_HEIGHT = Number(Input_Template_Node_Height.value ?? 500);
+
 // Shared hook for nested-container nodes (Loop / ParallelRun / LoopRun).
 // [TODO] Move node size population to offscreen.
 export const useNestedNode = ({
@@ -40,27 +52,11 @@ export const useNestedNode = ({
   const node = useNode(nodeId);
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
 
-  // ── 1. Read sizing & array input from inputs ────────────────────────────────
-  const computedResult = useMemoEnhance(() => {
-    return {
-      nodeWidth: Math.round(
-        Number(inputs.find((input) => input.key === NodeInputKeyEnum.nodeWidth)?.value) || 500
-      ),
-      nodeHeight: Math.round(
-        Number(inputs.find((input) => input.key === NodeInputKeyEnum.nodeHeight)?.value) || 500
-      ),
-      nestedInputArray: arrayInputKey
-        ? inputs.find((input) => input.key === arrayInputKey)
-        : undefined
-    };
-  }, [inputs, arrayInputKey]);
-
+  // ── 1. Read the container array input（外框尺寸是常量，不再从 inputs 读）─────
   const nestedInputArray = useMemoEnhance(
-    () => computedResult.nestedInputArray,
-    [computedResult.nestedInputArray]
+    () => (arrayInputKey ? inputs.find((input) => input.key === arrayInputKey) : undefined),
+    [inputs, arrayInputKey]
   );
-  const nodeWidth = computedResult.nodeWidth;
-  const nodeHeight = computedResult.nodeHeight;
   // ── 2. Infer array valueType from referenced output ─────────────────────────
   const newValueType = useMemo(() => {
     if (!nestedInputArray) return WorkflowIOValueTypeEnum.arrayAny;
@@ -105,5 +101,5 @@ export const useNestedNode = ({
   // 不在节点挂载时回写文档，避免打开工作流凭空生成历史。
   const inputBoxRef = useRef<HTMLDivElement>(null);
 
-  return { nodeWidth, nodeHeight, inputBoxRef };
+  return { nodeWidth: CONTAINER_WIDTH, nodeHeight: CONTAINER_HEIGHT, inputBoxRef };
 };

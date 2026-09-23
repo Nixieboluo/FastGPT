@@ -6,7 +6,6 @@ import type { FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import { createContext, useContextSelector } from 'use-context-selector';
 
 import { useMemoizedFn } from 'ahooks';
-import { useTranslation } from 'next-i18next';
 import React, {
   type Dispatch,
   type ReactNode,
@@ -60,7 +59,6 @@ export const WorkflowCanvasContext = createContext<WorkflowCanvasContextType>({
 });
 
 const WorkflowCanvasProvider = ({ children }: { children: ReactNode }) => {
-  const { t } = useTranslation();
   const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
   const runtimeTick = useContextSelector(WorkflowHostContext, (v) => v.runtimeTick);
   const overlaysRef = useContextSelector(WorkflowHostContext, (v) => v.overlaysRef);
@@ -84,7 +82,6 @@ const WorkflowCanvasProvider = ({ children }: { children: ReactNode }) => {
       runtime: runtime!,
       overlays: overlaysRef.current,
       errorNodeId: issueFocusRef.current,
-      t,
       localNodes: nodesRef.current,
       localEdges: edgesRef.current,
       cache: projectionCache.current
@@ -94,11 +91,6 @@ const WorkflowCanvasProvider = ({ children }: { children: ReactNode }) => {
     setNodesRaw(projected.nodes);
     setEdgesRaw(projected.edges);
   });
-
-  // 语言切换会让模板物化结果失效，投影缓存按节点 key 无法感知 t，直接整体作废。
-  useEffect(() => {
-    projectionCache.current = createProjectionCache();
-  }, [t]);
 
   // Runtime 事件 / overlay 写入 -> 重投影。
   useEffect(() => {
