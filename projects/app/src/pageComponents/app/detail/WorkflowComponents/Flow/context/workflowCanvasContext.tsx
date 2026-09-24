@@ -60,7 +60,7 @@ export const WorkflowCanvasContext = createContext<WorkflowCanvasContextType>({
 
 const WorkflowCanvasProvider = ({ children }: { children: ReactNode }) => {
   const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
-  const runtimeTick = useContextSelector(WorkflowHostContext, (v) => v.runtimeTick);
+  const viewTick = useContextSelector(WorkflowHostContext, (v) => v.viewTick);
   const overlaysRef = useContextSelector(WorkflowHostContext, (v) => v.overlaysRef);
   // 标红焦点归 host：投影时合并，画布数组不再是问题状态的写入方。
   const issueFocusRef = useContextSelector(WorkflowHostContext, (v) => v.issueFocusRef);
@@ -92,10 +92,17 @@ const WorkflowCanvasProvider = ({ children }: { children: ReactNode }) => {
     setEdgesRaw(projected.edges);
   });
 
-  // Runtime 事件 / overlay 写入 -> 重投影。
+  /**
+   * 重投影的四条触发源，缺一条画布就会与数据不一致：
+   * - 语义（节点/边/chatConfig 变更）与几何（位置、折叠）：直接订阅 runtime 事件。
+   *   这两条只有画布需要，不再绕 host 的通用计数器，语义派生因此不会被几何提交带动。
+   * - overlay 写入与标红焦点：host 的 renderer view 通道，数据存在 ref 里，靠 viewTick 失效。
+   *   viewTick 变化时重挂订阅并顺带补一次投影，覆盖「文档事件先于视图数据清理」的顺序。
+   */
   useEffect(() => {
     syncFromRuntime();
-  }, [syncFromRuntime, runtime, runtimeTick]);
+    return runtime ? runtime.subscribe(syncFromRuntime) : undefined;
+  }, [syncFromRuntime, runtime, viewTick]);
 
   const setNodes = useMemoizedFn((action: SetStateAction<CanvasNode[]>) => {
     const current = nodesRef.current;

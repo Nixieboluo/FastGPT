@@ -33,8 +33,8 @@ import { AppContext } from '../../../../context';
 import { getEditorVariables } from '../../../utils';
 import { extractCodeFromMarkdown } from './parser';
 import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
-import { useDocumentGetNodeById, useWorkflowDocument } from '../render/useWorkflowDocument';
-import { useNode, useWorkflow } from '@/web/core/workflow/editor';
+import { useWorkflowDocument } from '../render/useWorkflowDocument';
+import { useNode, useWorkflowActions } from '@/web/core/workflow/editor';
 
 export type OnOptimizeCodeProps = {
   optimizerInput: string;
@@ -58,10 +58,10 @@ const NodeCopilot = ({
   const { t } = useTranslation();
   const { toast } = useToast();
   // 变量列表与引用解析都要按 id 查任意节点：统一读文档图查询面，不再依赖画布薄壳。
-  const { reader } = useWorkflowDocument();
-  const getNodeById = useDocumentGetNodeById();
+  const { workflow, getNodeById } = useWorkflowDocument();
   const node = useNode(nodeId);
-  const { edges } = useWorkflow();
+  // 边集合只在应用生成代码的回调里读，走非订阅 getter：点击时取当前值，组件不订阅结构变更。
+  const { getEdges } = useWorkflowActions();
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
 
   const [optimizerInput, setOptimizerInput] = useState('');
@@ -74,15 +74,15 @@ const NodeCopilot = ({
   const isInputEmpty = !optimizerInput.trim();
 
   const editorVariables = useMemoEnhance(() => {
-    if (!reader) return [];
+    if (!workflow) return [];
     return getEditorVariables({
       nodeId,
       getNodeById,
-      edges: reader.edges,
+      edges: workflow.edges,
       appDetail,
       t
     }).filter((item) => item.parent.id !== nodeId);
-  }, [nodeId, getNodeById, reader, appDetail, t]);
+  }, [nodeId, getNodeById, workflow, appDetail, t]);
 
   const { codeType, code, dynamicInputs, dynamicOutputs } = useMemo(() => {
     const codeTypeInput = realTimeInputs?.find((input) => input.key === NodeInputKeyEnum.codeType);
@@ -283,7 +283,9 @@ const NodeCopilot = ({
 
       // 同一事务内逐条删边会移动后续下标，合并后统一按降序给出。
       const disconnectEdges = removedOutputKeys
-        .flatMap((outputKey) => getOutputDisconnectCommands({ edges, nodeId, outputKey }))
+        .flatMap((outputKey) =>
+          getOutputDisconnectCommands({ edges: getEdges(), nodeId, outputKey })
+        )
         .sort((a, b) => b.index - a.index);
 
       node?.updateNode(() => ({ inputs: nextInputs, outputs: nextOutputs }), { disconnectEdges });

@@ -11,7 +11,8 @@ const PLUGIN_SCOPED_NODE_TYPES: FlowNodeTypeEnum[] = [
 ];
 
 export const useWorkflowUtils = () => {
-  const { reader } = useWorkflowDocument();
+  // 同名计数只读语义快照的节点列表：几何提交与 overlay 写入都不换快照身份。
+  const { workflow } = useWorkflowDocument();
 
   /**
    * 计算新建节点的重名序号名称（`xxx#2`）。
@@ -28,7 +29,7 @@ export const useWorkflowUtils = () => {
       flowNodeType: FlowNodeTypeEnum;
       pluginId?: string;
     }) => {
-      const nodeLength = (reader?.nodes ?? []).filter((node) => {
+      const nodeLength = (workflow?.nodes ?? []).filter((node) => {
         if (node.flowNodeType !== flowNodeType) return false;
         return PLUGIN_SCOPED_NODE_TYPES.includes(flowNodeType) ? node.pluginId === pluginId : true;
       }).length;
@@ -36,7 +37,7 @@ export const useWorkflowUtils = () => {
         ? `${templateName.replace(/#\d+$/, '')}#${nodeLength + 1}`
         : templateName;
     },
-    [reader]
+    [workflow]
   );
 
   return {

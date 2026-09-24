@@ -8,9 +8,10 @@ import { useContextSelector } from 'use-context-selector';
 import { WorkflowUIContext } from '../../../context/workflowUIContext';
 import {
   isConnectionTargetAllowed,
-  useWorkflow as useWorkflowAdapter
+  useWorkflowActions,
+  useWorkflowValue
 } from '@/web/core/workflow/editor';
-import { useWorkflowDocument } from '../useWorkflowDocument';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 
 const handleSize = '20px';
 const activeHandleSize = '24px';
@@ -21,19 +22,19 @@ type ToolHandleProps = BoxProps & {
   show: boolean;
 };
 export const ToolTargetHandle = ({ show, nodeId }: ToolHandleProps) => {
-  // 工具柄的可连接判定要读任意源节点与父节点，走文档图 reader。
-  const { reader } = useWorkflowDocument();
+  // 工具柄的可连接判定要读任意源节点与父节点：走 port 的非订阅节点读取，不挂整份文档图 reader。
+  const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
   const connectingEdge = useContextSelector(WorkflowUIContext, (ctx) => ctx.connectingEdge);
-  const connected = !!reader?.edges.some(
-    (edge) => edge.target === nodeId && edge.targetHandle === handleId
-  );
+  // 「本节点已被挂成工具」= 存在 targetHandle 为 selectedTools 的入边，走图索引 O(入度)。
+  const connected = useWorkflowValue((_structure, graph) => graph.isMountedTool(nodeId));
 
   const active = useMemo(() => {
-    if (!show || !reader || connectingEdge?.handleId !== handleId) return false;
+    if (!show || !runtime || connectingEdge?.handleId !== handleId) return false;
 
-    const { getNodeById } = reader;
-    const sourceNode = getNodeById(connectingEdge.nodeId);
-    const targetNode = getNodeById(nodeId);
+    // 与 ConnectionTargetHandle 同理：判定只吃 flowNodeType 与 parentNodeId，两者都只在结构变更时改变，
+    // 而 connectingEdge 变化本身就会重渲染并重跑本 memo，所以读到的永远是当前值，不需要为它开节点订阅。
+    const sourceNode = connectingEdge.nodeId ? runtime.getNode(connectingEdge.nodeId) : undefined;
+    const targetNode = runtime.getNode(nodeId);
 
     return (
       !!sourceNode &&
@@ -45,7 +46,7 @@ export const ToolTargetHandle = ({ show, nodeId }: ToolHandleProps) => {
         sourceParentNodeId: sourceNode.parentNodeId
       })
     );
-  }, [connectingEdge, nodeId, reader, show]);
+  }, [connectingEdge, nodeId, runtime, show]);
   // if top handle is connected, return null
   const showHandle = active || connected;
 
@@ -92,8 +93,8 @@ export const ToolTargetHandle = ({ show, nodeId }: ToolHandleProps) => {
 
 export const ToolSourceHandle = ({ nodeId }: { nodeId: string }) => {
   const { t } = useTranslation();
-  const workflow = useWorkflowAdapter();
-  const { edges } = workflow;
+  // 边集合只在 onConnect 回调里读：走非订阅 getter，本组件对结构变更的订阅数为零。
+  const { disconnectEdge, getEdges } = useWorkflowActions();
   const connectingEdge = useContextSelector(
     WorkflowUIContext,
     (ctx) => ctx.connectingEdge?.nodeId === nodeId
@@ -105,13 +106,13 @@ export const ToolSourceHandle = ({ nodeId }: { nodeId: string }) => {
   /* onConnect edge, delete tool input and switch */
   const onConnect = useCallback(
     (e: Connection) => {
-      edges
+      getEdges()
         .filter(
           (edge) =>
             edge.target === e.target && edge.targetHandle !== NodeOutputKeyEnum.selectedTools
         )
         .forEach((edge) =>
-          workflow.disconnectEdge({
+          disconnectEdge({
             edge: {
               source: edge.source,
               target: edge.target,
@@ -121,7 +122,7 @@ export const ToolSourceHandle = ({ nodeId }: { nodeId: string }) => {
           })
         );
     },
-    [edges, workflow]
+    [disconnectEdge, getEdges]
   );
 
   const size = active ? activeHandleSize : handleSize;

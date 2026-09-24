@@ -22,7 +22,7 @@ import dynamic from 'next/dynamic';
 import { defaultInput } from './InputEditModal';
 import RenderOutput from '../render/RenderOutput';
 import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
-import { useNode, useWorkflow } from '@/web/core/workflow/editor';
+import { useNode, useWorkflowActions } from '@/web/core/workflow/editor';
 
 const FieldEditModal = dynamic(() => import('./InputEditModal'));
 
@@ -37,7 +37,8 @@ const NodePluginInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { nodeId, inputs = [], outputs } = data;
 
   const node = useNode(nodeId);
-  const { edges } = useWorkflow();
+  // 边集合只在提交/删除自定义输入的回调里读，走非订阅 getter：点击时取当前值，组件不订阅结构变更。
+  const { getEdges } = useWorkflowActions();
   const [editField, setEditField] = useState<FlowNodeInputItemType>();
 
   /**
@@ -80,12 +81,16 @@ const NodePluginInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         },
         editKey && editKey !== data.key
           ? {
-              disconnectEdges: getOutputDisconnectCommands({ edges, nodeId, outputKey: editKey })
+              disconnectEdges: getOutputDisconnectCommands({
+                edges: getEdges(),
+                nodeId,
+                outputKey: editKey
+              })
             }
           : undefined
       );
     },
-    [editField, edges, node, nodeId]
+    [editField, getEdges, node, nodeId]
   );
 
   const Render = useMemo(() => {
@@ -136,7 +141,11 @@ const NodePluginInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                   outputs: current.outputs.filter((output) => output.key !== key)
                 }),
                 {
-                  disconnectEdges: getOutputDisconnectCommands({ edges, nodeId, outputKey: key })
+                  disconnectEdges: getOutputDisconnectCommands({
+                    edges: getEdges(),
+                    nodeId,
+                    outputKey: key
+                  })
                 }
               );
             }}
@@ -150,7 +159,7 @@ const NodePluginInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         )}
       </NodeCard>
     );
-  }, [data, edges, inputs, node, nodeId, outputs, selected, t]);
+  }, [data, getEdges, inputs, node, nodeId, outputs, selected, t]);
 
   return (
     <>

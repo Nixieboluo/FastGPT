@@ -66,12 +66,13 @@ import { useReactFlow } from 'reactflow';
 import { useContextSelector } from 'use-context-selector';
 import { omit } from 'lodash-es';
 import { migrateToolInputConfig } from '@fastgpt/global/core/app/formEdit/utils';
-import { useField, useNode, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { useField, useNode, useWorkflowActions } from '@/web/core/workflow/editor';
 import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/canvas';
 
 import { WorkflowUIContext } from '../../context/workflowUIContext';
 import { useDebug } from '../../hooks/useDebug';
 import { useNodeOutputValidity } from '../../hooks/useNodeOutputValidity';
+import { useClearCanvasSelection } from '../../hooks/useWorkflow';
 import { useWorkflowUtils } from '../../hooks/useUtils';
 import { useIsToolNode } from './useWorkflowDocument';
 import { ConnectionSourceHandle, ConnectionTargetHandle } from './Handle/ConnectionHandle';
@@ -934,10 +935,11 @@ const MenuRender = React.memo(function MenuRender({
 }) {
   const { t } = useTranslation();
   const { openDebugNode, DebugInputModal } = useDebug();
-  const workflow = useWorkflowAdapter();
+  const actions = useWorkflowActions();
   const nodeHandle = useNode(nodeId);
-  // setNodes 只清渲染层选中态（交互状态归 ReactFlow），删除也走 ReactFlow 的 deleteElements。
-  const { setNodes, deleteElements } = useReactFlow();
+  const clearCanvasSelection = useClearCanvasSelection();
+  // 删除走 ReactFlow 的 deleteElements：它派生的 remove 变更由画布变更漏斗接管。
+  const { deleteElements } = useReactFlow();
 
   const { computedNewNodeName } = useWorkflowUtils();
 
@@ -982,9 +984,9 @@ const MenuRender = React.memo(function MenuRender({
       parentNodeId: data.parentNodeId,
       t
     });
-    setNodes((state) => state.map((item) => ({ ...item, selected: false })));
-    workflow.addNode(canvasNodeToStoreNode(newNode));
-  }, [computedNewNodeName, nodeHandle, setNodes, t, workflow]);
+    clearCanvasSelection();
+    actions.addNode(canvasNodeToStoreNode(newNode));
+  }, [actions, clearCanvasSelection, computedNewNodeName, nodeHandle, t]);
   const Render = useMemo(() => {
     const menuList = [
       ...(menuForbid?.fold

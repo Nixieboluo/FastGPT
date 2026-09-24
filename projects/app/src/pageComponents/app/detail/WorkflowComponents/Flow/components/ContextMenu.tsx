@@ -1,5 +1,5 @@
 import { Box, HStack, type StackProps } from '@chakra-ui/react';
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback } from 'react';
 import MyIcon from '@fastgpt/web/components/common/Icon';
 import { useTranslation } from 'next-i18next';
 import { nodeTemplate2FlowNode } from '@/web/core/workflow/utils';
@@ -11,12 +11,13 @@ import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import { cloneDeep } from 'lodash-es';
 import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import { WorkflowUIContext } from '../context/workflowUIContext';
+import { WorkflowCanvasContext } from '../context/workflowCanvasContext';
 import { getHandleIndex } from '../utils/edge';
 import { getParentNodeSizeAndPosition } from '../utils/layout';
-import { useCanvas, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { useCanvas, useWorkflowActions } from '@/web/core/workflow/editor';
 import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/canvas';
-import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
-import { useWorkflowDocument } from '../nodes/render/useWorkflowDocument';
+import { WorkflowHostContext, useWorkflowSnapshot } from '@/web/core/workflow/editor/host';
+import { useClearCanvasSelection } from '../hooks/useWorkflow';
 
 /** 右键菜单单项：执行动作后关闭菜单。不依赖父组件状态，放模块级避免每次渲染重建组件。 */
 const ContextMenuItem = ({
@@ -55,29 +56,30 @@ const ContextMenuItem = ({
 const ContextMenu = () => {
   const { t } = useTranslation();
   const menu = useContextSelector(WorkflowUIContext, (v) => v.menu!);
-  const workflow = useWorkflowAdapter();
+  const actions = useWorkflowActions();
   const canvas = useCanvas();
+  const clearCanvasSelection = useClearCanvasSelection();
 
-  // 自动对齐与折叠都只碰 renderer 交互状态（位置、测量尺寸），直接读写 reactflow store。
-  const { fitView, screenToFlowPosition, getNodes, setNodes, getEdges } = useReactFlow();
-  const { reader } = useWorkflowDocument();
+  // 自动对齐只读 renderer 交互状态（位置、测量尺寸）；写入走画布本地数组，
+  // 受控模式下 useReactFlow().setNodes 会被转成整份 reset 变更。
+  const { fitView, screenToFlowPosition, getNodes, getEdges } = useReactFlow();
+  const setCanvasNodes = useContextSelector(WorkflowCanvasContext, (v) => v.setNodes);
   const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
-  const runtimeTick = useContextSelector(WorkflowHostContext, (v) => v.runtimeTick);
+  // 语义通道：快照只在语义版本变化时换身份，节点增删会带动下面的折叠判定重算。
+  const workflow = useWorkflowSnapshot();
 
   /**
-   * 是否全部节点已折叠：折叠存在 Node View 上，语义快照不含，
-   * 因此 runtimeTick 是刻意的缓存 key（纯几何事务不 bump 语义版本）。
+   * 是否全部节点已折叠：折叠存在 Node View 上，语义快照不含，只能问 runtime。
+   * host 的 viewTick 只覆盖 overlay 与标红焦点，折叠提交（commitGeometry）不再 bump 任何计数器，
+   * 所以这里不做 memo，每次渲染按当前值算：菜单是 {!!menu && <ContextMenu />}，每次打开都重新挂载，
+   * 用户看到标签时读到的一定是当前值；唯一过期窗口是「菜单常驻期间从节点卡片改折叠」。
    * comment 节点不参与判定，空文档视为已全部折叠，与旧派生索引一致。
    */
-  const allNodeFolded = useMemo(() => {
-    const nodes = reader?.nodes ?? [];
-    return nodes.every(
-      (node) =>
-        node.flowNodeType === FlowNodeTypeEnum.comment ||
-        !!runtime?.getNodeView(node.nodeId)?.isFolded
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reader, runtime, runtimeTick]);
+  const allNodeFolded = (workflow?.nodes ?? []).every(
+    (node) =>
+      node.flowNodeType === FlowNodeTypeEnum.comment ||
+      !!runtime?.getNodeView(node.nodeId)?.isFolded
+  );
 
   const onLayout = useCallback(() => {
     const updateChildNodesPosition = ({
@@ -356,7 +358,7 @@ const ContextMenu = () => {
       });
     }
 
-    setNodes(newNodes);
+    setCanvasNodes(newNodes);
     canvas.commitGeometry(
       newNodes.flatMap((node) => {
         const previous = previousPositions.get(node.id);
@@ -370,7 +372,7 @@ const ContextMenu = () => {
       const validNodes = newNodes.filter((node) => node.width && node.height);
       fitView({ nodes: validNodes, padding: 0.3 });
     });
-  }, [canvas, fitView, getEdges, getNodes, setNodes]);
+  }, [canvas, fitView, getEdges, getNodes, setCanvasNodes]);
 
   const onAddComment = useCallback(() => {
     // Compensate for menu position offset (set in onPaneContextMenu)
@@ -384,17 +386,17 @@ const ContextMenu = () => {
       t
     });
 
-    setNodes((state) => state.map((node) => ({ ...node, selected: false })));
-    workflow.addNode(canvasNodeToStoreNode(newNode));
-  }, [menu, screenToFlowPosition, setNodes, t, workflow]);
+    clearCanvasSelection();
+    actions.addNode(canvasNodeToStoreNode(newNode));
+  }, [actions, clearCanvasSelection, menu, screenToFlowPosition, t]);
 
   const onFold = useCallback(() => {
     canvas.commitGeometry(
-      (reader?.nodes ?? [])
+      (workflow?.nodes ?? [])
         .filter((node) => node.flowNodeType !== FlowNodeTypeEnum.comment)
         .map((node) => ({ nodeId: node.nodeId, isFolded: !allNodeFolded }))
     );
-  }, [allNodeFolded, canvas, reader]);
+  }, [allNodeFolded, canvas, workflow]);
 
   return (
     <Box>

@@ -36,7 +36,13 @@ vi.mock('@/web/core/workflow/editor', () => ({
 }));
 vi.mock(
   '@/pageComponents/app/detail/WorkflowComponents/Flow/nodes/render/useWorkflowDocument',
-  () => ({ useWorkflowDocument: () => ({ reader: undefined }) })
+  () => ({
+    useWorkflowDocument: () => ({
+      workflow: undefined,
+      getNodeById: () => undefined,
+      graph: undefined
+    })
+  })
 );
 vi.mock('@/pageComponents/app/detail/context', () => ({ AppContext: {} }));
 vi.mock('@/pageComponents/app/detail/WorkflowComponents/utils', () => ({

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Node, NodePositionChange, XYPosition } from 'reactflow';
+import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 
 // Mock Markdown component: its CSS imports (katex) cannot be resolved under vitest.
 // useWorkflow.tsx transitively imports AppContext -> Markdown.
@@ -9,6 +10,8 @@ vi.mock('katex/dist/katex.min.css', () => ({}));
 import {
   createBoundedMaxHeap,
   collectNearestNodes,
+  collectClearSelectionIds,
+  collectSelectionConflictIds,
   computeHelperLines as computeHelperLinesWithNode,
   dropEdgeDisconnectsOfRemovedNodes,
   popoverWidth,
@@ -465,5 +468,76 @@ describe('dropEdgeDisconnectsOfRemovedNodes', () => {
   it('keeps edges in the document when nothing is being deleted', () => {
     const edges = [edge('a', 'b')];
     expect(dropEdgeDisconnectsOfRemovedNodes(edges, new Set())).toEqual(edges);
+  });
+});
+
+// 06a-8 第一部分的三条行为不变量：选中写入只对真的变了的节点发 select 变更。
+const selectionNode = (
+  id: string,
+  {
+    selected = false,
+    parentNodeId,
+    flowNodeType = 'tools'
+  }: { selected?: boolean; parentNodeId?: string; flowNodeType?: string } = {}
+): Node => ({ id, position: { x: 0, y: 0 }, data: { flowNodeType, parentNodeId }, selected });
+
+describe('collectClearSelectionIds', () => {
+  const nodes = [
+    selectionNode('a', { selected: true }),
+    selectionNode('b'),
+    selectionNode('c', { selected: true }),
+    selectionNode('focus', { selected: true })
+  ];
+
+  it('returns only the ids of nodes that are actually selected', () => {
+    expect(collectClearSelectionIds(nodes)).toEqual(['a', 'c', 'focus']);
+  });
+
+  it('skips the focused issue node so save-gate positioning keeps it selected', () => {
+    expect(collectClearSelectionIds(nodes, 'focus')).toEqual(['a', 'c']);
+  });
+
+  it('returns empty when nothing is selected so the caller emits no change at all', () => {
+    expect(collectClearSelectionIds([selectionNode('a'), selectionNode('b')])).toEqual([]);
+  });
+});
+
+describe('collectSelectionConflictIds', () => {
+  const container = selectionNode('loop', {
+    flowNodeType: FlowNodeTypeEnum.loop,
+    selected: true
+  });
+  const childA = selectionNode('child-a', { parentNodeId: 'loop', selected: true });
+  const childB = selectionNode('child-b', { parentNodeId: 'loop', selected: true });
+  const outside = selectionNode('outside', { selected: true });
+
+  it('deselects selected children when a container is selected', () => {
+    expect(
+      collectSelectionConflictIds({ nodes: [container, childA, childB, outside], node: container })
+    ).toEqual(['child-a', 'child-b']);
+  });
+
+  it('deselects the selected parent when a child is selected', () => {
+    expect(collectSelectionConflictIds({ nodes: [container, childA], node: childA })).toEqual([
+      'loop'
+    ]);
+  });
+
+  it('returns empty when the parent is not selected', () => {
+    const idleContainer = selectionNode('loop', { flowNodeType: FlowNodeTypeEnum.loop });
+    expect(collectSelectionConflictIds({ nodes: [idleContainer, childA], node: childA })).toEqual(
+      []
+    );
+  });
+
+  it('returns empty for a top-level non-container node', () => {
+    expect(collectSelectionConflictIds({ nodes: [container, outside], node: outside })).toEqual([]);
+  });
+
+  it('returns empty when a container has no selected child', () => {
+    const idleChild = selectionNode('child-a', { parentNodeId: 'loop' });
+    expect(collectSelectionConflictIds({ nodes: [container, idleChild], node: container })).toEqual(
+      []
+    );
   });
 });

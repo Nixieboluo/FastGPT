@@ -2,7 +2,7 @@ import { FixedTableContainer } from '@fastgpt/web/components/common/FixedTable';
 import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 /* eslint-disable react-hooks/refs -- react-beautiful-dnd requires render-time drag props. */
 import React, { useMemo, useState } from 'react';
-import { type NodeProps, useViewport } from 'reactflow';
+import { type NodeProps, useStore } from 'reactflow';
 import NodeCard from '../render/NodeCard';
 import Container from '../../components/Container';
 import RenderInput from '../render/RenderInput';
@@ -32,14 +32,16 @@ import DndDrag, {
   type DraggableStateSnapshot
 } from '@fastgpt/web/components/common/DndDrag';
 import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
-import { useNode, useWorkflow } from '@/web/core/workflow/editor';
+import { useNode, useWorkflowActions } from '@/web/core/workflow/editor';
 
 const NodeFormInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { nodeId, inputs, outputs } = data;
   const { t } = useTranslation();
   const node = useNode(nodeId);
-  const { edges } = useWorkflow();
-  const { zoom } = useViewport();
+  // 边集合只在改名/删除表单字段的回调里读，走非订阅 getter：点击时取当前值，组件不订阅结构变更。
+  const { getEdges } = useWorkflowActions();
+  // zoom 在渲染期参与 DndDrag 占位高度，所以不能用 getZoom()；只订阅缩放分量，平移不再触发重渲染。
+  const zoom = useStore((state) => state.transform[2]);
 
   const [editField, setEditField] = useState<UserInputFormItemType>();
 
@@ -94,7 +96,7 @@ const NodeFormInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
             editKey && editKey !== data.key
               ? {
                   disconnectEdges: getOutputDisconnectCommands({
-                    edges,
+                    edges: getEdges(),
                     nodeId,
                     outputKey: editKey
                   })
@@ -115,7 +117,11 @@ const NodeFormInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
               outputs: current.outputs.filter((output) => output.key !== valueKey)
             }),
             {
-              disconnectEdges: getOutputDisconnectCommands({ edges, nodeId, outputKey: valueKey })
+              disconnectEdges: getOutputDisconnectCommands({
+                edges: getEdges(),
+                nodeId,
+                outputKey: valueKey
+              })
             }
           );
         };
@@ -231,7 +237,7 @@ const NodeFormInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         );
       }
     }),
-    [t, editField, zoom, node, edges, nodeId]
+    [t, editField, zoom, node, getEdges, nodeId]
   );
 
   return (

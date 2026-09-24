@@ -52,7 +52,9 @@ export const useDebug = () => {
   const { t } = useSafeTranslation();
   const { t: workflowT } = useTranslation();
 
-  const { reader } = useWorkflowDocument();
+  // 可引用来源要按 id 查任意节点并展开容器子节点：语义快照提供 edges，
+  // 节点查询走 port 的 getNode，子节点走 Runtime 图查询，app 侧不再自建索引。
+  const { workflow, getNodeById, graph } = useWorkflowDocument();
   const onStartNodeDebug = useContextSelector(WorkflowDebugContext, (v) => v.onStartNodeDebug);
   const setDebugChatId = useContextSelector(WorkflowDebugContext, (v) => v.setDebugChatId);
   const onOpenNodeDebug = useContextSelector(WorkflowDebugContext, (v) => v.onOpenNodeDebug);
@@ -133,16 +135,13 @@ export const useDebug = () => {
     const runtimeNode = runtimeNodes.find((node) => node.nodeId === runtimeNodeId);
 
     if (!runtimeNode) return <></>;
-    const edges = reader?.edges ?? [];
-    const getNodeById = reader?.getNodeById ?? (() => undefined);
-    const childrenNodeIdListMap = reader?.childrenNodeIdListMap ?? {};
     const referenceSourceNodes = getNodeAllSource({
       nodeId: runtimeNode.nodeId,
       getNodeById,
-      edges,
+      edges: workflow?.edges ?? [],
       chatConfig: appDetail.chatConfig,
       t: workflowT,
-      childrenNodeIdListMap
+      getChildNodeIds: graph?.getChildNodeIds
     });
     const workflowStartFileInput = getWorkflowStartDebugFileInput({
       flowNodeType: runtimeNode.flowNodeType,
@@ -322,7 +321,9 @@ export const useDebug = () => {
     filteredVar,
     runtimeNodeId,
     onStartNodeDebug,
-    reader,
+    workflow,
+    getNodeById,
+    graph,
     appDetail.chatConfig
   ]);
 

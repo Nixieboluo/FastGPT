@@ -10,8 +10,22 @@ import { StoreNodeItemTypeSchema, type NodeTemplateContext } from '../../type/no
 import { AppChatConfigTypeSchema } from '../../../app/type';
 import { isConnectionTargetAllowed, isWorkflowEdgeSourceHandleValid } from '../utils';
 import { applyWorkflowStartInputAutoFill } from '../startAutoFill';
-import type { PlacementRequest, RuntimeEdgeId, WorkflowNodeData } from '../types';
-import { addFieldIdentity, cloneValue, getError, getFieldIdentity, valuesEqual } from './kernel';
+import type {
+  PlacementRequest,
+  RuntimeEdgeId,
+  WorkflowEdgeEndpoint,
+  WorkflowGraphQueries,
+  WorkflowHandleConnectionQuery,
+  WorkflowNodeData
+} from '../types';
+import {
+  addFieldIdentity,
+  cloneValue,
+  freezeValue,
+  getError,
+  getFieldIdentity,
+  valuesEqual
+} from './kernel';
 import {
   deleteStagedNodeView,
   getStagedNodeView,
@@ -19,7 +33,7 @@ import {
   replaceStagedNodeViews,
   setStagedNodeView
 } from './nodeViewModule';
-import { updateReferenceGraphNode } from './referenceModule';
+import { isMountedToolNode, updateReferenceGraphNode } from './referenceModule';
 import type {
   CanonicalResult,
   EdgeRecord,
@@ -60,6 +74,10 @@ import {
  * 以及语义命令的校验与 reduce。无状态规则在 ./documentRules，本文件只保留有状态工厂。
  * 节点视图不在这里：Document 只持有语义记录，视图存储归 Node View module。
  */
+
+/** 图查询的空结果：共用一份冻结数组，「没有入边/子节点」也不产生新身份。 */
+const EMPTY_EDGE_ENDPOINTS = freezeValue([]) as readonly WorkflowEdgeEndpoint[];
+const EMPTY_NODE_IDS = freezeValue([]) as readonly string[];
 
 /** Create the Workflow Document module；入参是入站边界已经组装好的初始文档与视图。 */
 export const createDocumentModule = (initial: CanonicalResult) => {
@@ -158,6 +176,67 @@ export const createDocumentModule = (initial: CanonicalResult) => {
 
   const getDescendantNodeIds = (rootIds: ReadonlySet<string>) =>
     collectDescendantNodeIds(graphIndex.childrenByParent, rootIds);
+
+  /**
+   * 图查询的集合缓存：记住产出当前结果的那个索引桶。
+   * GraphIndex 的桶只整体替换、从不原地修改（见 documentRules 的 buildGraphIndex /
+   * applyGraphIndexChanges），所以桶身份不变就等于该入参的结构没变，可以复用同一份数组身份；
+   * 桶被替换时缓存自然失效。条目按入参覆盖，缓存大小不超过被查询过的 id 数。
+   *
+   * ponytail: 节点删除后条目仍持有那个已 drop 的桶（连带 EdgeRecord），到下一次 clear() 才释放；
+   * 上界是「被查询过的不同 id 数」，量级很小。要收紧就在 applyGraphIndexChanges 处理 removed 时顺手删条目。
+   */
+  const incomingEdgesCache = new Map<
+    string,
+    { bucket: EdgeRecord[]; endpoints: readonly WorkflowEdgeEndpoint[] }
+  >();
+  const childNodeIdsCache = new Map<string, { bucket: string[]; nodeIds: readonly string[] }>();
+
+  /**
+   * 图查询面：只读已提交的 GraphIndex，不建第二份索引，也不做深拷贝。
+   * 对象在 module 生命周期内只创建一次，port 透传出去的身份因此恒定；
+   * 释放后索引已清空，查询返回空结果而不抛错（与 getPlacementContext 一样避免卸载竞态打崩渲染）。
+   */
+  const graphQueries = freezeValue({
+    isMountedTool: (nodeId: string) => isMountedToolNode(graphIndex.byTarget.get(nodeId)),
+    isHandleConnected: ({ nodeId, handleId, direction }: WorkflowHandleConnectionQuery) => {
+      const isSource = direction === 'source';
+      const bucket = isSource ? graphIndex.bySource.get(nodeId) : graphIndex.byTarget.get(nodeId);
+      return (bucket ?? []).some(({ data }) =>
+        isSource ? data.sourceHandle === handleId : data.targetHandle === handleId
+      );
+    },
+    getIncomingEdges: (nodeId: string) => {
+      const bucket = graphIndex.byTarget.get(nodeId);
+      if (!bucket?.length) return EMPTY_EDGE_ENDPOINTS;
+      const cached = incomingEdgesCache.get(nodeId);
+      if (cached?.bucket === bucket) return cached.endpoints;
+      // 只投影连线判定需要的端点字段：内部边记录与 Runtime Edge ID 不外泄。
+      const endpoints = freezeValue(
+        bucket.map(({ data }) => ({
+          source: data.source,
+          sourceHandle: data.sourceHandle,
+          target: data.target,
+          targetHandle: data.targetHandle
+        }))
+      ) as readonly WorkflowEdgeEndpoint[];
+      incomingEdgesCache.set(nodeId, { bucket, endpoints });
+      return endpoints;
+    },
+    /** parentId 传空串命中根级桶，因此根级子节点也能查。 */
+    getChildNodeIds: (parentId: string) => {
+      const bucket = graphIndex.childrenByParent.get(parentId);
+      if (!bucket?.length) return EMPTY_NODE_IDS;
+      const cached = childNodeIdsCache.get(parentId);
+      if (cached?.bucket === bucket) return cached.nodeIds;
+      // 复制一份再冻结：索引桶是内部可变结构，不能直接交出去。
+      const nodeIds = freezeValue([...bucket]) as readonly string[];
+      childNodeIdsCache.set(parentId, { bucket, nodeIds });
+      return nodeIds;
+    }
+  }) as WorkflowGraphQueries;
+
+  const getGraphQueries = () => graphQueries;
 
   /**
    * 从 working document 派生 placement context：侧边栏、handle 快捷添加、模板落点、拖入容器与连线校验共用。
@@ -782,6 +861,8 @@ export const createDocumentModule = (initial: CanonicalResult) => {
     graphIndex.parentByChild.clear();
     graphIndex.childrenByParent.clear();
     graphIndex.edgeById.clear();
+    incomingEdgesCache.clear();
+    childNodeIdsCache.clear();
     workflowStartIds.clear();
     document = { nodes: [], edges: [], chatConfig: {}, referenceSnapshots: [] };
   };
@@ -794,6 +875,7 @@ export const createDocumentModule = (initial: CanonicalResult) => {
     setDocument,
     getNodeIndex,
     getGraphIndex,
+    getGraphQueries,
     getNodeById,
     getWorkingNodeIndex,
     isSourceEdgeValid,

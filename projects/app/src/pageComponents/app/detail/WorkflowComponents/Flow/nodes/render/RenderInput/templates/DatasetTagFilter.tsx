@@ -32,8 +32,9 @@ import {
 const DatasetTagFilterRender = ({ inputs = [], item, nodeId }: RenderInputProps) => {
   const { t } = useTranslation();
   const field = useField(nodeId, item.key, 'input');
-  const { reader } = useWorkflowDocument();
-  const { appDetail } = useContextSelector(AppContext, (v) => v);
+  // 变量列表要按 id 查任意节点：语义快照提供 edges，按 id 查节点走 port 的 getNode。
+  const { workflow, getNodeById } = useWorkflowDocument();
+  const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
   const { feConfigs } = useSystemStore();
   const isLegacyNode = datasetSearchUsesLegacyFilter(inputs);
 
@@ -56,15 +57,15 @@ const DatasetTagFilterRender = ({ inputs = [], item, nodeId }: RenderInputProps)
   }, [inputs]);
 
   const editorVariables = useMemoEnhance(() => {
-    if (!reader) return [];
+    if (!workflow) return [];
     return getEditorVariables({
       nodeId,
-      getNodeById: reader.getNodeById,
-      edges: reader.edges,
+      getNodeById,
+      edges: workflow.edges,
       appDetail,
       t
     });
-  }, [nodeId, reader, appDetail, t]);
+  }, [nodeId, workflow, getNodeById, appDetail, t]);
 
   const externalVariables = useMemo(() => {
     return (
@@ -118,7 +119,10 @@ export const DatasetTagFilterLogic = React.memo(function DatasetTagFilterLogic({
   const node = useNode(nodeId);
   /** 升级要先持久化整份工作流，出站序列化直接读 host。 */
   const serializeWorkflow = useContextSelector(WorkflowHostContext, (v) => v.serializeWorkflow);
-  const { appDetail, onSaveApp } = useContextSelector(AppContext, (v) => v);
+  // 只订阅真正读到的两个字段：AppContext 值随 currentTab / appLatestVersion / loadingApp 变化，
+  // 整体订阅会让切 tab 也重渲染本节点组件。
+  const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
+  const onSaveApp = useContextSelector(AppContext, (v) => v.onSaveApp);
   const isLegacyNode = datasetSearchUsesLegacyFilter(inputs);
 
   if (isLegacyNode) {

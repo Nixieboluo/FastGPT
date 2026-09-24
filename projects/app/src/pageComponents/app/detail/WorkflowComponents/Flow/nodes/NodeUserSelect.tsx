@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { type NodeProps, Position, useViewport } from 'reactflow';
+import { type NodeProps, Position, useStore } from 'reactflow';
 import { Box } from '@chakra-ui/react';
 import NodeCard from './render/NodeCard';
 import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
@@ -16,16 +16,21 @@ import IOTitle from '../components/IOTitle';
 import RenderOutput from './render/RenderOutput';
 import DraggableInputList from '@/components/core/app/DraggableInputList';
 import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
-import { useField, useNode, useWorkflow } from '@/web/core/workflow/editor';
+import { useField, useNode, useWorkflowActions } from '@/web/core/workflow/editor';
+
+/** 选项源柄的平移量：模块级常量，避免每次渲染换数组身份打穿 MySourceHandle 的 React.memo。 */
+const optionHandleTranslate = [58, 0] as [number, number];
 
 const NodeUserSelect = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useTranslation();
   const { nodeId, inputs, outputs } = data;
   const node = useNode(nodeId);
-  const { edges } = useWorkflow();
+  // 边集合只在删除选项的回调里读，走非订阅 getter：点击时取当前值，组件不订阅结构变更。
+  const { getEdges } = useWorkflowActions();
   // CustomComponent 是被 RenderInput 直接调用的普通函数，字段句柄必须在组件顶层取。
   const optionsField = useField(nodeId, NodeInputKeyEnum.userSelectOptions, 'input');
-  const { zoom } = useViewport();
+  // zoom 在渲染期参与 DndDrag 占位高度，所以不能用 getZoom()；只订阅缩放分量，平移不再触发重渲染。
+  const zoom = useStore((state) => state.transform[2]);
 
   const CustomComponent = useMemo(
     () => ({
@@ -67,7 +72,11 @@ const NodeUserSelect = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                     )
                   }),
                   {
-                    disconnectEdges: getOutputDisconnectCommands({ edges, nodeId, outputKey: key })
+                    disconnectEdges: getOutputDisconnectCommands({
+                      edges: getEdges(),
+                      nodeId,
+                      outputKey: key
+                    })
                   }
                 );
               }}
@@ -79,7 +88,7 @@ const NodeUserSelect = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                     position={Position.Right}
                     // Handler 渲染在 DraggableInputList 的 flex 输入容器内；右侧删除按钮和 gap
                     // 使该容器比节点内容区域缩进 24px，需要补偿后才能与节点右边缘对齐。
-                    translate={[58, 0]}
+                    translate={optionHandleTranslate}
                   />
                 )
               }
@@ -88,7 +97,7 @@ const NodeUserSelect = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         );
       }
     }),
-    [edges, node, nodeId, optionsField, t, zoom]
+    [getEdges, node, nodeId, optionsField, t, zoom]
   );
 
   return (

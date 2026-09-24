@@ -31,7 +31,7 @@ const NodeLoopEnd = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   // 引用目标的输出类型要跨节点查询：读走文档图查询面，父容器输出用 adapter 句柄写。
   const getNodeById = useDocumentGetNodeById();
   const parentNode = useNode(parentNodeId ?? '');
-  const { appDetail } = useContextSelector(AppContext, (v) => v);
+  const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
   const { t } = useTranslation();
 
   const inputItem = useMemoEnhance(

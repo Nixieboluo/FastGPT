@@ -32,8 +32,9 @@ const CommonInputForm = ({ item, nodeId }: RenderInputProps) => {
   const { t } = useTranslation();
   const node = useNode(nodeId);
   const field = useField(nodeId, item.key, 'input');
-  const { reader } = useWorkflowDocument();
-  const { appDetail } = useContextSelector(AppContext, (v) => v);
+  // 变量列表要按 id 查任意节点：语义快照提供 edges，按 id 查节点走 port 的 getNode。
+  const { workflow, getNodeById } = useWorkflowDocument();
+  const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
   const { feConfigs } = useSystemStore();
 
   const [, setDefaultModel] = useLocalStorageState<string>('workflow_default_llm_model', {
@@ -46,15 +47,15 @@ const CommonInputForm = ({ item, nodeId }: RenderInputProps) => {
   );
 
   const editorVariables = useMemoEnhance(() => {
-    if (!reader) return [];
+    if (!workflow) return [];
     return getEditorVariables({
       nodeId,
-      getNodeById: reader.getNodeById,
-      edges: reader.edges,
+      getNodeById,
+      edges: workflow.edges,
       appDetail,
       t
     });
-  }, [nodeId, reader, appDetail, t]);
+  }, [nodeId, workflow, getNodeById, appDetail, t]);
 
   const externalVariables = useMemo(() => {
     return (

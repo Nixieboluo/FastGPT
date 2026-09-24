@@ -64,7 +64,7 @@ const EditModal = ({ onClose, ...props }: RenderInputProps & { onClose: () => vo
   const aiChatQuoteTemplate = watch('quoteTemplate');
   const aiChatQuotePrompt = watch('quotePrompt');
   const aiChatQuoteRole = watch('quoteRole');
-  const { appDetail } = useContextSelector(AppContext, (v) => v);
+  const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
 
   const variables = useMemoEnhance(() => {
     const globalVariables = getWorkflowGlobalVariables({

@@ -34,13 +34,15 @@ const FlowController = React.memo(function FlowController() {
   const redo = useContextSelector(WorkflowHostContext, (v) => v.redo);
   const canUndo = useContextSelector(WorkflowHostContext, (v) => v.canUndo);
   const canRedo = useContextSelector(WorkflowHostContext, (v) => v.canRedo);
-  const {
-    workflowControlMode,
-    setWorkflowControlMode,
-    mouseInCanvas,
-    presentationMode,
-    setPresentationMode
-  } = useContextSelector(WorkflowUIContext, (v) => v);
+  // 按字段订阅：hover 会换 UI context 的值身份，控制器只读这五个字段，不该跟着刷新。
+  const workflowControlMode = useContextSelector(WorkflowUIContext, (v) => v.workflowControlMode);
+  const setWorkflowControlMode = useContextSelector(
+    WorkflowUIContext,
+    (v) => v.setWorkflowControlMode
+  );
+  const mouseInCanvas = useContextSelector(WorkflowUIContext, (v) => v.mouseInCanvas);
+  const presentationMode = useContextSelector(WorkflowUIContext, (v) => v.presentationMode);
+  const setPresentationMode = useContextSelector(WorkflowUIContext, (v) => v.setPresentationMode);
   const { t } = useTranslation();
 
   const isMac = !window ? false : window.navigator.userAgent.toLocaleLowerCase().includes('mac');

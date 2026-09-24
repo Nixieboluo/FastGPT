@@ -47,8 +47,9 @@ export const useNestedNode = ({
   inputs,
   arrayInputKey = NodeInputKeyEnum.nestedInputArray
 }: UseNestedNodeParams): UseNestedNodeResult => {
-  // 跨节点读取（引用来源的输出类型）与节点 id 列表都走文档 reader：只在语义版本变化时重算。
-  const { reader } = useWorkflowDocument();
+  // 跨节点读取（引用来源的输出类型）与节点 id 列表都走语义快照：只在语义版本变化时重算，
+  // 按 id 查节点走 port 的 getNode（非订阅，读当前值）。
+  const { workflow, getNodeById } = useWorkflowDocument();
   const node = useNode(nodeId);
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
 
@@ -62,7 +63,7 @@ export const useNestedNode = ({
     if (!nestedInputArray) return WorkflowIOValueTypeEnum.arrayAny;
     const value = nestedInputArray.value as ReferenceArrayValueType;
 
-    const nodeIds = (reader?.nodes ?? []).map((item) => item.nodeId);
+    const nodeIds = (workflow?.nodes ?? []).map((item) => item.nodeId);
     if (!value || value.length === 0 || !isValidArrayReferenceValue(value, nodeIds)) {
       return WorkflowIOValueTypeEnum.arrayAny;
     }
@@ -75,14 +76,14 @@ export const useNestedNode = ({
       if (ref?.[0] === VARIABLE_NODE_ID) {
         return globalVariables.find((item) => item.key === ref[1])?.valueType;
       } else {
-        const sourceNode = reader?.getNodeById(ref?.[0]);
+        const sourceNode = getNodeById(ref?.[0]);
         const output = sourceNode?.outputs.find((output) => output.id === ref?.[1]);
         return output?.valueType;
       }
     })(value[0]);
 
     return ArrayTypeMap[valueType as keyof typeof ArrayTypeMap] ?? WorkflowIOValueTypeEnum.arrayAny;
-  }, [appDetail.chatConfig, nestedInputArray, reader]);
+  }, [appDetail.chatConfig, nestedInputArray, workflow, getNodeById]);
 
   useEffect(() => {
     if (!nestedInputArray || !arrayInputKey || nestedInputArray.valueType === newValueType) return;

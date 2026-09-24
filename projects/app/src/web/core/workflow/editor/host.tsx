@@ -8,10 +8,13 @@
  * 按节点合并进画布投影，不进 Runtime Document，也不参与 undo/redo。
  */
 import React, {
+  useCallback,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
+  useSyncExternalStore,
   type MutableRefObject,
   type ReactNode
 } from 'react';
@@ -29,7 +32,8 @@ import {
 } from '@fastgpt/global/core/workflow/editor/protocol';
 import type {
   WorkflowEnvironment,
-  WorkflowRuntimePort
+  WorkflowRuntimePort,
+  WorkflowSnapshot
 } from '@fastgpt/global/core/workflow/editor/types';
 import type { CanonicalWorkflowData } from '@fastgpt/global/core/workflow/migration';
 import { useWorkflowDraftLifecycle } from '@/web/core/workflow/localDraft/useWorkflowDraftLifecycle';
@@ -55,7 +59,11 @@ const ISSUE_FOCUS_FIT_PADDING = 0.3;
 const MAX_VERSION_ENTRIES = 101;
 
 /**
- * 版本列表条目。每笔 Runtime command 记录一份冻结文档，live 标记当前版本。
+ * 版本列表条目。每笔 Runtime command 记录一条，live 标记当前版本。
+ *
+ * `content` 只服务云端版本（由 switchCloudVersion 现场构造，不进列表）：本地条目的切换按
+ * contentRevision 回放 Runtime History，侧边栏展示只读 title，所以本地条目不快照文档，
+ * 省掉每笔命令一次全量 canonicalize + 深拷贝与最多 101 份常驻文档副本。
  */
 export type WorkflowVersionEntry = {
   title: string;
@@ -66,8 +74,15 @@ export type WorkflowVersionEntry = {
 
 export type WorkflowHostValue = {
   runtime: WorkflowRuntimePort | null;
-  /** runtime 事件与 overlay 写入共用一个计数器，驱动投影重算与派生状态刷新。 */
-  runtimeTick: number;
+  /**
+   * 视图计数器：只承载 renderer view 通道的失效——overlay 写入、标红焦点，以及重载文档/
+   * 切换版本时对这两者的清理。
+   *
+   * runtime 语义与几何事件不经过它：语义派生订阅 `runtime.getWorkflow()` 的快照身份
+   * （见 `useWorkflowSnapshot`），画布投影直接订阅 runtime 事件（见 workflowCanvasContext）。
+   * 因此拖拽落点、单字段提交都不会带动只关心 overlay 的消费者，反之亦然。
+   */
+  viewTick: number;
 
   /**
    * renderer view 通道：host 持有的按节点视图数据（debug 结果、搜索高亮、教程元信息），
@@ -111,7 +126,7 @@ const notImplemented = (): never => {
 
 export const WorkflowHostContext = createContext<WorkflowHostValue>({
   runtime: null,
-  runtimeTick: 0,
+  viewTick: 0,
   overlaysRef: { current: {} },
   patchViewData: notImplemented,
   undo: notImplemented,
@@ -133,6 +148,35 @@ export const WorkflowHostContext = createContext<WorkflowHostValue>({
 });
 
 /**
+ * 语义通道：订阅 runtime 事件，但按 `getWorkflow()` 的快照身份决定是否重渲染。
+ *
+ * Runtime 只在语义版本变化时更换快照对象（纯几何提交与瞬时拖拽帧不换），overlay 写入与
+ * 标红焦点更是根本不产生 runtime 事件，所以拖拽落点、写 debug 结果、搜索高亮与标红定位
+ * 都不会带动语义派生列表重渲染；也不需要任何计数器，不存在「忘了 bump」这类 bug。
+ *
+ * 快照是 Runtime 版本缓存的产物：同一语义版本内身份恒定，因此可以直接当 `useMemo` 的缓存 key。
+ * Issue 刷新会作废快照缓存（Issue View 在快照里），但它只走 `subscribeIssues` 通道，
+ * 本 hook 不订阅，语义派生不会因为环境事实变化而重算。
+ *
+ * 与 `useWorkflowSnapshotGetter`（见 useWorkflowDocument）的分工：渲染期参与派生计算用本 hook，
+ * 只在事件回调里读当前值用 getter（不建订阅）。
+ */
+export const useWorkflowSnapshot = (): WorkflowSnapshot | undefined => {
+  const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
+
+  const subscribe = useMemo(
+    () => (onStoreChange: () => void) => runtime?.subscribe(onStoreChange) ?? (() => undefined),
+    [runtime]
+  );
+  const getSnapshot = useCallback(
+    () => (runtime && !runtime.isDisposed() ? runtime.getWorkflow() : undefined),
+    [runtime]
+  );
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+};
+
+/**
  * 编辑器 host Provider：挂在 ReactFlowProvider 内、renderer 之上。
  * Runtime 为 null（尚未 hydrate）时不挂 adapter，其余编辑器状态照常供给。
  */
@@ -150,7 +194,13 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
 
   const [runtime, setRuntime] = useState<WorkflowRuntimePort | null>(null);
   const runtimeRef = useRef<WorkflowRuntimePort | null>(null);
-  const [runtimeTick, setRuntimeTick] = useState(0);
+  const [viewTick, setViewTick] = useState(0);
+  /**
+   * host 自身的重渲染触发：canUndo / canRedo / isSaved 都是渲染期从 runtime 读出来的派生值，
+   * 任何 runtime 事件之后都要重算。它不进 context value，消费者拿不到，因此不可能被当成
+   * 语义或几何通道误用（语义走快照身份，几何走画布自己的 runtime 订阅）。
+   */
+  const [, notifyHost] = useReducer((count: number) => count + 1, 0);
   const overlaysRef = useRef<ViewDataOverlayMap>({});
   const [versions, setVersionsRaw] = useState<WorkflowVersionEntry[]>([]);
   const versionsRef = useRef<WorkflowVersionEntry[]>([]);
@@ -176,8 +226,8 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
     })
   );
 
-  const bump = useMemoizedFn(() => {
-    setRuntimeTick((tick) => tick + 1);
+  const bumpView = useMemoizedFn(() => {
+    setViewTick((tick) => tick + 1);
   });
 
   const setVersions = useMemoizedFn((next: WorkflowVersionEntry[]) => {
@@ -185,7 +235,11 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
     setVersionsRaw(next);
   });
 
-  /** 每笔成功 command 立即记录，不对连续字段输入做合并。 */
+  /**
+   * 每笔成功 command 立即记录，不对连续字段输入做合并。
+   * 只记 title 与 contentRevision：本地版本切换按 contentRevision 回放 Runtime History，
+   * 不需要条目自带文档快照。
+   */
   const recordVersionHistory = useMemoizedFn((current: WorkflowRuntimePort) => {
     const liveIndex = versionsRef.current.findIndex((entry) => entry.live);
     const currentBranch =
@@ -193,7 +247,6 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
     const nextVersions = [
       {
         title: formatTime2YMDHMS(new Date()),
-        content: current.getWorkflowData(),
         contentRevision: current.getSavepoint().contentRevision,
         live: true
       },
@@ -240,7 +293,7 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
       } else if (change.origin !== 'command') {
         syncLiveVersion(next);
       }
-      bump();
+      notifyHost();
     });
     setRuntime(next);
   });
@@ -255,7 +308,7 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [runtime, appDetailChatConfig]);
 
-  // runtimeTick 参与派生：命令提交、undo/redo 与 Savepoint 回填都通过它刷新下列状态。
+  // 命令提交、undo/redo 与 Savepoint 回填都通过 host 重渲染刷新下列派生状态。
   const history = runtime && !runtime.isDisposed() ? runtime.getHistory() : undefined;
   const isSaved = !runtime || runtime.isDisposed() ? true : !runtime.getSavepoint().isDirty;
 
@@ -267,7 +320,7 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
   const focusIssueNode = useMemoizedFn((nodeId?: string) => {
     if (issueFocusRef.current !== nodeId) {
       issueFocusRef.current = nodeId;
-      bump();
+      bumpView();
     }
     if (nodeId) fitView({ nodes: [{ id: nodeId }], padding: ISSUE_FOCUS_FIT_PADDING });
   });
@@ -322,7 +375,8 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
     const revision = pendingSaveRevision.current ?? current.getSavepoint().contentRevision;
     pendingSaveRevision.current = undefined;
     current.markSaved(revision);
-    bump();
+    // 只影响 isSaved（host 派生状态），画布投影不读保存态，不需要动视图计数器。
+    notifyHost();
   });
 
   const initRuntime = useMemoizedFn((content: CanonicalWorkflowData) => {
@@ -336,12 +390,12 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
     setVersions([
       {
         title: initialTitle,
-        content,
         contentRevision: nextRuntime.getSavepoint().contentRevision,
         live: true
       }
     ]);
-    bump();
+    // 新建 runtime 会重挂画布订阅，这里 bump 是为了同步清掉上一份 overlay 与标红焦点。
+    bumpView();
   });
 
   /** 导入等重载路径：保留 Runtime 实例与历史（导入可撤销），整文档替换并清视图数据。 */
@@ -356,7 +410,7 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
     overlaysRef.current = {};
     issueFocusRef.current = undefined;
     pendingSaveRevision.current = undefined;
-    bump();
+    bumpView();
   });
 
   /** 版本切换只移动当前版本标记，不产生新的“My Edit”记录。 */
@@ -364,10 +418,15 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
     (entry: WorkflowVersionEntry, _customTitle: string): boolean => {
       const current = runtimeRef.current;
       if (!current || current.isDisposed()) return false;
-      if (entry.live || !entry.content) return true;
+      if (entry.live) return true;
 
-      const targetIndex = versionsRef.current.indexOf(entry);
-      if (targetIndex >= 0 && entry.contentRevision !== undefined) {
+      // 本地条目按 contentRevision 定位（与 syncLiveVersion 同一把钥匙）：
+      // undo/redo 与切换都会重建条目对象，身份比较在调用方持有上一轮条目时会失配。
+      const targetIndex =
+        entry.contentRevision === undefined
+          ? -1
+          : versionsRef.current.findIndex((item) => item.contentRevision === entry.contentRevision);
+      if (targetIndex >= 0) {
         const liveIndex = versionsRef.current.findIndex((item) => item.live);
         if (liveIndex < 0) return false;
         const direction = targetIndex > liveIndex ? 'undo' : 'redo';
@@ -375,11 +434,14 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
         if (!res.ok || current.getSavepoint().contentRevision !== entry.contentRevision)
           return false;
       } else {
+        // 走到这里说明不是本地条目：只有云端版本带 content，本地条目没有可替换的文档。
+        const document = entry.content;
+        if (!document) return false;
         // 云端版本不属于本地 Runtime History，只抑制“My Edit”新增记录。
         suppressVersionHistoryRef.current = true;
         const res = (() => {
           try {
-            return current.dispatch({ type: 'replaceDocument', document: entry.content });
+            return current.dispatch({ type: 'replaceDocument', document });
           } finally {
             suppressVersionHistoryRef.current = false;
           }
@@ -390,6 +452,9 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
       overlaysRef.current = {};
       issueFocusRef.current = undefined;
       pendingSaveRevision.current = undefined;
+      // 文档替换事件已经带动画布投影，但那次投影读到的还是清理前的 overlay 与标红焦点，
+      // 这里再 bump 一次让画布按清理后的视图数据重投影。
+      bumpView();
       setVersions(
         versionsRef.current.map((item) => ({
           ...item,
@@ -399,8 +464,12 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
               : item === entry
         }))
       );
-      const nextChatConfig = entry.content.chatConfig;
-      setAppDetail((detail) => ({ ...detail, chatConfig: nextChatConfig }));
+      // 云端整文档替换后按替换结果同步一次 chatConfig；
+      // 本地条目走 replayHistory，chatConfig 变化已由 Runtime 变更事件回写 appDetail。
+      if (entry.content) {
+        const nextChatConfig = entry.content.chatConfig;
+        setAppDetail((detail) => ({ ...detail, chatConfig: nextChatConfig }));
+      }
       return true;
     }
   );
@@ -434,7 +503,7 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
       next[nodeId] = { ...next[nodeId], ...values };
     });
     overlaysRef.current = next;
-    bump();
+    bumpView();
   });
 
   /** 让 Runtime 按当前环境事实重算整份 Issue View；文档变更由 Runtime 在事务后自行定向刷新。 */
@@ -488,7 +557,7 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
   const value = useMemo(
     () => ({
       runtime,
-      runtimeTick,
+      viewTick,
       overlaysRef,
       patchViewData,
       undo,
@@ -510,7 +579,7 @@ export const WorkflowHostProvider = ({ children }: { children: ReactNode }) => {
     }),
     [
       runtime,
-      runtimeTick,
+      viewTick,
       patchViewData,
       undo,
       redo,

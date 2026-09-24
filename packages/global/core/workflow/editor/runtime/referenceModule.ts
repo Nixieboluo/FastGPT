@@ -36,6 +36,7 @@ import {
 } from './kernel';
 import type {
   DocumentReadApi,
+  EdgeRecord,
   FieldStatusCache,
   MutationMeta,
   NodeRecord,
@@ -54,6 +55,32 @@ const getSourceIdentityKey = ([nodeId, outputId]: ReferenceItemValueType) =>
 
 const toSnapshotMap = (snapshots: readonly WorkflowReferenceSnapshot[]) =>
   new Map(snapshots.map((snapshot) => [getSourceIdentityKey(snapshot.reference), snapshot]));
+
+/** selectedTools 入边即「被 Agent 挂成工具」：这条语义只在此处定义，实时与定格文档共用。 */
+const isMountedToolEdge = ({ data }: EdgeRecord) =>
+  data.targetHandle === NodeOutputKeyEnum.selectedTools;
+
+/**
+ * 节点是否被 Agent 挂成工具：入边里存在 selectedTools 边即挂载。O(入度)。
+ * 入参是按 target 取到的入边集合，实时侧传 GraphIndex.byTarget 的桶，定格文档传最小索引。
+ */
+export const isMountedToolNode = (incomingEdges: readonly EdgeRecord[] | undefined): boolean =>
+  (incomingEdges ?? []).some(isMountedToolEdge);
+
+/**
+ * 为没有 GraphIndex 的定格文档建最小 byTarget：只收 selectedTools 入边，
+ * 代价与原来的「filter + Set」相同，却能复用同一份挂载判定。
+ */
+const buildMountedToolIndex = (edges: readonly EdgeRecord[]): Map<string, EdgeRecord[]> => {
+  const byTarget = new Map<string, EdgeRecord[]>();
+  edges.forEach((edge) => {
+    if (!isMountedToolEdge(edge)) return;
+    const bucket = byTarget.get(edge.data.target);
+    if (bucket) bucket.push(edge);
+    else byTarget.set(edge.data.target, [edge]);
+  });
+  return byTarget;
+};
 
 const createReferenceGraph = (): ReferenceGraph => ({
   consumersBySource: new Map(),
@@ -343,10 +370,7 @@ export const createReferenceModule = (document: DocumentReadApi) => {
       scope: {
         chatConfig,
         getNodeById: document.getNodeById,
-        isMountedTool: (nodeId) =>
-          (byTarget.get(nodeId) ?? []).some(
-            ({ data }) => data.targetHandle === NodeOutputKeyEnum.selectedTools
-          )
+        isMountedTool: (nodeId) => isMountedToolNode(byTarget.get(nodeId))
       },
       snapshots: referenceSnapshots
     });
@@ -637,9 +661,7 @@ export const createReferenceModule = (document: DocumentReadApi) => {
       .forEach((sourceNodeId) => {
         const sourceNode = nodeIndex.get(sourceNodeId)?.record;
         if (!sourceNode) return;
-        const isMountedTool = (graphIndex.byTarget.get(sourceNodeId) ?? []).some(
-          ({ data }) => data.targetHandle === NodeOutputKeyEnum.selectedTools
-        );
+        const isMountedTool = isMountedToolNode(graphIndex.byTarget.get(sourceNodeId));
         filterSelectableWorkflowNodeOutputs({
           outputs: [
             ...sourceNode.data.outputs,
@@ -725,17 +747,15 @@ export const createReferenceModule = (document: DocumentReadApi) => {
     /** 为定格文档建来源作用域；两张索引都惰性构建，本轮没有来源消失时不付代价。 */
     const createFrozenSourceScope = (frozen: RuntimeDocument): ReferenceSourceScope => {
       let nodeIndex: Map<string, NodeRecord> | undefined;
-      let mountedToolIds: Set<string> | undefined;
+      let mountedToolByTarget: Map<string, EdgeRecord[]> | undefined;
       return {
         chatConfig: frozen.chatConfig,
         getNodeById: (nodeId) =>
           (nodeIndex ??= new Map(frozen.nodes.map((node) => [node.data.nodeId, node]))).get(nodeId),
         isMountedTool: (nodeId) =>
-          (mountedToolIds ??= new Set(
-            frozen.edges
-              .filter(({ data }) => data.targetHandle === NodeOutputKeyEnum.selectedTools)
-              .map(({ data }) => data.target)
-          )).has(nodeId)
+          isMountedToolNode(
+            (mountedToolByTarget ??= buildMountedToolIndex(frozen.edges)).get(nodeId)
+          )
       };
     };
 

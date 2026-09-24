@@ -81,10 +81,14 @@ const WorkflowCanvas = () => {
   const nodes = useContextSelector(WorkflowCanvasContext, (v) => v.nodes);
   const edges = useContextSelector(WorkflowCanvasContext, (v) => v.edges);
   const helperLinesRef = useRef<HelperLinesController>(null);
-  const { reactFlowWrapperCallback, workflowControlMode, menu } = useContextSelector(
+  // 按字段订阅：整体订阅会让 hover / 鼠标进出画布带动整个画布组件重渲染，
+  // 而这里只需要一个稳定 callback ref、一个原始值和一个菜单坐标。
+  const reactFlowWrapperCallback = useContextSelector(
     WorkflowUIContext,
-    (v) => v
+    (v) => v.reactFlowWrapperCallback
   );
+  const workflowControlMode = useContextSelector(WorkflowUIContext, (v) => v.workflowControlMode);
+  const menu = useContextSelector(WorkflowUIContext, (v) => v.menu);
 
   const {
     handleNodesChange,

@@ -3,7 +3,7 @@ import { getNanoid } from '@fastgpt/global/common/string/tools';
 import { isNestedParentNodeType } from '@fastgpt/global/core/workflow/node/constant';
 import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import { useCopyData } from '@fastgpt/web/hooks/useCopyData';
-import { useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { useWorkflowActions } from '@/web/core/workflow/editor';
 import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/canvas';
 import { useKeyPress as useKeyPressEffect } from 'ahooks';
 import { useTranslation } from 'next-i18next';
@@ -12,6 +12,7 @@ import { type Node, useKeyPress, useReactFlow } from 'reactflow';
 import { useContextSelector } from 'use-context-selector';
 import { WorkflowUIContext } from '../context/workflowUIContext';
 import { isWorkflowShortcutInputtingTarget } from './keyboard';
+import { useClearCanvasSelection } from './useWorkflow';
 import { useWorkflowUtils } from './useUtils';
 
 export const useKeyboard = () => {
@@ -21,9 +22,11 @@ export const useKeyboard = () => {
 
   const { copyData } = useCopyData();
   const { computedNewNodeName } = useWorkflowUtils();
-  // 复制/粘贴只碰 renderer 交互状态（选中、位置），直接读写 reactflow store。
-  const { screenToFlowPosition, getNodes, setNodes } = useReactFlow();
-  const workflow = useWorkflowAdapter();
+  // 复制只碰 renderer 交互状态（选中、位置），直接读 reactflow store；
+  // 清选中走 select 变更漏斗，不用 useReactFlow().setNodes（受控模式下会转成整份 reset 变更）。
+  const { screenToFlowPosition, getNodes } = useReactFlow();
+  const actions = useWorkflowActions();
+  const clearCanvasSelection = useClearCanvasSelection();
 
   const isDowningCtrl = useKeyPress(['Meta', 'Control']);
 
@@ -97,18 +100,18 @@ export const useKeyboard = () => {
         };
       });
 
-      // Reset all node to not select and concat new node
-      setNodes((prev) => prev.map((node) => ({ ...node, selected: false })));
-      workflow.addNodes(newNodes.map(canvasNodeToStoreNode));
+      // 先清掉旧选中再落新节点
+      clearCanvasSelection();
+      actions.addNodes(newNodes.map(canvasNodeToStoreNode));
     } catch {}
   }, [
+    actions,
+    clearCanvasSelection,
     computedNewNodeName,
     getMousePosition,
     hasInputtingElement,
     mouseInCanvas,
-    screenToFlowPosition,
-    setNodes,
-    workflow
+    screenToFlowPosition
   ]);
 
   useKeyPressEffect(['ctrl.c', 'meta.c'], (e) => {

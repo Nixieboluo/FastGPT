@@ -31,14 +31,15 @@ import {
   splitToolInputsByMode
 } from '@/web/core/workflow/utils';
 import { useIsToolNode } from '../render/useWorkflowDocument';
-import { useNode, useWorkflow } from '@/web/core/workflow/editor';
+import { useNode, useWorkflowActions } from '@/web/core/workflow/editor';
 
 const NodeExtract = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { inputs, outputs, nodeId, catchError } = data;
 
   const { t } = useTranslation();
   const node = useNode(nodeId);
-  const { edges } = useWorkflow();
+  // 边集合只在删除/改名字段的回调里读，走非订阅 getter：点击时取当前值，组件不订阅结构变更。
+  const { getEdges } = useWorkflowActions();
 
   const isTool = useIsToolNode(nodeId);
   const { commonInputs } = useMemoEnhance(
@@ -148,7 +149,7 @@ const NodeExtract = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                               }),
                               {
                                 disconnectEdges: getOutputDisconnectCommands({
-                                  edges,
+                                  edges: getEdges(),
                                   nodeId,
                                   outputKey: item.key
                                 })
@@ -166,7 +167,7 @@ const NodeExtract = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         </Box>
       )
     }),
-    [edges, node, nodeId, t]
+    [getEdges, node, nodeId, t]
   );
 
   return (
@@ -248,7 +249,7 @@ const NodeExtract = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
               replacedKey
                 ? {
                     disconnectEdges: getOutputDisconnectCommands({
-                      edges,
+                      edges: getEdges(),
                       nodeId,
                       outputKey: replacedKey
                     })

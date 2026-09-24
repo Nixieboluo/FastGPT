@@ -11,7 +11,7 @@ import QuestionTip from '@fastgpt/web/components/common/MyTooltip/QuestionTip';
 import MyIconButton from '@fastgpt/web/components/common/Icon/button';
 import MySelect from '@fastgpt/web/components/common/MySelect';
 import { getNanoid } from '@fastgpt/global/common/string/tools';
-import { useNode, useWorkflow } from '@/web/core/workflow/editor';
+import { useNode, useWorkflowActions } from '@/web/core/workflow/editor';
 import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
 
 type DynamicOutputsProps = {
@@ -33,7 +33,8 @@ const defaultOutput: FlowNodeOutputItemType = {
 const DynamicOutputs = ({ nodeId, outputs, addOutput }: DynamicOutputsProps) => {
   const { t } = useTranslation();
   const node = useNode(nodeId);
-  const { edges } = useWorkflow();
+  // 边集合只在改/删输出字段的回调里读，走非订阅 getter：点击时取当前值，组件不订阅结构变更。
+  const { getEdges } = useWorkflowActions();
 
   // 输出字段的增删改都是记录级变更：读文档当前 outputs、拼完整数组后走 updateNode。
   // 替换与删除会让旧 source handle 失效，连线必须同事务断开，否则撤销要按两下。
@@ -44,21 +45,31 @@ const DynamicOutputs = ({ nodeId, outputs, addOutput }: DynamicOutputsProps) => 
           outputs: current.outputs.map((item) => (item.key === originalKey ? updatedOutput : item))
         }),
         {
-          disconnectEdges: getOutputDisconnectCommands({ edges, nodeId, outputKey: originalKey })
+          disconnectEdges: getOutputDisconnectCommands({
+            edges: getEdges(),
+            nodeId,
+            outputKey: originalKey
+          })
         }
       );
     },
-    [edges, node, nodeId]
+    [getEdges, node, nodeId]
   );
 
   const handleDeleteOutput = useCallback(
     (key: string) => {
       node?.updateNode(
         (current) => ({ outputs: current.outputs.filter((item) => item.key !== key) }),
-        { disconnectEdges: getOutputDisconnectCommands({ edges, nodeId, outputKey: key }) }
+        {
+          disconnectEdges: getOutputDisconnectCommands({
+            edges: getEdges(),
+            nodeId,
+            outputKey: key
+          })
+        }
       );
     },
-    [edges, node, nodeId]
+    [getEdges, node, nodeId]
   );
 
   const handleAddOutput = useCallback(

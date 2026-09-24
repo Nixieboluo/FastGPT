@@ -8,9 +8,13 @@ import { useContextSelector } from 'use-context-selector';
 import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
 import type { IfElseListItemType } from '@fastgpt/global/core/workflow/template/system/ifElse/type';
 import { getIfElseBranchHandleKey } from '@fastgpt/global/core/workflow/template/system/ifElse/utils';
-import { isConnectionTargetAllowed, useNode, useWorkflow } from '@/web/core/workflow/editor';
+import { isConnectionTargetAllowed, useNode, useWorkflowValue } from '@/web/core/workflow/editor';
+import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import { WorkflowUIContext } from '../../../context/workflowUIContext';
-import { useWorkflowDocument } from '../useWorkflowDocument';
+
+/** 目标柄与折叠分支源柄的平移量：模块级常量，避免每次渲染换数组身份打穿 React.memo。 */
+const sourceTranslate = [4, 0] as [number, number];
+const targetTranslate = [-4, 0] as [number, number];
 
 export const ConnectionSourceHandle = ({
   nodeId,
@@ -20,8 +24,19 @@ export const ConnectionSourceHandle = ({
   sourceType?: 'source' | 'source_catch';
 }) => {
   const nodeHandle = useNode(nodeId);
-  const { edges } = useWorkflow();
-  const connectingEdge = useContextSelector(WorkflowUIContext, (v) => v.connectingEdge);
+  // 只关心「是不是别的节点在拖拽连线」这一个事实，不取回整个 connectingEdge 对象。
+  const isConnectingOther = useContextSelector(
+    WorkflowUIContext,
+    (v) => !!v.connectingEdge && v.connectingEdge.nodeId !== nodeId
+  );
+  // 右侧 target 柄已被占用时不再显示 source 柄：走图查询的 byTarget 索引，O(入度)。
+  const rightTargetConnected = useWorkflowValue((_structure, graph) =>
+    graph.isHandleConnected({
+      nodeId,
+      handleId: getHandleId(nodeId, 'target', Position.Right),
+      direction: 'target'
+    })
+  );
 
   const { showSourceHandle, RightHandle } = useMemo(() => {
     const node = nodeHandle?.data;
@@ -29,7 +44,7 @@ export const ConnectionSourceHandle = ({
     /* not node/not connecting node, hidden */
     const showSourceHandle = (() => {
       if (!node) return false;
-      if (connectingEdge && connectingEdge.nodeId !== nodeId) return false;
+      if (isConnectingOther) return false;
       return true;
     })();
 
@@ -68,17 +83,13 @@ export const ConnectionSourceHandle = ({
               nodeId={nodeId}
               handleId={firstHandleId}
               position={Position.Right}
-              translate={[4, 0]}
+              translate={sourceTranslate}
             />
           );
         }
       }
 
       const handleId = getHandleId(nodeId, sourceType, Position.Right);
-      const rightTargetConnected = edges.some(
-        (edge) => edge.targetHandle === getHandleId(nodeId, 'target', Position.Right)
-      );
-
       // 连接柄显隐由当前模板决定：文档节点不携带模板展示字段。
       const templateShowSourceHandle = node
         ? moduleTemplatesFlat.find((item) => item.flowNodeType === node.flowNodeType)
@@ -93,7 +104,7 @@ export const ConnectionSourceHandle = ({
           nodeId={nodeId}
           handleId={handleId}
           position={Position.Right}
-          translate={[4, 0]}
+          translate={sourceTranslate}
         />
       );
     })();
@@ -102,7 +113,7 @@ export const ConnectionSourceHandle = ({
       showSourceHandle,
       RightHandle
     };
-  }, [nodeHandle, nodeId, connectingEdge, sourceType, edges]);
+  }, [nodeHandle, nodeId, isConnectingOther, sourceType, rightTargetConnected]);
 
   return showSourceHandle ? <>{RightHandle}</> : null;
 };
@@ -112,35 +123,34 @@ export const ConnectionTargetHandle = React.memo(function ConnectionTargetHandle
 }: {
   nodeId: string;
 }) {
-  // 目标柄要按任意父节点判定容器上下文，用文档图 reader 一次取全，不逐个 useNode。
-  const { reader } = useWorkflowDocument();
   const connectingEdge = useContextSelector(WorkflowUIContext, (v) => v.connectingEdge);
+  // 目标柄要按拖拽源节点的父容器判定上下文，直接读 port 的节点快照，不再挂整份文档图 reader。
+  const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
+
+  /**
+   * 禁止连接的图判定：本节点已被挂成工具，或本次拖拽的 source handle 已经连到本节点。
+   * 两个条件都走图索引（byTarget），复杂度从每条边全量扫 O(E) 降到 O(入度)。
+   */
+  const forbidConnectByGraph = useWorkflowValue(
+    (_structure, graph) =>
+      graph.isMountedTool(nodeId) ||
+      (!!connectingEdge &&
+        graph
+          .getIncomingEdges(nodeId)
+          .some((edge) => edge.sourceHandle === connectingEdge.handleId))
+  );
 
   const { LeftHandle } = useMemo(() => {
-    if (!reader) return { LeftHandle: null };
-    const { edges, getNodeById } = reader;
-    const node = getNodeById(nodeId);
-    const connectingNode = getNodeById(connectingEdge?.nodeId);
+    // 这里刻意用 port 的非订阅读取而不是 useNode：判定只吃 flowNodeType 与 parentNodeId，
+    // 两者都只在结构变更时改变，而 parentNodeId 只在 connectingEdge 存在时被消费；
+    // connectingEdge 变化本身就会重渲染并重跑本 memo，所以读到的永远是当前值。
+    // 换成 useNode 会让本节点的几何提交、字段写入与 issue 刷新都带动目标柄重渲染。
+    const node = runtime?.getNode(nodeId);
+    const connectingNode = connectingEdge?.nodeId
+      ? runtime?.getNode(connectingEdge.nodeId)
+      : undefined;
 
-    let forbidConnect = false;
-    for (const edge of edges) {
-      if (forbidConnect) break;
-
-      if (edge.target === nodeId) {
-        // Node has be connected tool, it cannot be connect by other handle
-        if (edge.targetHandle === NodeOutputKeyEnum.selectedTools) {
-          forbidConnect = true;
-        }
-        // The same source handle cannot connect to the same target node
-        if (
-          connectingEdge &&
-          connectingEdge.handleId === edge.sourceHandle &&
-          edge.target === nodeId
-        ) {
-          forbidConnect = true;
-        }
-      }
-    }
+    let forbidConnect = forbidConnectByGraph;
 
     // 目标节点容器或模板上下文不允许时禁止连接（与 Tool 柄及最终提交共用规则）；
     // context 在连线拖拽开始时由 Runtime 算好，这里只按 target 应用纯规则。
@@ -187,7 +197,7 @@ export const ConnectionTargetHandle = React.memo(function ConnectionTargetHandle
           nodeId={nodeId}
           handleId={handleId}
           position={Position.Left}
-          translate={[-4, 0]}
+          translate={targetTranslate}
           showHandle={showHandle}
         />
       );
@@ -197,7 +207,7 @@ export const ConnectionTargetHandle = React.memo(function ConnectionTargetHandle
       showHandle,
       LeftHandle
     };
-  }, [connectingEdge, nodeId, reader]);
+  }, [connectingEdge, nodeId, runtime, forbidConnectByGraph]);
 
   return <>{LeftHandle}</>;
 });

@@ -10,15 +10,19 @@ import QuestionTip from '@fastgpt/web/components/common/MyTooltip/QuestionTip';
 import ValueTypeLabel from '../ValueTypeLabel';
 import MyIcon from '@fastgpt/web/components/common/Icon';
 import MyTooltip from '@fastgpt/web/components/common/MyTooltip';
-import { useNode, useWorkflow } from '@/web/core/workflow/editor';
+import { useNode, useWorkflowActions } from '@/web/core/workflow/editor';
 import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
+
+/** 输出源柄的平移量：模块级常量，避免每次渲染换数组身份打穿 MySourceHandle 的 React.memo。 */
+const sourceTranslate = [34, 0] as [number, number];
 
 const OutputLabel = ({ nodeId, output }: { nodeId: string; output: FlowNodeOutputItemType }) => {
   const { t } = useSafeTranslation();
   const { label = '', description, valueType, valueDesc } = output;
 
   const node = useNode(nodeId);
-  const { edges } = useWorkflow();
+  // 边集合只在删除废弃输出字段的回调里读，走非订阅 getter：点击时取当前值，组件不订阅结构变更。
+  const { getEdges } = useWorkflowActions();
 
   return (
     <Box position={'relative'}>
@@ -67,7 +71,7 @@ const OutputLabel = ({ nodeId, output }: { nodeId: string; output: FlowNodeOutpu
                     }),
                     {
                       disconnectEdges: getOutputDisconnectCommands({
-                        edges,
+                        edges: getEdges(),
                         nodeId,
                         outputKey: output.key
                       })
@@ -86,7 +90,7 @@ const OutputLabel = ({ nodeId, output }: { nodeId: string; output: FlowNodeOutpu
         <MySourceHandle
           nodeId={nodeId}
           handleId={getHandleId(nodeId, 'source', output.key)}
-          translate={[34, 0]}
+          translate={sourceTranslate}
           position={Position.Right}
         />
       )}

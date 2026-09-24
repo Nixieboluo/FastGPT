@@ -5,7 +5,7 @@ import ToolParamConfig from './ToolParamConfig';
 import { useTranslation } from 'next-i18next';
 import { getHandleId } from '@fastgpt/global/core/workflow/utils';
 import { Position } from 'reactflow';
-import { useNode, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { useNode, useWorkflowActions } from '@/web/core/workflow/editor';
 
 const IOTitle = ({
   text,
@@ -20,7 +20,8 @@ const IOTitle = ({
   catchError?: boolean;
 } & StackProps) => {
   const { t } = useTranslation();
-  const workflow = useWorkflowAdapter();
+  // 边集合只在切开关的回调里读，走非订阅 getter：点击时取当前值，组件不订阅结构变更。
+  const { getEdges } = useWorkflowActions();
   // nodeId 是可选 prop：hook 必须无条件调用，空 id 时 useNode 返回 undefined。
   const node = useNode(nodeId ?? '');
 
@@ -34,7 +35,7 @@ const IOTitle = ({
 
     const catchHandle = getHandleId(nodeId, 'source_catch', Position.Right);
     node.updateNode(() => ({ catchError: checked }), {
-      disconnectEdges: workflow.edges
+      disconnectEdges: getEdges()
         .filter((edge) => edge.sourceHandle === catchHandle)
         .map((edge) => ({
           edge: {

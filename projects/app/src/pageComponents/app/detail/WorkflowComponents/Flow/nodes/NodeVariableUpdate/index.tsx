@@ -36,7 +36,7 @@ import FormLabel from '@fastgpt/web/components/common/MyBox/FormLabel';
 import NodeInputSelect from '@fastgpt/web/components/core/workflow/NodeInputSelect';
 import VariableSelector from './VariableSelector';
 import ValueRenderer from './ValueRenderer';
-import { useDocumentGetNodeById, useWorkflowDocument } from '../render/useWorkflowDocument';
+import { useWorkflowDocument } from '../render/useWorkflowDocument';
 import { useField } from '@/web/core/workflow/editor';
 
 // 切换目标变量时按新类型生成默认操作字段与初值，
@@ -59,22 +59,21 @@ const NodeVariableUpdate = ({ data, selected }: NodeProps<FlowNodeItemType>) => 
   const { inputs = [], nodeId } = data;
   const { t } = useTranslation();
 
-  // 变量列表与引用类型都要按 id 查任意节点：统一读文档图查询面，不再依赖画布薄壳。
-  const { reader } = useWorkflowDocument();
-  const getNodeById = useDocumentGetNodeById();
+  // 变量列表与引用类型都要按 id 查任意节点：语义快照提供 edges，按 id 查节点走 port 的 getNode。
+  const { workflow, getNodeById } = useWorkflowDocument();
   const updateListField = useField(nodeId, NodeInputKeyEnum.updateList, 'input');
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
 
   const variables = useMemoEnhance(() => {
-    if (!reader) return [];
+    if (!workflow) return [];
     return getEditorVariables({
       nodeId,
       getNodeById,
-      edges: reader.edges,
+      edges: workflow.edges,
       appDetail,
       t
     });
-  }, [nodeId, getNodeById, reader, appDetail, t]);
+  }, [nodeId, getNodeById, workflow, appDetail, t]);
   const { feConfigs } = useSystemStore();
   const externalProviderWorkflowVariables = useMemo(() => {
     return (

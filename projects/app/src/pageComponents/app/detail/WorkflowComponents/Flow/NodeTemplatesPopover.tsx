@@ -10,21 +10,23 @@ import type { FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import MyBox from '@fastgpt/web/components/common/MyBox';
 import { useMemoizedFn } from 'ahooks';
 import React from 'react';
-import { useReactFlow, type Node } from 'reactflow';
+import { type Node } from 'reactflow';
 import { useContextSelector } from 'use-context-selector';
-import { usePlacementContext, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { usePlacementContext, useWorkflowActions } from '@/web/core/workflow/editor';
 import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/canvas';
 import { WorkflowModalContext } from './context/workflowModalContext';
 import NodeTemplateListHeader from './components/NodeTemplates/header';
 import NodeTemplateList from './components/NodeTemplates/list';
 import { useNodeTemplates } from './components/NodeTemplates/useNodeTemplates';
-import { popoverHeight, popoverWidth } from './hooks/useWorkflow';
+import { popoverHeight, popoverWidth, useClearCanvasSelection } from './hooks/useWorkflow';
 
 const NodeTemplatesPopover = () => {
-  const { handleParams, setHandleParams } = useContextSelector(WorkflowModalContext, (v) => v);
+  // 按字段订阅：整体订阅会让 activePanel 与运行预览数据的变化也带动本组件刷新。
+  const handleParams = useContextSelector(WorkflowModalContext, (v) => v.handleParams);
+  const setHandleParams = useContextSelector(WorkflowModalContext, (v) => v.setHandleParams);
 
-  const workflow = useWorkflowAdapter();
-  const { setNodes } = useReactFlow();
+  const actions = useWorkflowActions();
+  const clearCanvasSelection = useClearCanvasSelection();
   // 快捷添加是 handle context：候选集由来源节点与 handle 决定，作用域取来源节点所在容器。
   const nodeTemplateContext = usePlacementContext(
     handleParams?.nodeId
@@ -65,8 +67,8 @@ const NodeTemplatesPopover = () => {
     }
 
     const storeNodes = validNewNodes.map(canvasNodeToStoreNode);
-    setNodes((state) => state.map((node) => ({ ...node, selected: false })));
-    const result = workflow.addNodes(storeNodes);
+    clearCanvasSelection();
+    const result = actions.addNodes(storeNodes);
     // 添加被拒时不再连边：节点没进文档，连边只会产生一串无效命令。
     if (!result.ok) {
       setHandleParams(null);
@@ -87,7 +89,7 @@ const NodeTemplatesPopover = () => {
       }));
 
     newEdges.forEach((edge) =>
-      workflow.connectEdge({
+      actions.connectEdge({
         source: edge.source,
         target: edge.target,
         sourceHandle: edge.sourceHandle || '',

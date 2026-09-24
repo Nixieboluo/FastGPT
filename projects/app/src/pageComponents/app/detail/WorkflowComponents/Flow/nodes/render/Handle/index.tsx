@@ -8,7 +8,7 @@ import { useTranslation } from 'next-i18next';
 import { Box, Flex } from '@chakra-ui/react';
 import { WorkflowUIContext } from '../../../context/workflowUIContext';
 import { WorkflowSelectionContext } from '../../../context/workflowSelectionContext';
-import { useWorkflow } from '@/web/core/workflow/editor';
+import { useWorkflowValue } from '@/web/core/workflow/editor';
 
 const handleSizeConnected = 24;
 const handleSizeConnecting = 32;
@@ -55,23 +55,25 @@ export const MySourceHandle = React.memo(function MySourceHandle({
 }: Props) {
   const { t } = useTranslation();
 
-  // 结构 handle 同时给出节点 identity 与连线：存在性判定和 connected 都从这里读，不再订阅薄壳。
-  const { nodes, edges } = useWorkflow();
+  // 连通判定走 Runtime 图查询（bySource 索引，O(出度)），selector 只返回 boolean，
+  // 别处连线/断线不会让这个 handle 重渲染。
+  const connected = useWorkflowValue((_structure, graph) =>
+    graph.isHandleConnected({ nodeId, handleId, direction: 'source' })
+  );
   const selected = useContextSelector(WorkflowSelectionContext, (v) => v.selectedNodesMap[nodeId]);
-  const connectingEdge = useContextSelector(WorkflowUIContext, (ctx) => ctx.connectingEdge);
-  const hoverNodeId = useContextSelector(WorkflowUIContext, (v) => v.hoverNodeId);
-
-  const nodeExists = useMemo(() => nodes.some((node) => node.nodeId === nodeId), [nodes, nodeId]);
-  const connected = useMemo(
-    () => edges.some((edge) => edge.sourceHandle === handleId),
-    [edges, handleId]
+  // connectingEdge 有两个互相独立的用途，各取一个 boolean，不把整个对象取回来：
+  // 本 handle 是不是拖拽源（高亮），以及是否正在从 tool 柄拖拽（此时隐藏所有 source 柄）。
+  const isConnectingSelf = useContextSelector(
+    WorkflowUIContext,
+    (v) => v.connectingEdge?.handleId === handleId
   );
-
-  const nodeIsHover = hoverNodeId === nodeId;
-  const active = useMemo(
-    () => nodeIsHover || selected || connectingEdge?.handleId === handleId,
-    [nodeIsHover, selected, connectingEdge, handleId]
+  const isConnectingTool = useContextSelector(
+    WorkflowUIContext,
+    (v) => v.connectingEdge?.handleId === NodeOutputKeyEnum.selectedTools
   );
+  const nodeIsHover = useContextSelector(WorkflowUIContext, (v) => v.hoverNodeId === nodeId);
+
+  const active = nodeIsHover || !!selected || isConnectingSelf;
 
   const translateStr = useMemo(() => {
     if (!translate) return '';
@@ -110,8 +112,7 @@ export const MySourceHandle = React.memo(function MySourceHandle({
     };
   }, [active, connected, translateStr]);
 
-  if (!nodeExists) return null;
-  if (connectingEdge?.handleId === NodeOutputKeyEnum.selectedTools) return null;
+  if (isConnectingTool) return null;
 
   return (
     <MyTooltip
@@ -151,7 +152,7 @@ export const MySourceHandle = React.memo(function MySourceHandle({
 });
 
 export const MyTargetHandle = React.memo(function MyTargetHandle({
-  nodeId: _nodeId,
+  nodeId,
   handleId,
   position,
   translate,
@@ -159,30 +160,30 @@ export const MyTargetHandle = React.memo(function MyTargetHandle({
 }: Props & {
   showHandle: boolean;
 }) {
-  const { edges } = useWorkflow();
-  const connected = useMemo(
-    () => edges.some((edge) => edge.targetHandle === handleId),
-    [edges, handleId]
+  // 同 MySourceHandle：图查询按 byTarget 索引算连通，只返回 boolean。
+  const connected = useWorkflowValue((_structure, graph) =>
+    graph.isHandleConnected({ nodeId, handleId, direction: 'target' })
   );
-  const connectingEdge = useContextSelector(WorkflowUIContext, (ctx) => ctx.connectingEdge);
+  // 这里只需要「有没有在拖拽连线」这一个事实，不需要 connectingEdge 对象本身。
+  const isConnecting = useContextSelector(WorkflowUIContext, (v) => !!v.connectingEdge);
 
   const translateStr = useMemo(() => {
     if (!translate) return '';
 
     if (position === Position.Left) {
-      const offset = connectingEdge ? -8 : -5;
+      const offset = isConnecting ? -8 : -5;
       return `${translate[0] + offset}px, -50%`;
     }
-  }, [connectingEdge, position, translate]);
+  }, [isConnecting, position, translate]);
 
   const styles = useMemo(() => {
-    if ((!connectingEdge && !connected) || !showHandle) {
+    if ((!isConnecting && !connected) || !showHandle) {
       return {
         visibility: 'hidden' as const
       };
     }
 
-    if (connectingEdge) {
+    if (isConnecting) {
       return {
         ...handleHighLightStyle,
         transform: `${translateStr ? `translate(${translateStr})` : ''}`
@@ -199,7 +200,7 @@ export const MyTargetHandle = React.memo(function MyTargetHandle({
       visibility: 'hidden' as const,
       zIndex: 15
     };
-  }, [connected, connectingEdge, showHandle, translateStr]);
+  }, [connected, isConnecting, showHandle, translateStr]);
 
   return (
     <Handle

@@ -17,13 +17,17 @@ import { getHandleId } from '@fastgpt/global/core/workflow/utils';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
 import { getOutputDisconnectCommands, splitToolInputsByMode } from '@/web/core/workflow/utils';
 import { useIsToolNode } from './render/useWorkflowDocument';
-import { useField, useNode, useWorkflow } from '@/web/core/workflow/editor';
+import { useField, useNode, useWorkflowActions } from '@/web/core/workflow/editor';
+
+/** 分类源柄的平移量：模块级常量，避免每次渲染换数组身份打穿 MySourceHandle 的 React.memo。 */
+const sourceTranslate = [34, 0] as [number, number];
 
 const NodeCQNode = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useTranslation();
   const { nodeId, inputs } = data;
   const node = useNode(nodeId);
-  const { edges } = useWorkflow();
+  // 边集合只在删除分类的回调里读，走非订阅 getter：点击时取当前值，组件不订阅结构变更。
+  const { getEdges } = useWorkflowActions();
   // CustomComponent 是被 RenderInput 直接调用的普通函数，字段句柄必须在组件顶层取。
   const agentsField = useField(nodeId, NodeInputKeyEnum.agents, 'input');
   const isTool = useIsToolNode(nodeId);
@@ -65,7 +69,7 @@ const NodeCQNode = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                           }),
                           {
                             disconnectEdges: getOutputDisconnectCommands({
-                              edges,
+                              edges: getEdges(),
                               nodeId,
                               outputKey: item.key
                             })
@@ -101,7 +105,7 @@ const NodeCQNode = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                     nodeId={nodeId}
                     handleId={getHandleId(nodeId, 'source', item.key)}
                     position={Position.Right}
-                    translate={[34, 0]}
+                    translate={sourceTranslate}
                   />
                 </Box>
               </Box>
@@ -120,7 +124,7 @@ const NodeCQNode = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         );
       }
     }),
-    [agentsField, edges, node, nodeId, t]
+    [agentsField, getEdges, node, nodeId, t]
   );
 
   const Render = useMemo(() => {

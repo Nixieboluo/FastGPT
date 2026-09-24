@@ -18,7 +18,7 @@ import { z } from 'zod';
 import { toolParamKeyReg } from './utils';
 import { defaultToolParamFormData } from './constants';
 import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
-import { useNode, useWorkflow } from '@/web/core/workflow/editor';
+import { useNode, useWorkflowActions } from '@/web/core/workflow/editor';
 
 const customValueType = 'custom' as const;
 
@@ -47,7 +47,8 @@ const ToolParamsEditModal = ({
   const { t } = useTranslation();
   const { toast } = useToast();
   const node = useNode(nodeId);
-  const { edges } = useWorkflow();
+  // 边集合只在提交参数改名的回调里读，走非订阅 getter：点击时取当前值，组件不订阅结构变更。
+  const { getEdges } = useWorkflowActions();
 
   const { register, setValue, handleSubmit, control, getValues, trigger } =
     useForm<FlowNodeInputItemType>({
@@ -148,7 +149,7 @@ const ToolParamsEditModal = ({
           syncOutput
             ? {
                 disconnectEdges: getOutputDisconnectCommands({
-                  edges,
+                  edges: getEdges(),
                   nodeId,
                   outputKey: originalKey
                 })

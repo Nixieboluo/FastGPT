@@ -16,7 +16,7 @@ import {
 } from '@fastgpt/global/core/workflow/node/constant';
 import MyIcon from '@fastgpt/web/components/common/Icon';
 import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
-import { useNode, useWorkflow } from '@/web/core/workflow/editor';
+import { useNode, useWorkflowActions } from '@/web/core/workflow/editor';
 
 const typeMap = {
   [WorkflowIOValueTypeEnum.arrayString]: WorkflowIOValueTypeEnum.string,
@@ -32,7 +32,8 @@ const NodeLoopStart = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   // 数组元素类型来自父容器的 nestedInputArray：直接订阅父节点文档数据。
   const node = useNode(nodeId);
   const parentNode = useNode(parentNodeId ?? '');
-  const { edges } = useWorkflow();
+  // 边集合只在删除 nestedStartInput 输出时读，走非订阅 getter：effect 不再随边增删重跑。
+  const { getEdges } = useWorkflowActions();
 
   // According to the variable referenced by parentInput, find the output of the corresponding node and take its output valueType
   const loopItemInputType = useMemo(() => {
@@ -80,14 +81,14 @@ const NodeLoopStart = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
       !loopItemInputType
         ? {
             disconnectEdges: getOutputDisconnectCommands({
-              edges,
+              edges: getEdges(),
               nodeId,
               outputKey: NodeOutputKeyEnum.nestedStartInput
             })
           }
         : undefined
     );
-  }, [edges, loopItemInputType, node, nodeId, t]);
+  }, [getEdges, loopItemInputType, node, nodeId, t]);
 
   const Render = useMemo(() => {
     return (

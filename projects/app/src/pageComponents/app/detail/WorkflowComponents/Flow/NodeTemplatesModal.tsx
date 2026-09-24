@@ -1,12 +1,13 @@
 import type { FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
-import { useReactFlow, type Node } from 'reactflow';
+import { type Node } from 'reactflow';
 import NodeTemplateListHeader from './components/NodeTemplates/header';
 import NodeTemplateList from './components/NodeTemplates/list';
 import { useNodeTemplates } from './components/NodeTemplates/useNodeTemplates';
 import { useMemoizedFn } from 'ahooks';
 import React from 'react';
-import { usePlacementContext, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { usePlacementContext, useWorkflowActions } from '@/web/core/workflow/editor';
 import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/canvas';
+import { useClearCanvasSelection } from './hooks/useWorkflow';
 import AppDetailPanelModal from '../../components/AppDetailPanelModal';
 
 type ModuleTemplateListProps = {
@@ -17,8 +18,8 @@ type ModuleTemplateListProps = {
 export const sliderWidth = 460;
 
 const NodeTemplatesModal = ({ isOpen, onClose }: ModuleTemplateListProps) => {
-  const workflow = useWorkflowAdapter();
-  const { setNodes } = useReactFlow();
+  const actions = useWorkflowActions();
+  const clearCanvasSelection = useClearCanvasSelection();
   // 侧边栏是 root context：候选集与 unique 过滤全部由 Runtime 按文档根派生。
   const templateContext = usePlacementContext({ isSidebar: true });
 
@@ -39,9 +40,9 @@ const NodeTemplatesModal = ({ isOpen, onClose }: ModuleTemplateListProps) => {
   } = useNodeTemplates(templateContext);
 
   const onAddNode = useMemoizedFn(async ({ newNodes }: { newNodes: Node<FlowNodeItemType>[] }) => {
-    setNodes((state) => state.map((node) => ({ ...node, selected: false })));
+    clearCanvasSelection();
     // 新增节点的问题由 Runtime 在 addNode 事务后自行刷新，画布不需要额外触发。
-    return workflow.addNodes(newNodes.map(canvasNodeToStoreNode));
+    return actions.addNodes(newNodes.map(canvasNodeToStoreNode));
   });
 
   return (

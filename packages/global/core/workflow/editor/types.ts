@@ -43,6 +43,44 @@ export type WorkflowNodeSnapshot = DeepReadonly<
 /** 单条连接的公开 snapshot；Runtime Edge ID 保持在 runtime 内部。 */
 export type WorkflowEdgeSnapshot = DeepReadonly<StoreEdgeItemType>;
 
+/**
+ * 图查询返回的只读边端点视图：只带连线判定需要的四个字段。
+ * 内部边记录形状（Runtime Edge ID、索引桶）不出现在这里，之后改索引结构不必动 app。
+ */
+export type WorkflowEdgeEndpoint = DeepReadonly<
+  Pick<StoreEdgeItemType, 'source' | 'sourceHandle' | 'target' | 'targetHandle'>
+>;
+
+/**
+ * `isHandleConnected` 的入参：三个字段一组传，避免位置参数
+ * （syntax.md「函数参数不超过 2 个，多参数用对象传递」）。
+ */
+export type WorkflowHandleConnectionQuery = {
+  nodeId: string;
+  handleId: string;
+  /** 查该节点的出边索引还是入边索引。 */
+  direction: 'source' | 'target';
+};
+
+/**
+ * Runtime 图查询面：直接读已提交的图索引，把「扫全量边/节点算一个 boolean」换成按索引查询。
+ *
+ * 对象身份在 runtime 生命周期内不变，因此可以当 value hook selector 的稳定入参与 memo 依赖；
+ * 集合返回值在同一结构版本内对同一入参保持同一个数组身份（`Object.is` 稳定），结构变化后更新，
+ * 所以也能直接当 selector 的返回值。查询只读且便宜（O(度)），适合放在每次通知都会跑的 selector 里。
+ * runtime 释放后索引已清空，查询返回空结果而不抛错，避免卸载竞态把渲染打崩。
+ */
+export type WorkflowGraphQueries = {
+  /** 节点是否被 Agent 挂成工具（存在 selectedTools 入边）。O(入度)。 */
+  isMountedTool: (nodeId: string) => boolean;
+  /** 节点某个 handle 是否已有连线；`direction` 决定查出边还是入边索引。O(度)。 */
+  isHandleConnected: (query: WorkflowHandleConnectionQuery) => boolean;
+  /** 指向该节点的边端点视图，顺序同内部入边索引；无入边时返回共享空数组。O(入度)。 */
+  getIncomingEdges: (nodeId: string) => readonly WorkflowEdgeEndpoint[];
+  /** 容器的直接子节点 id，空串表示文档根级；非容器或无子节点返回共享空数组。O(直接子节点)。 */
+  getChildNodeIds: (parentId: string) => readonly string[];
+};
+
 /** 一条输入或输出字段的引用诊断。 */
 export type WorkflowReferenceStatusCode =
   | 'empty'
@@ -316,6 +354,11 @@ export type WorkflowRuntimePort = {
    * host 不再从画布数组重建 nodes/edges map。
    */
   getPlacementContext: (request: PlacementRequest) => NodeTemplateContext | null;
+  /**
+   * 稳定的图查询对象：按已提交的图索引查连线与容器归属，代替 app 侧扫全量边/节点。
+   * 返回对象身份在 runtime 生命周期内不变。
+   */
+  getGraphQueries: () => WorkflowGraphQueries;
   isDisposed: () => boolean;
   dispose: () => void;
 };

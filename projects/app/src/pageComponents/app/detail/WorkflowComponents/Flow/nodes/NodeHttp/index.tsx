@@ -93,12 +93,12 @@ const RenderHttpMethodAndUrl = React.memo(function RenderHttpMethodAndUrl({
   const { t } = useTranslation();
   const { toast } = useToast();
 
-  // 变量列表要按 id 查任意节点：统一读文档图查询面，不再依赖画布薄壳。
-  const { reader } = useWorkflowDocument();
+  // 变量列表要按 id 查任意节点：语义快照提供 edges，按 id 查节点走 port 的 getNode。
+  const { workflow, getNodeById } = useWorkflowDocument();
   const node = useNode(nodeId);
   const urlField = useField(nodeId, NodeInputKeyEnum.httpReqUrl, 'input');
   const methodField = useField(nodeId, NodeInputKeyEnum.httpMethod, 'input');
-  const { appDetail } = useContextSelector(AppContext, (v) => v);
+  const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
 
   const { feConfigs } = useSystemStore();
   const { isOpen: isOpenCurl, onOpen: onOpenCurl, onClose: onCloseCurl } = useDisclosure();
@@ -157,15 +157,15 @@ const RenderHttpMethodAndUrl = React.memo(function RenderHttpMethodAndUrl({
   };
 
   const variables = useMemoEnhance(() => {
-    if (!reader) return [];
+    if (!workflow) return [];
     return getEditorVariables({
       nodeId,
-      getNodeById: reader.getNodeById,
-      edges: reader.edges,
+      getNodeById,
+      edges: workflow.edges,
       appDetail,
       t
     });
-  }, [nodeId, reader, appDetail, t]);
+  }, [nodeId, workflow, getNodeById, appDetail, t]);
 
   const externalProviderWorkflowVariables = useMemo(() => {
     return (
@@ -238,9 +238,9 @@ export function RenderHttpProps({
   const { t } = useTranslation();
   const [selectedTab, setSelectedTab] = useState(TabEnum.params);
 
-  const { reader } = useWorkflowDocument();
+  const { workflow, getNodeById } = useWorkflowDocument();
   const headerSecretField = useField(nodeId, NodeInputKeyEnum.headerSecret, 'input');
-  const { appDetail } = useContextSelector(AppContext, (v) => v);
+  const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
   const { feConfigs } = useSystemStore();
 
   const requestMethods = inputs.find((item) => item.key === NodeInputKeyEnum.httpMethod)?.value;
@@ -266,15 +266,15 @@ export function RenderHttpProps({
   }, [feConfigs?.externalProviderWorkflowVariables]);
 
   const variables = useMemoEnhance(() => {
-    if (!reader) return [];
+    if (!workflow) return [];
     return getEditorVariables({
       nodeId,
-      getNodeById: reader.getNodeById,
-      edges: reader.edges,
+      getNodeById,
+      edges: workflow.edges,
       appDetail,
       t
     });
-  }, [nodeId, reader, appDetail, t]);
+  }, [nodeId, workflow, getNodeById, appDetail, t]);
 
   const variableText = useMemo(() => {
     return variables

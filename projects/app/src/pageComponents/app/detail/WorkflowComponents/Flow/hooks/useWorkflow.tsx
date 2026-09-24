@@ -24,7 +24,7 @@ import { useKeyboard } from './useKeyboard';
 import { useContextSelector } from 'use-context-selector';
 import { type THelperLine } from '@/web/core/workflow/type';
 import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
-import { useCanvas, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { useCanvas, useWorkflowActions } from '@/web/core/workflow/editor';
 import { NodeInputKeyEnum } from '@fastgpt/global/core/workflow/constants';
 import { useMemoizedFn } from 'ahooks';
 import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
@@ -392,27 +392,84 @@ export const dropEdgeDisconnectsOfRemovedNodes = (
 ): EdgeDisconnectValue[] =>
   edges.filter((edge) => !removedNodeIds.has(edge.source) && !removedNodeIds.has(edge.target));
 
+/**
+ * 收集需要取消选中的节点 id：只留当前真的选中、且不是标红焦点的节点。
+ *
+ * 返回空数组意味着调用方一个变更都不该发：空变更也会换掉画布数组身份，带动全部节点卡片重渲染。
+ * 标红焦点节点由投影层强制 `selected: true`（不经过任何变更事件），跳过它才不会在保存 gate
+ * 定位之后把该节点的选中态清掉。
+ */
+export const collectClearSelectionIds = (nodes: readonly Node[], skipNodeId?: string): string[] =>
+  nodes.filter((node) => node.selected && node.id !== skipNodeId).map((node) => node.id);
+
+/**
+ * 收集与本次选中互斥的节点 id（后操作优先）：选中容器就取消其已选中的子节点，
+ * 选中子节点就取消其已选中的父容器；其余情况返回空数组，调用方一个变更都不发。
+ *
+ * `nodes` 是画布数组（`getNodes()` 读 ref，不订阅），只在点击选中时扫一遍，不在热路径上。
+ */
+export const collectSelectionConflictIds = ({
+  nodes,
+  node
+}: {
+  nodes: readonly Node[];
+  node: Node;
+}): string[] => {
+  if (isNestedParentNodeType(node.data.flowNodeType)) {
+    return collectClearSelectionIds(nodes.filter((item) => item.data.parentNodeId === node.id));
+  }
+  const parentId: string | undefined = node.data.parentNodeId;
+  if (!parentId) return [];
+  return collectClearSelectionIds(nodes.filter((item) => item.id === parentId));
+};
+
+/** 取消选中变更：只给命中的节点发 `select`，未命中节点保持对象身份。 */
+const deselectChanges = (nodeIds: readonly string[]): NodeSelectionChange[] =>
+  nodeIds.map((id) => ({ type: 'select' as const, id, selected: false }));
+
+/**
+ * 清空画布选中态：只对当前真的选中的节点发 `select` 变更，未选中节点保持对象身份。
+ *
+ * 为什么不用 `useReactFlow().setNodes`：受控模式下它把整个数组转成 N 个 `reset` 变更，
+ * `applyNodeChanges` 一见 reset 就丢弃原数组整份重建（N 次对象展开 + 全部节点卡片重渲染）。
+ *
+ * ponytail: applyNodeChanges 对每个节点扫一遍变更（O(N*C)），1000 节点全选后清选中实测约 6ms；
+ * 常规清选中 C 是个位数，0.1ms 以内。再快只能自己按 id 建 Map 重建数组，那会绕开唯一的变更漏斗。
+ */
+export const useClearCanvasSelection = () => {
+  const onNodesChange = useContextSelector(WorkflowCanvasContext, (v) => v.onNodesChange);
+  const getNodes = useContextSelector(WorkflowCanvasContext, (v) => v.getNodes);
+  const issueFocusRef = useContextSelector(WorkflowHostContext, (v) => v.issueFocusRef);
+
+  return useMemoizedFn(() => {
+    const nodeIds = collectClearSelectionIds(getNodes(), issueFocusRef.current);
+    if (nodeIds.length === 0) return;
+    onNodesChange(deselectChanges(nodeIds));
+  });
+};
+
 export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
   const { toast } = useToast();
   const { t } = useTranslation();
 
   // 画布本地交互数组（拖拽帧、选中、测量尺寸）仍读 renderer 数组：handleNodesChange 要在
   // 应用变更后同步读回最终位置提交几何，reactflow store 得等下一次 commit 才刷新。
-  const { onNodesChange, onEdgesChange, setNodes, getNodes } = useContextSelector(
-    WorkflowCanvasContext,
-    (state) => state
-  );
-  const workflow = useWorkflowAdapter();
+  // 这四个都是 useMemoizedFn，身份恒定；整体订阅会让每次投影（含拖拽帧）都刷新本 hook 的消费方。
+  const onNodesChange = useContextSelector(WorkflowCanvasContext, (v) => v.onNodesChange);
+  const onEdgesChange = useContextSelector(WorkflowCanvasContext, (v) => v.onEdgesChange);
+  const getNodes = useContextSelector(WorkflowCanvasContext, (v) => v.getNodes);
+  // 只用写能力与事件期读取：稳定 action 句柄订阅数为零，画布组件不再随结构变化重渲染。
+  const actions = useWorkflowActions();
   const canvas = useCanvas();
 
   /** 标红焦点归 host：取消选中标红节点时清除焦点，画布不再自己维护错误标记。 */
   const focusIssueNode = useContextSelector(WorkflowHostContext, (v) => v.focusIssueNode);
   const issueFocusRef = useContextSelector(WorkflowHostContext, (v) => v.issueFocusRef);
   const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
-  const { setHoverEdgeId, setMenu, setConnectingEdge } = useContextSelector(
-    WorkflowUIContext,
-    (v) => v
-  );
+  // 三个都是 setState dispatcher，身份恒定；整体订阅会让 hover 带动本 hook 的消费方刷新。
+  const setHoverEdgeId = useContextSelector(WorkflowUIContext, (v) => v.setHoverEdgeId);
+  const setMenu = useContextSelector(WorkflowUIContext, (v) => v.setMenu);
+  const setConnectingEdge = useContextSelector(WorkflowUIContext, (v) => v.setConnectingEdge);
   const setHandleParams = useContextSelector(WorkflowModalContext, (v) => v.setHandleParams);
 
   const { getIntersectingNodes, flowToScreenPosition, getZoom, getNode, getEdge } = useReactFlow();
@@ -431,7 +488,7 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
     edgeDisconnectScheduled.current = false;
     const edges = pendingEdgeDisconnects.current;
     pendingEdgeDisconnects.current = [];
-    edges.forEach((edge) => workflow.disconnectEdge({ edge }));
+    edges.forEach((edge) => actions.disconnectEdge({ edge }));
   });
 
   /** 同步应用吸附结果，并命令式绘制当前帧辅助线。 */
@@ -459,7 +516,10 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
     );
 
     if (parentNode) {
-      const result = workflow.attachToContainer(node.id, parentNode.id);
+      // 断连用的边集合在 attach 之前取：与改造前的渲染期快照同一时点，
+      // 且不需要为了这一次事件期读取订阅整份结构。
+      const currentEdges = actions.getEdges();
+      const result = actions.attachToContainer(node.id, parentNode.id);
       if (!result.ok) {
         // 容器校验只在 runtime 跑一遍；拒绝原因随 dispatch 结果回来，app 只翻译。
         // 非容器拒绝（节点已在容器里、目标不是容器、自嵌套）没有用户文案，保持静默。
@@ -472,10 +532,10 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
         return;
       }
       // 旧行为是落入容器后删除该节点全部连线，按值断连避免投影 id 重排失效。
-      workflow.edges
+      currentEdges
         .filter((edge) => edge.source === node.id || edge.target === node.id)
         .forEach((edge) =>
-          workflow.disconnectEdge({
+          actions.disconnectEdge({
             edge: {
               source: edge.source,
               target: edge.target,
@@ -560,18 +620,13 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
     const node = getNode(change.id);
     if (!node) return;
 
-    if (isNestedParentNodeType(node.data.flowNodeType)) {
-      setNodes((curr) =>
-        curr.map((n) =>
-          n.data.parentNodeId === node.id && n.selected ? { ...n, selected: false } : n
-        )
-      );
-    } else if (node.data.parentNodeId) {
-      const parent = getNode(node.data.parentNodeId);
-      if (parent?.selected) {
-        setNodes((curr) => curr.map((n) => (n.id === parent.id ? { ...n, selected: false } : n)));
-      }
-    }
+    /** 只对确实选中的节点发 select 变更；全量 map 会换掉整份画布数组身份，带动所有节点卡片重渲染。 */
+    const deselect = (nodeIds: string[]) => {
+      if (nodeIds.length === 0) return;
+      onNodesChange(deselectChanges(nodeIds));
+    };
+
+    deselect(collectSelectionConflictIds({ nodes: getNodes(), node }));
   });
   const handlePositionNode = useMemoizedFn(
     (change: NodePositionChange, node: Node<FlowNodeItemType>) => {
@@ -746,7 +801,7 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
       );
     }
 
-    if (removableNodeIds.length > 0) workflow.removeNodes(removableNodeIds);
+    if (removableNodeIds.length > 0) actions.removeNodes(removableNodeIds);
 
     const geometryNodeIds = new Set(
       [...changes, ...childChanges]
@@ -863,14 +918,14 @@ export const useWorkflow = ({ helperLinesRef }: UseWorkflowParams) => {
   const onConnect = useCallback(
     ({ connect }: { connect: Connection }) => {
       if (!connect.source || !connect.target) return;
-      workflow.connectEdge({
+      actions.connectEdge({
         source: connect.source,
         target: connect.target,
         sourceHandle: connect.sourceHandle || '',
         targetHandle: connect.targetHandle || ''
       });
     },
-    [workflow]
+    [actions]
   );
   const customOnConnect = useCallback(
     (connect: Connection) => {

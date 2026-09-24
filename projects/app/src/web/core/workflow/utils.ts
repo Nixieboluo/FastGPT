@@ -37,7 +37,6 @@ import {
 import { type IfElseListItemType } from '@fastgpt/global/core/workflow/template/system/ifElse/type';
 import { initNewIfElseList } from '@fastgpt/global/core/workflow/template/system/ifElse/utils';
 import { type AppChatConfigType } from '@fastgpt/global/core/app/type';
-import type { WorkflowSnapshot } from '@fastgpt/global/core/workflow/editor/types';
 import { workflowSystemVariables } from '../app/utils';
 import {
   canInputBeAgentGenerated,
@@ -555,53 +554,6 @@ export type WorkflowGraphEdge = {
   targetHandle?: string | null;
 };
 
-export type WorkflowGraphReader = {
-  getNodeById: (nodeId: string | null | undefined) => FlowNodeItemType | undefined;
-  /** 文档节点列表（只读快照身份）：节点数量、唯一性过滤、名称搜索、开始节点等派生的唯一来源。 */
-  nodes: readonly FlowNodeItemType[];
-  edges: readonly WorkflowGraphEdge[];
-  childrenNodeIdListMap: Record<string, string[]>;
-  chatConfig: AppChatConfigType;
-};
-
-const graphReaderCache = new WeakMap<WorkflowSnapshot, WorkflowGraphReader>();
-
-/**
- * 从 Runtime 文档快照派生只读图查询面，供变量列表、可用引用等纯函数按需计算。
- *
- * 文档节点在入站边界（ADR 0001）已物化，name/inputs/outputs/catchError 等语义字段与画布节点一致；
- * 模板专用展示字段（id、showSourceHandle、isTool）不进文档，需要时按模板目录或连线另行派生。
- * 结果按 snapshot 身份缓存：getWorkflow() 有版本缓存，同一语义版本内多个字段共用一份索引，
- * 避免每个字段各建一次 O(n) map。
- */
-export const getWorkflowGraphReader = (workflow: WorkflowSnapshot): WorkflowGraphReader => {
-  const cached = graphReaderCache.get(workflow);
-  if (cached) return cached;
-
-  const nodeMap = new Map<string, FlowNodeItemType>();
-  const childrenNodeIdListMap: Record<string, string[]> = {};
-  // 文档节点在入站边界已物化，形状与画布 data 一致，只读消费者可直接当 FlowNodeItemType 用。
-  const nodes = workflow.nodes as unknown as readonly FlowNodeItemType[];
-  workflow.nodes.forEach((node) => {
-    nodeMap.set(node.nodeId, node as unknown as FlowNodeItemType);
-    if (!node.parentNodeId) return;
-    const siblings = childrenNodeIdListMap[node.parentNodeId];
-    if (siblings) siblings.push(node.nodeId);
-    else childrenNodeIdListMap[node.parentNodeId] = [node.nodeId];
-  });
-
-  const reader: WorkflowGraphReader = {
-    getNodeById: (nodeId) => (nodeId ? nodeMap.get(nodeId) : undefined),
-    nodes,
-    edges: workflow.edges,
-    childrenNodeIdListMap,
-    // 只读快照与既有纯函数入参只差 readonly 修饰，reader 自身不写回文档。
-    chatConfig: workflow.chatConfig as AppChatConfigType
-  };
-  graphReaderCache.set(workflow, reader);
-  return reader;
-};
-
 /**
  * 收集某个输出字段 source handle 上的连线断开命令。
  *
@@ -635,13 +587,14 @@ export const getNodeAllSourceIds = ({
   getNodeById,
   edges,
   includeChildren,
-  childrenNodeIdListMap
+  getChildNodeIds
 }: {
   nodeId: string;
   getNodeById: (nodeId: string | null | undefined) => FlowNodeItemType | undefined;
   edges: readonly WorkflowGraphEdge[];
   includeChildren?: boolean;
-  childrenNodeIdListMap?: Record<string, string[]>;
+  /** 容器的直接子节点：由 Runtime 图查询提供（byParent 索引），app 侧不再自建整表。 */
+  getChildNodeIds?: (parentId: string) => readonly string[];
 }): string[] => {
   const node = getNodeById(nodeId);
   if (!node) return [];
@@ -688,8 +641,8 @@ export const getNodeAllSourceIds = ({
     });
   });
 
-  if (includeChildren && childrenNodeIdListMap) {
-    (childrenNodeIdListMap[nodeId] ?? []).forEach((childId) => {
+  if (includeChildren && getChildNodeIds) {
+    getChildNodeIds(nodeId).forEach((childId) => {
       if (getNodeById(childId)) sourceIds.add(childId);
     });
   }
@@ -705,7 +658,7 @@ export const getNodeAllSource = ({
   chatConfig,
   t,
   includeChildren,
-  childrenNodeIdListMap
+  getChildNodeIds
 }: {
   nodeId: string;
   getNodeById: (nodeId: string | null | undefined) => FlowNodeItemType | undefined;
@@ -713,7 +666,7 @@ export const getNodeAllSource = ({
   chatConfig: AppChatConfigType;
   t: TFunction;
   includeChildren?: boolean;
-  childrenNodeIdListMap?: Record<string, string[]>;
+  getChildNodeIds?: (parentId: string) => readonly string[];
 }): FlowNodeItemType[] => {
   if (!getNodeById(nodeId)) return [];
 
@@ -722,7 +675,7 @@ export const getNodeAllSource = ({
     getNodeById,
     edges,
     includeChildren,
-    childrenNodeIdListMap
+    getChildNodeIds
   })
     .map((sourceNodeId) => getNodeById(sourceNodeId))
     .filter((sourceNode): sourceNode is FlowNodeItemType => !!sourceNode);

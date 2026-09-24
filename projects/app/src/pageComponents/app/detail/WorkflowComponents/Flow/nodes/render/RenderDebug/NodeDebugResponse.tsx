@@ -68,10 +68,10 @@ const RenderUserFormInteractive = function RenderFormInput({
 const NodeDebugResponse = ({ nodeId, debugResult }: NodeDebugResponseProps) => {
   const { t } = useTranslation();
 
-  const { onStopNodeDebug, onNextNodeDebug, workflowDebugData } = useContextSelector(
-    WorkflowDebugContext,
-    (v) => v
-  );
+  // 按字段订阅：debug context 里还有 debugChatId、onOpenNodeDebug 等本组件不读的字段。
+  const onStopNodeDebug = useContextSelector(WorkflowDebugContext, (v) => v.onStopNodeDebug);
+  const onNextNodeDebug = useContextSelector(WorkflowDebugContext, (v) => v.onNextNodeDebug);
+  const workflowDebugData = useContextSelector(WorkflowDebugContext, (v) => v.workflowDebugData);
   const patchViewData = useContextSelector(WorkflowHostContext, (v) => v.patchViewData);
 
   const statusData = {

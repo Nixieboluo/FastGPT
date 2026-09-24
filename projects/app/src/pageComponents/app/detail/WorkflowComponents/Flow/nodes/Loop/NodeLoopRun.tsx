@@ -29,25 +29,31 @@ import {
 } from '@/web/core/workflow/utils';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
 import { i18nT } from '@fastgpt/global/common/i18n/utils';
-import { useNode, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { useNode, useWorkflowActions, useWorkflowValue } from '@/web/core/workflow/editor';
 import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/canvas';
-import { useWorkflowDocument } from '../render/useWorkflowDocument';
+import { useDocumentGetNodeById } from '../render/useWorkflowDocument';
 import isEqual from 'lodash-es/isEqual';
 
 const NodeLoopRun = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useTranslation();
   const { nodeId, inputs, outputs, isFolded, catchError } = data;
-  // 容器要按类型找子节点（起始/中断）：结构快照没有 flowNodeType，统一读文档图查询面。
-  const { reader } = useWorkflowDocument();
+  /**
+   * 容器要按类型找子节点（起始/中断）：结构快照没有 flowNodeType，按 id 查节点走 port 的
+   * getNode（非订阅），子节点列表走 Runtime 图查询的 byParent 索引。
+   * getChildNodeIds 在同一结构版本内返回同一个数组对象，所以与容器无关的语义变更不会让
+   * 下面的 memo 与 mode 同步 effect 重跑。
+   */
+  const getNodeById = useDocumentGetNodeById();
+  const childNodeIds = useWorkflowValue((_structure, graph) => graph.getChildNodeIds(nodeId));
   const node = useNode(nodeId);
-  const workflow = useWorkflowAdapter();
-  const childNodeIds = useMemo(() => reader?.childrenNodeIdListMap[nodeId] ?? [], [reader, nodeId]);
+  // 建中断节点是写命令，边集合只在两个回调/effect 里按点击时的当前值读：
+  // 都走稳定 action 句柄，容器不订阅结构通道（06a-5 A 类 + B 类）。
+  const { addNode, getEdges } = useWorkflowActions();
+  // flowNodeType 在节点生命周期内不变，因此只在子节点集合变化时重算。
   const startChildId = useMemo(
     () =>
-      childNodeIds.find(
-        (id) => reader?.getNodeById(id)?.flowNodeType === FlowNodeTypeEnum.loopRunStart
-      ),
-    [childNodeIds, reader]
+      childNodeIds.find((id) => getNodeById(id)?.flowNodeType === FlowNodeTypeEnum.loopRunStart),
+    [childNodeIds, getNodeById]
   );
   // 起始节点的输出集合与位置都由容器代管：位置读 node view，不再取画布原始节点。
   const startChildNode = useNode(startChildId ?? '');
@@ -149,7 +155,7 @@ const NodeLoopRun = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
           disconnectEdges: removedKeys
             .flatMap((outputKey) =>
               getOutputDisconnectCommands({
-                edges: workflow.edges,
+                edges: getEdges(),
                 nodeId: startChildId,
                 outputKey
               })
@@ -162,7 +168,7 @@ const NodeLoopRun = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
     // Transition-only, so a user-deleted break node isn't re-created.
     if (mode === LoopRunModeEnum.conditional && prevMode !== LoopRunModeEnum.conditional) {
       const hasBreak = childNodeIds.some(
-        (id) => reader?.getNodeById(id)?.flowNodeType === FlowNodeTypeEnum.loopRunBreak
+        (id) => getNodeById(id)?.flowNodeType === FlowNodeTypeEnum.loopRunBreak
       );
       if (!hasBreak) {
         const startPosition = startChildNode?.view.position;
@@ -175,10 +181,10 @@ const NodeLoopRun = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
           parentNodeId: nodeId,
           t
         });
-        workflow.addNode(canvasNodeToStoreNode(breakNode));
+        addNode(canvasNodeToStoreNode(breakNode));
       }
     }
-  }, [childNodeIds, mode, nodeId, reader, startChildId, startChildNode, t, workflow]);
+  }, [addNode, childNodeIds, getEdges, getNodeById, mode, nodeId, startChildId, startChildNode, t]);
 
   useEffect(() => {
     // 声明的动态出参要与 outputs 对齐：一次算出目标数组单事务提交，被删出参的连线一起断开。
@@ -221,11 +227,11 @@ const NodeLoopRun = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
     node?.updateNode(() => ({ outputs: [...updatedOutputs, ...addedOutputs] }), {
       disconnectEdges: removedKeys
         .flatMap((outputKey) =>
-          getOutputDisconnectCommands({ edges: workflow.edges, nodeId, outputKey })
+          getOutputDisconnectCommands({ edges: getEdges(), nodeId, outputKey })
         )
         .sort((a, b) => b.index - a.index)
     });
-  }, [node, nodeId, workflow.edges]);
+  }, [getEdges, node, nodeId]);
 
   return (
     <NodeCard selected={selected} maxW="full" menuForbid={{ copy: true }} {...data}>

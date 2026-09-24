@@ -15,7 +15,7 @@ import { WorkflowDebugContext } from '../../context/workflowDebugContext';
 import { WorkflowUIContext } from '../context/workflowUIContext';
 import { WorkflowSelectionContext } from '../context/workflowSelectionContext';
 import { getCustomStepPath } from '../utils/edge';
-import { useNode, useWorkflow as useWorkflowAdapter } from '@/web/core/workflow/editor';
+import { useNode, useWorkflowActions, useWorkflowValue } from '@/web/core/workflow/editor';
 
 export const CustomConnectionLine = ({
   fromX,
@@ -43,14 +43,6 @@ export const CustomConnectionLine = ({
 };
 
 const ButtonEdge = (props: EdgeProps) => {
-  const selectedNodesMap = useContextSelector(WorkflowSelectionContext, (v) => v.selectedNodesMap);
-  const workflowDebugData = useContextSelector(WorkflowDebugContext, (v) => v.workflowDebugData);
-  const hoverEdgeId = useContextSelector(WorkflowUIContext, (v) => v.hoverEdgeId);
-  const workflow = useWorkflowAdapter();
-  // 同源边的横向错开与断连都按端点值工作，画布边数组只从 reactflow store 取，
-  // 投影边 id 不进 adapter；workflow.edges 只作为「结构变了要重算」的依赖。
-  const { getNodes, getEdges, getEdge } = useReactFlow();
-
   const {
     id,
     sourceX,
@@ -67,6 +59,35 @@ const ButtonEdge = (props: EdgeProps) => {
     style
   } = props;
 
+  // 四个订阅全部收窄成本边关心的原始值，选中/hover/debug 的无关变更不再重渲染这条边。
+  const endpointSelected = useContextSelector(
+    WorkflowSelectionContext,
+    (v) => !!(v.selectedNodesMap[source] || v.selectedNodesMap[target])
+  );
+  // debug 态下本边（按 handle 精确匹配）的状态；不在 debug 或没匹配到 runtime 边时为 undefined。
+  const debugStatus = useContextSelector(
+    WorkflowDebugContext,
+    (v) =>
+      v.workflowDebugData?.runtimeEdges.find(
+        (edge) => edge.sourceHandle === sourceHandleId && edge.targetHandle === targetHandleId
+      )?.status
+  );
+  // debug 态下两端点之间是否存在 runtime 边：只用来决定线宽，不需要整条边数据。
+  const hasDebugEndpoints = useContextSelector(
+    WorkflowDebugContext,
+    (v) =>
+      !!v.workflowDebugData?.runtimeEdges.some(
+        (edge) => edge.source === source && edge.target === target
+      )
+  );
+  const isHover = useContextSelector(WorkflowUIContext, (v) => v.hoverEdgeId === id);
+  // 结构订阅只剩一个用途：结构变了要重算同源边偏移。写命令走稳定 action 句柄，订阅数为零。
+  const structureEdges = useWorkflowValue((structure) => structure.edges);
+  const { disconnectEdge } = useWorkflowActions();
+  // 同源边的横向错开与断连都按端点值工作，画布边数组只从 reactflow store 取，
+  // 投影边 id 不进 adapter；structureEdges 只作为「结构变了要重算」的依赖。
+  const { getNode, getEdges, getEdge } = useReactFlow();
+
   // 端点所在容器折叠时隐藏整条边；容器 id 优先取 source，与旧实现一致。
   const sourceParentId = useNode(source)?.data.parentNodeId;
   const targetParentId = useNode(target)?.data.parentNodeId;
@@ -77,17 +98,16 @@ const ButtonEdge = (props: EdgeProps) => {
 
   // Offset edges from same source horizontally to avoid visual overlap
   const edgeStepOffset = useMemo(() => {
+    // 排序要用画布边 id 与拖拽中的实时位置，两者只存在于 reactflow store（Runtime 边不带画布 id），
+    // 所以这里保留 getEdges()；O(E) 只在结构变化后跑一次（06 总纲决策 11）。
     const sameSourceEdges = getEdges().filter((e) => e.source === source);
     if (sameSourceEdges.length <= 1) return 0;
 
-    const nodesMap = new Map(getNodes().map((n) => [n.id, n]));
-
     // Sort edges by target node Y position
-    const sortedEdges = [...sameSourceEdges].sort((a, b) => {
-      const nodeA = nodesMap.get(a.target);
-      const nodeB = nodesMap.get(b.target);
-      return (nodeA?.position?.y ?? 0) - (nodeB?.position?.y ?? 0);
-    });
+    // 按需查节点而不是先建一份 O(N) 的 map：比较器里的 getNode 是 store 的 O(1) 查找。
+    const sortedEdges = [...sameSourceEdges].sort(
+      (a, b) => (getNode(a.target)?.position?.y ?? 0) - (getNode(b.target)?.position?.y ?? 0)
+    );
 
     const index = sortedEdges.findIndex((e) => e.id === id);
     const total = sortedEdges.length;
@@ -100,15 +120,15 @@ const ButtonEdge = (props: EdgeProps) => {
 
     const maxOffset = Math.abs(targetX - sourceX) * 0.25;
     return Math.max(-maxOffset, Math.min(maxOffset, offset));
-    // workflow.edges 是刻意的依赖：结构变化后 store 里的画布边才是新的。
+    // structureEdges 是刻意的依赖：结构变化后 store 里的画布边才是新的。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workflow.edges, source, id, getNodes, getEdges, sourceX, targetX]);
+  }, [structureEdges, source, id, getNode, getEdges, sourceX, targetX]);
 
   const onDelConnect = useCallback(
     (id: string) => {
       const edge = getEdge(id);
       if (!edge) return;
-      workflow.disconnectEdge({
+      disconnectEdge({
         edge: {
           source: edge.source,
           target: edge.target,
@@ -117,18 +137,16 @@ const ButtonEdge = (props: EdgeProps) => {
         }
       });
     },
-    [getEdge, workflow]
+    [getEdge, disconnectEdge]
   );
 
   // Selected edge or source/target node selected
   const [highlightEdge, setHighlightEdge] = useState(false);
   useThrottleEffect(
     () => {
-      const isSourceSelected = selectedNodesMap[props.source];
-      const isTargetSelected = selectedNodesMap[props.target];
-      setHighlightEdge(isSourceSelected || isTargetSelected || !!selected);
+      setHighlightEdge(endpointSelected || !!selected);
     },
-    [selectedNodesMap, props.source, props.target, selected],
+    [endpointSelected, selected],
     {
       wait: 100
     }
@@ -145,7 +163,6 @@ const ButtonEdge = (props: EdgeProps) => {
   });
 
   const isToolEdge = sourceHandleId === NodeOutputKeyEnum.selectedTools;
-  const isHover = hoverEdgeId === id;
 
   const { newTargetX, newTargetY } = useMemo(() => {
     if (targetPosition === 'left') {
@@ -161,10 +178,8 @@ const ButtonEdge = (props: EdgeProps) => {
   }, [targetPosition, targetX, targetY]);
 
   const edgeColor = useMemo(() => {
-    const targetEdge = workflowDebugData?.runtimeEdges.find(
-      (edge) => edge.sourceHandle === sourceHandleId && edge.targetHandle === targetHandleId
-    );
-    if (!targetEdge) {
+    // status 恒为 waiting/active/skipped 三者之一，所以「没有 status」等价于「没匹配到 runtime 边」。
+    if (!debugStatus) {
       if (highlightEdge) return '#487FFF';
       return '#94B5FF';
     }
@@ -175,8 +190,8 @@ const ButtonEdge = (props: EdgeProps) => {
       waiting: '#5E8FFF',
       skipped: '#8A95A7'
     };
-    return colorMap[targetEdge.status];
-  }, [highlightEdge, sourceHandleId, targetHandleId, workflowDebugData?.runtimeEdges]);
+    return colorMap[debugStatus];
+  }, [debugStatus, highlightEdge]);
 
   const memoEdgeLabel = useMemo(() => {
     const arrowTransform = (() => {
@@ -252,12 +267,8 @@ const ButtonEdge = (props: EdgeProps) => {
   ]);
 
   const memoBezierEdge = useMemo(() => {
-    const targetEdge = workflowDebugData?.runtimeEdges.find(
-      (edge) => edge.source === source && edge.target === target
-    );
-
     const edgeStyle: React.CSSProperties = (() => {
-      if (!targetEdge) {
+      if (!hasDebugEndpoints) {
         return {
           ...style,
           ...(highlightEdge
@@ -297,7 +308,7 @@ const ButtonEdge = (props: EdgeProps) => {
       />
     );
   }, [
-    workflowDebugData?.runtimeEdges,
+    hasDebugEndpoints,
     id,
     sourceX,
     sourceY,
@@ -307,8 +318,6 @@ const ButtonEdge = (props: EdgeProps) => {
     targetPosition,
     edgeColor,
     edgeStepOffset,
-    source,
-    target,
     style,
     highlightEdge,
     isFolded

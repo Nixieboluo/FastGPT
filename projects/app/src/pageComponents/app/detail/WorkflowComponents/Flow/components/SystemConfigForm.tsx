@@ -1,5 +1,5 @@
 import React, { type Dispatch, useCallback, useMemo } from 'react';
-import { useViewport } from 'reactflow';
+import { useStore } from 'reactflow';
 import { Box } from '@chakra-ui/react';
 
 import QGConfig from '@/components/core/app/QGConfig';
@@ -29,6 +29,7 @@ import {
 } from '@/web/core/workflow/workflowStartAutoFill';
 import WelcomeQuestionsConfig from '@/components/core/app/WelcomeQuestionsConfig';
 import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
+import type { FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 import { useWorkflowDocument } from '../nodes/render/useWorkflowDocument';
 
 type ComponentProps = {
@@ -191,7 +192,8 @@ function WelcomeText({
 }
 
 function WelcomeQuestions({ chatConfig: { welcomeConfig }, setAppDetail, mode }: ComponentProps) {
-  const { zoom } = useViewport();
+  // zoom 在渲染期参与 DndDrag 占位高度，所以不能用 getZoom()；只订阅缩放分量。
+  const zoom = useStore((state) => state.transform[2]);
 
   const updateWelcomeQuestions = useCallback(
     (value: string[]) => {
@@ -233,7 +235,7 @@ function ChatStartVariable({ chatConfig: { variables = [] }, setAppDetail }: Com
     },
     [setAppDetail]
   );
-  const { zoom } = useViewport();
+  const zoom = useStore((state) => state.transform[2]);
 
   return <VariableEdit variables={variables} onChange={updateVariables} zoom={zoom} />;
 }
@@ -349,8 +351,9 @@ function QuestionInputGuide({ chatConfig: { chatInputGuide }, setAppDetail }: Co
 function FileSelectConfig({ chatConfig: { fileSelectConfig }, setAppDetail }: ComponentProps) {
   // 文件上传开关同时更新开始节点输出和下游自动填充引用，合并为一个 Runtime 事务。
   const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
-  const { reader } = useWorkflowDocument();
-  const nodeList = reader?.nodes;
+  const { workflow } = useWorkflowDocument();
+  // 只读快照与自动填充纯函数的入参只差 readonly 修饰，桥接沿用原 reader 的写法。
+  const nodeList = workflow?.nodes as unknown as readonly FlowNodeItemType[] | undefined;
   // 工具（Plugin host）没有流程开始节点，此时整段配置不渲染。
   const workflowStartNode = useMemo(
     () => nodeList?.find((node) => node.flowNodeType === FlowNodeTypeEnum.workflowStart),
@@ -377,7 +380,7 @@ function FileSelectConfig({ chatConfig: { fileSelectConfig }, setAppDetail }: Co
           data,
           position: { x: 0, y: 0 }
         }));
-        const edges = (reader?.edges ?? []).map((edge) => ({
+        const edges = (workflow?.edges ?? []).map((edge) => ({
           id: `${edge.source}-${edge.target}-${edge.sourceHandle ?? ''}-${edge.targetHandle ?? ''}`,
           ...edge
         }));

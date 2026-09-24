@@ -2,12 +2,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import type { RenderInputProps } from '../type';
 import { Flex, Box, type ButtonProps, Grid } from '@chakra-ui/react';
 import MyIcon from '@fastgpt/web/components/common/Icon';
-import {
-  filterSelectableWorkflowNodeOutputs,
-  getNodeAllSource,
-  getWorkflowGraphReader,
-  type WorkflowGraphReader
-} from '@/web/core/workflow/utils';
+import { filterSelectableWorkflowNodeOutputs, getNodeAllSource } from '@/web/core/workflow/utils';
 import { useSafeTranslation } from '@fastgpt/web/hooks/useSafeTranslation';
 import { WorkflowIOValueTypeEnum } from '@fastgpt/global/core/workflow/constants';
 import type {
@@ -15,13 +10,23 @@ import type {
   ReferenceItemValueType,
   ReferenceValueType
 } from '@fastgpt/global/core/workflow/type/io';
-import type { WorkflowFieldSnapshot } from '@fastgpt/global/core/workflow/editor/types';
+import type {
+  WorkflowFieldSnapshot,
+  WorkflowSnapshot
+} from '@fastgpt/global/core/workflow/editor/types';
+import type { FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
+import type { AppChatConfigType } from '@fastgpt/global/core/app/type';
 import { getWorkflowReferenceItems } from '@fastgpt/global/core/workflow/editor/utils';
 import type { TFunction } from 'next-i18next';
 import dynamic from 'next/dynamic';
 import { isNestedParentNodeType } from '@fastgpt/global/core/workflow/node/constant';
 import { useField, useNode } from '@/web/core/workflow/editor';
-import { useWorkflowDocument, useWorkflowSnapshotGetter } from '../../useWorkflowDocument';
+import {
+  useDocumentGetNodeById,
+  useGraphQueries,
+  useWorkflowDocument,
+  useWorkflowSnapshotGetter
+} from '../../useWorkflowDocument';
 
 const MultipleRowSelect = dynamic(() =>
   import('@fastgpt/web/components/common/MySelect/MultipleRowSelect').then(
@@ -68,13 +73,19 @@ type SelectProps<T extends boolean> = CommonSelectProps & {
  * 不进 Context、不建订阅，由调用方决定何时计算（常驻派生列表或打开选择器时一次性计算）。
  */
 export const getReferenceList = ({
-  reader,
+  workflow,
+  getNodeById,
+  getChildNodeIds,
   nodeId,
   valueType = WorkflowIOValueTypeEnum.any,
   includeChildren,
   t
 }: {
-  reader: WorkflowGraphReader;
+  /** 语义快照：只取 edges 与 chatConfig；按 id 查节点走 port 的 getNode。 */
+  workflow: WorkflowSnapshot;
+  getNodeById: (nodeId: string | null | undefined) => FlowNodeItemType | undefined;
+  /** 容器的直接子节点，来自 Runtime 图查询；不传则不展开子工作流。 */
+  getChildNodeIds?: (parentId: string) => readonly string[];
   nodeId: string;
   valueType?: WorkflowIOValueTypeEnum;
   /** 容器节点（loopRun）需要引用自身子工作流的输出时传 true。 */
@@ -83,12 +94,13 @@ export const getReferenceList = ({
 }): ReferenceListItem[] => {
   const sourceNodes = getNodeAllSource({
     nodeId,
-    getNodeById: reader.getNodeById,
-    edges: reader.edges,
-    chatConfig: reader.chatConfig,
+    getNodeById,
+    edges: workflow.edges,
+    // 只读快照与纯函数入参只差 readonly 修饰，这里只做引用传递，不写回文档。
+    chatConfig: workflow.chatConfig as AppChatConfigType,
     t,
     includeChildren,
-    childrenNodeIdListMap: reader.childrenNodeIdListMap
+    getChildNodeIds
   });
 
   const isArray = valueType?.includes('array');
@@ -119,7 +131,7 @@ export const getReferenceList = ({
 };
 
 /**
- * 常驻的可用引用列表：随文档变化重算（host runtimeTick 驱动），不订阅数据 Context。
+ * 常驻的可用引用列表：随语义快照身份变化重算（几何提交与 overlay 写入不带动），不订阅数据 Context。
  * 已选内容按 list 解析展示，因此列表必须常驻；只在打开时计算的场景用 useLazyReferenceList。
  */
 export const useReference = ({
@@ -132,11 +144,22 @@ export const useReference = ({
   includeChildren?: boolean;
 }) => {
   const { t } = useSafeTranslation();
-  const { reader } = useWorkflowDocument();
+  const { workflow, getNodeById, graph } = useWorkflowDocument();
 
   const referenceList = useMemo(
-    () => (reader ? getReferenceList({ reader, nodeId, valueType, includeChildren, t }) : []),
-    [reader, nodeId, valueType, includeChildren, t]
+    () =>
+      workflow
+        ? getReferenceList({
+            workflow,
+            getNodeById,
+            getChildNodeIds: graph?.getChildNodeIds,
+            nodeId,
+            valueType,
+            includeChildren,
+            t
+          })
+        : [],
+    [workflow, getNodeById, graph, nodeId, valueType, includeChildren, t]
   );
 
   return { referenceList };
@@ -157,6 +180,9 @@ export const useLazyReferenceList = ({
 }) => {
   const { t } = useSafeTranslation();
   const getWorkflow = useWorkflowSnapshotGetter();
+  // 两个都是非订阅读取：懒加载列表只在打开选择器时算一次，组件本身不随文档变化重渲染。
+  const getNodeById = useDocumentGetNodeById();
+  const graph = useGraphQueries();
   const [referenceList, setReferenceList] = useState<ReferenceListItem[]>([]);
 
   const loadReferenceList = useCallback(() => {
@@ -164,14 +190,16 @@ export const useLazyReferenceList = ({
     if (!workflow) return;
     setReferenceList(
       getReferenceList({
-        reader: getWorkflowGraphReader(workflow),
+        workflow,
+        getNodeById,
+        getChildNodeIds: graph?.getChildNodeIds,
         nodeId,
         valueType,
         includeChildren,
         t
       })
     );
-  }, [getWorkflow, includeChildren, nodeId, t, valueType]);
+  }, [getWorkflow, getNodeById, graph, includeChildren, nodeId, t, valueType]);
 
   return { referenceList, loadReferenceList };
 };

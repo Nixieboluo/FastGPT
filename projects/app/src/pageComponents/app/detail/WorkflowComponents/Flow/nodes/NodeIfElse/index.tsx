@@ -18,13 +18,17 @@ import ListItem from './ListItem';
 import { IfElseResultEnum } from '@fastgpt/global/core/workflow/template/system/ifElse/constant';
 import MyIcon from '@fastgpt/web/components/common/Icon';
 import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
-import { useField, useNode, useWorkflow } from '@/web/core/workflow/editor';
+import { useField, useNode, useWorkflowActions } from '@/web/core/workflow/editor';
+
+/** ELSE 分支源柄的平移量：模块级常量，避免每次渲染换数组身份打穿 MySourceHandle 的 React.memo。 */
+const elseHandleTranslate = [18, 0] as [number, number];
 
 const NodeIfElse = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useTranslation();
   const { nodeId, inputs = [] } = data;
   const node = useNode(nodeId);
-  const { edges } = useWorkflow();
+  // 边集合只在删除分支的回调里读，走非订阅 getter：点击时取当前值，组件不订阅结构变更。
+  const { getEdges } = useWorkflowActions();
   const ifElseListField = useField(nodeId, NodeInputKeyEnum.ifElseList, 'input');
   const elseHandleId = getHandleId(nodeId, 'source', IfElseResultEnum.ELSE);
 
@@ -65,14 +69,14 @@ const NodeIfElse = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         }),
         {
           disconnectEdges: getOutputDisconnectCommands({
-            edges,
+            edges: getEdges(),
             nodeId,
             outputKey: getIfElseBranchHandleKey(branch)
           })
         }
       );
     },
-    [edges, ifElseList, node, nodeId]
+    [getEdges, ifElseList, node, nodeId]
   );
 
   return (
@@ -130,7 +134,7 @@ const NodeIfElse = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
               nodeId={nodeId}
               handleId={elseHandleId}
               position={Position.Right}
-              translate={[18, 0]}
+              translate={elseHandleTranslate}
             />
           </Flex>
         </Container>

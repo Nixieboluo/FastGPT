@@ -12,14 +12,15 @@ import ToolParamsEditModal from '../components/ToolParamsEditModal';
 import MyIcon from '@fastgpt/web/components/common/Icon';
 import { defaultToolParamFormData } from '../components/ToolParamsEditModal/constants';
 import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
-import { useNode, useWorkflow } from '@/web/core/workflow/editor';
+import { useNode, useWorkflowActions } from '@/web/core/workflow/editor';
 
 const NodeToolParams = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useTranslation();
   const [editField, setEditField] = useState<FlowNodeInputItemType>();
   const { nodeId, inputs } = data;
   const node = useNode(nodeId);
-  const { edges } = useWorkflow();
+  // 边集合只在删除参数的回调里读，走非订阅 getter：点击时取当前值，组件不订阅结构变更。
+  const { getEdges } = useWorkflowActions();
 
   const Render = useMemo(() => {
     return (
@@ -93,7 +94,7 @@ const NodeToolParams = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                                 }),
                                 {
                                   disconnectEdges: getOutputDisconnectCommands({
-                                    edges,
+                                    edges: getEdges(),
                                     nodeId,
                                     outputKey: item.key
                                   })
@@ -112,7 +113,7 @@ const NodeToolParams = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         </Container>
       </NodeCard>
     );
-  }, [selected, data, t, editField, inputs, node, edges, nodeId]);
+  }, [selected, data, t, editField, inputs, node, getEdges, nodeId]);
 
   return Render;
 };

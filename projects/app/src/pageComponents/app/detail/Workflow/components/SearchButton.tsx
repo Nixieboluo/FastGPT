@@ -10,13 +10,16 @@ import { useSystem } from '@fastgpt/web/hooks/useSystem';
 import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
 import type { ViewOverlayPatch } from '@/web/core/workflow/editor/canvas';
 import { useWorkflowSnapshotGetter } from '../../WorkflowComponents/Flow/nodes/render/useWorkflowDocument';
+import { WorkflowCanvasContext } from '../../WorkflowComponents/Flow/context/workflowCanvasContext';
 
 const SearchButton = (props: ButtonProps) => {
   const { t } = useTranslation();
   // 命中节点读文档一次性算，不建订阅；高亮标记是画布视图数据，写进 host overlay 由投影合并。
   const getWorkflow = useWorkflowSnapshotGetter();
   const patchViewData = useContextSelector(WorkflowHostContext, (state) => state.patchViewData);
-  const { fitView, setNodes } = useReactFlow();
+  const { fitView } = useReactFlow();
+  const getNodes = useContextSelector(WorkflowCanvasContext, (v) => v.getNodes);
+  const onNodesChange = useContextSelector(WorkflowCanvasContext, (v) => v.onNodesChange);
   const { isMac } = useSystem();
 
   const [keyword, setKeyword] = useState<string>();
@@ -72,8 +75,20 @@ const SearchButton = (props: ButtonProps) => {
     setSearchedNodeCount(matchedNodeIds.length);
     const activeNodeId = matchedNodeIds[searchIndex] ?? matchedNodeIds[0];
     fitView({ nodes: [{ id: activeNodeId }], padding: 0.6 });
-    setNodes((nodes) => nodes.map((node) => ({ ...node, selected: node.id === activeNodeId })));
-  }, [fitView, getWorkflow, keyword, patchViewData, searchIndex, setNodes]);
+    /**
+     * 只对选中态真的要变的节点发 select 变更。受控模式下 `useReactFlow().setNodes` 会把整份数组
+     * 转成 N 个 reset 变更，而 `applyNodeChanges` 一见 reset 就整份重建（06 总纲决策 13）；
+     * 搜索是 500ms 节流的按键路径，全量 map 会让每次按键都重渲染全部节点卡片。
+     */
+    const changes = getNodes()
+      .filter((node) => !!node.selected !== (node.id === activeNodeId))
+      .map((node) => ({
+        type: 'select' as const,
+        id: node.id,
+        selected: node.id === activeNodeId
+      }));
+    if (changes.length > 0) onNodesChange(changes);
+  }, [fitView, getNodes, getWorkflow, keyword, onNodesChange, patchViewData, searchIndex]);
 
   useThrottleEffect(
     () => {

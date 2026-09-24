@@ -587,6 +587,8 @@ export const createWorkflowEditor = (
      * 不与其他 getter 一样抛错，避免卸载竞态把页面打崩。
      */
     getPlacementContext: (request) => (disposed ? null : document.getPlacementContext(request)),
+    /** 图查询对象身份恒定；释放后 Document 索引已清空，查询自然返回空结果，无需 disposed 分支。 */
+    getGraphQueries: document.getGraphQueries,
     undo: () => replayHistory('undo'),
     redo: () => replayHistory('redo'),
     isDisposed: () => disposed,

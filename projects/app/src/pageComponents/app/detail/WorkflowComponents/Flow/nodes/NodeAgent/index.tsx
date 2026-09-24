@@ -99,15 +99,16 @@ const NodeAgent = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useTranslation();
   const { toast } = useToast();
 
-  // 变量列表要按 id 查任意节点：统一读文档图查询面；写入统一走 adapter 的 scoped hooks。
-  const { reader } = useWorkflowDocument();
+  // 变量列表要按 id 查任意节点：语义快照提供 edges，按 id 查节点走 port 的 getNode；
+  // 写入统一走 adapter 的 scoped hooks。
+  const { workflow, getNodeById } = useWorkflowDocument();
   const node = useNode(nodeId);
   const promptField = useField(nodeId, NodeInputKeyEnum.aiSystemPrompt, 'input');
   const skillsField = useField(nodeId, NodeInputKeyEnum.skills, 'input');
   const sandboxField = useField(nodeId, NodeInputKeyEnum.useAgentSandbox, 'input');
   const authTmbIdField = useField(nodeId, NodeInputKeyEnum.authTmbId, 'input');
   const datasetSelectField = useField(nodeId, NodeInputKeyEnum.datasetSelectList, 'input');
-  const { appDetail } = useContextSelector(AppContext, (v) => v);
+  const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
   const { feConfigs } = useSystemStore();
   const llmMaxQuoteContext = useWorkflowQuoteLimit();
   const externalProviderWorkflowVariables = feConfigs?.externalProviderWorkflowVariables;
@@ -129,15 +130,15 @@ const NodeAgent = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
 
   // Editor variables for PromptEditor
   const editorVariables = useMemoEnhance(() => {
-    if (!reader) return [];
+    if (!workflow) return [];
     return getEditorVariables({
       nodeId,
-      getNodeById: reader.getNodeById,
-      edges: reader.edges,
+      getNodeById,
+      edges: workflow.edges,
       appDetail,
       t
     });
-  }, [nodeId, reader, appDetail, t]);
+  }, [nodeId, workflow, getNodeById, appDetail, t]);
   const externalVariables = useMemo(
     () =>
       externalProviderWorkflowVariables?.map((item) => ({
