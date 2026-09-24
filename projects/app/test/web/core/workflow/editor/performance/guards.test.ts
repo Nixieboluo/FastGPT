@@ -149,4 +149,13 @@ describe('workflow editor subscription guards', () => {
     expect(scan(panelCallSites, /usePanelContentMounted\(isOpen\)/).length).toBe(3);
     expect(scan(panelCallSites, /\{\s*isOpen\s*&&|\bisOpen\s*\?\s*\(/)).toEqual([]);
   });
+
+  it('renderer 层 Provider 零 adapter hook', () => {
+    // Flow/context/ 下的 Provider 在 runtime hydrate 之前就要渲染（initRuntime 在页面的 useMount 里），
+    // 而 WorkflowEditorProvider 在 hydrate 之前刻意不给 adapter，所有 adapter hook 都直接抛错。
+    // 这一层只能走 host 通道（`@/web/core/workflow/editor/host`，runtime 为 null 时返回 undefined）。
+    expect(scan([join(flowRoot, 'context')], /from\s+'@\/web\/core\/workflow\/editor'/)).toEqual(
+      []
+    );
+  });
 });
