@@ -8,7 +8,7 @@ import React from 'react';
 import { usePlacementContext, useWorkflowActions } from '@/web/core/workflow/editor';
 import { canvasNodeToStoreNode } from '@/web/core/workflow/editor/canvas';
 import { useClearCanvasSelection } from './hooks/useWorkflow';
-import AppDetailPanelModal from '../../components/AppDetailPanelModal';
+import AppDetailPanelModal, { usePanelContentMounted } from '../../components/AppDetailPanelModal';
 
 type ModuleTemplateListProps = {
   isOpen: boolean;
@@ -20,6 +20,8 @@ export const sliderWidth = 460;
 const NodeTemplatesModal = ({ isOpen, onClose }: ModuleTemplateListProps) => {
   const actions = useWorkflowActions();
   const clearCanvasSelection = useClearCanvasSelection();
+  // 收起动画跑完再卸载头部与列表，否则内容会在动画第一帧就消失。
+  const isContentMounted = usePanelContentMounted(isOpen);
   // 侧边栏是 root context：候选集与 unique 过滤全部由 Runtime 按文档根派生。
   const templateContext = usePlacementContext({ isSidebar: true });
 
@@ -69,9 +71,9 @@ const NodeTemplatesModal = ({ isOpen, onClose }: ModuleTemplateListProps) => {
         userSelect: 'none',
         fontSize: 'sm'
       }}
-      // 收起时不挂 DOM：模板列表与头部标签栏都是重内容，挂着会跟着每次文档提交重渲染。
+      // 收起后不挂 DOM：模板列表与头部标签栏都是重内容，挂着会跟着每次文档提交重渲染。
       header={
-        isOpen ? (
+        isContentMounted ? (
           <NodeTemplateListHeader
             onClose={onClose}
             templateType={templateType}
@@ -88,7 +90,7 @@ const NodeTemplatesModal = ({ isOpen, onClose }: ModuleTemplateListProps) => {
         ) : undefined
       }
     >
-      {isOpen && (
+      {isContentMounted && (
         <NodeTemplateList
           onAddNode={onAddNode}
           templates={templates}

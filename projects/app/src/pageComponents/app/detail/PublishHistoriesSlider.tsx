@@ -25,6 +25,7 @@ import type {
 import type { SimpleAppSnapshotType } from './Edit/FormComponent/useSnapshots';
 import AppDetailPanelModal, {
   APP_DETAIL_PANEL_WIDTH_PX,
+  usePanelContentMounted,
   type AppDetailPanelModalProps
 } from './components/AppDetailPanelModal';
 
@@ -47,6 +48,8 @@ const PublishHistoriesSlider = <T extends SimpleAppSnapshotType | WorkflowVersio
 }) => {
   const { t } = useSafeTranslation();
   const [currentTab, setCurrentTab] = useState<'myEdit' | 'teamCloud'>('myEdit');
+  // 收起动画跑完再卸载版本列表，否则内容会在动画第一帧就消失。
+  const isContentMounted = usePanelContentMounted(isOpen);
 
   return (
     <AppDetailPanelModal
@@ -79,7 +82,7 @@ const PublishHistoriesSlider = <T extends SimpleAppSnapshotType | WorkflowVersio
       }
     >
       <Box display={'flex'} flex={'1 0 0'} minH={0} flexDirection={'column'}>
-        {isOpen &&
+        {isContentMounted &&
           (currentTab === 'myEdit' ? (
             <MyEdit past={past} onSwitchTmpVersion={onSwitchTmpVersion} />
           ) : (

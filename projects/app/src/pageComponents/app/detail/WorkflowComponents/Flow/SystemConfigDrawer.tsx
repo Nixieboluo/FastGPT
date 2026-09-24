@@ -9,7 +9,8 @@ import { SystemConfigForm } from './components/SystemConfigForm';
 import { PluginConfigForm } from './nodes/NodePluginIO/PluginConfigForm';
 import { AppTypeEnum } from '@fastgpt/global/core/app/constants';
 import AppDetailPanelModal, {
-  APP_DETAIL_PANEL_WIDTH_PX
+  APP_DETAIL_PANEL_WIDTH_PX,
+  usePanelContentMounted
 } from '../../components/AppDetailPanelModal';
 import { useAppEditorUIState } from '@/components/core/app/useAppEditorUIState';
 import MyTooltip from '@fastgpt/web/components/common/MyTooltip';
@@ -18,6 +19,8 @@ import { useSystemConfigAutoOpen } from './hooks/useSystemConfigAutoOpen';
 const SystemConfigDrawer = () => {
   const { t } = useTranslation();
   const { isOpen, onOpen, onToggle, onClose } = useDisclosure();
+  // 收起动画跑完再卸载表单，否则内容会在动画第一帧就消失。
+  const isContentMounted = usePanelContentMounted(isOpen);
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
   const isWorkflowTool = appDetail.type === AppTypeEnum.workflowTool;
   const setAppDetail = useContextSelector(AppContext, (v) => v.setAppDetail);
@@ -105,8 +108,8 @@ const SystemConfigDrawer = () => {
               }
             }}
           >
-            {/* 收起时不挂 DOM：整份配置表单（含全局变量表与文件上传配置）挂着会跟着每次文档提交重渲染。 */}
-            {isOpen &&
+            {/* 收起后不挂 DOM：整份配置表单（含全局变量表与文件上传配置）挂着会跟着每次文档提交重渲染。 */}
+            {isContentMounted &&
               (isWorkflowTool ? (
                 <PluginConfigForm chatConfig={chatConfig} setAppDetail={setAppDetail} />
               ) : (

@@ -136,4 +136,17 @@ describe('workflow editor subscription guards', () => {
     // 事件回调里要缩放读 useReactFlow().getZoom()（函数，不订阅）。
     expect(scan(editorRoots, /useStore\([^)]*\.transform\[2\]/)).toEqual([]);
   });
+
+  it('侧边栏重内容按过渡时长延迟卸载，不按 isOpen 直接卸载', () => {
+    // AppDetailPanelModal 用 CSS transition 收宽高。收起的瞬间就卸载，内容会在动画第一帧消失，
+    // 只剩空壳在缩；一直挂着又会让重内容跟着每次文档提交白重渲染。
+    // 三个重内容调用点必须走 usePanelContentMounted；ChatTest 要保住对话状态，常驻不门控。
+    const panelCallSites = [
+      join(detailRoot, 'PublishHistoriesSlider.tsx'),
+      join(flowRoot, 'NodeTemplatesModal.tsx'),
+      join(flowRoot, 'SystemConfigDrawer.tsx')
+    ];
+    expect(scan(panelCallSites, /usePanelContentMounted\(isOpen\)/).length).toBe(3);
+    expect(scan(panelCallSites, /\{\s*isOpen\s*&&|\bisOpen\s*\?\s*\(/)).toEqual([]);
+  });
 });
