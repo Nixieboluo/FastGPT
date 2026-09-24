@@ -33,7 +33,7 @@ import { AppContext } from '../../../../context';
 import { getEditorVariables } from '../../../utils';
 import { extractCodeFromMarkdown } from './parser';
 import { getOutputDisconnectCommands } from '@/web/core/workflow/utils';
-import { useWorkflowDocument } from '../render/useWorkflowDocument';
+import { useNodeWorkflowDocument } from '../render/useWorkflowDocument';
 import { useNode, useWorkflowActions } from '@/web/core/workflow/editor';
 
 export type OnOptimizeCodeProps = {
@@ -57,8 +57,8 @@ const NodeCopilot = ({
 }) => {
   const { t } = useTranslation();
   const { toast } = useToast();
-  // 变量列表与引用解析都要按 id 查任意节点：统一读文档图查询面，不再依赖画布薄壳。
-  const { workflow, getNodeById } = useWorkflowDocument();
+  // 变量列表只读本节点与其上游来源闭包：窄订阅让无关字段的提交不重算也不重渲染。
+  const { workflow, getNodeById, graph } = useNodeWorkflowDocument({ nodeId });
   const node = useNode(nodeId);
   // 边集合只在应用生成代码的回调里读，走非订阅 getter：点击时取当前值，组件不订阅结构变更。
   const { getEdges } = useWorkflowActions();
@@ -80,9 +80,10 @@ const NodeCopilot = ({
       getNodeById,
       edges: workflow.edges,
       appDetail,
-      t
+      t,
+      getIncomingEdges: graph?.getIncomingEdges
     }).filter((item) => item.parent.id !== nodeId);
-  }, [nodeId, getNodeById, workflow, appDetail, t]);
+  }, [nodeId, getNodeById, graph, workflow, appDetail, t]);
 
   const { codeType, code, dynamicInputs, dynamicOutputs } = useMemo(() => {
     const codeTypeInput = realTimeInputs?.find((input) => input.key === NodeInputKeyEnum.codeType);

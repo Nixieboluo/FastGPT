@@ -4,7 +4,7 @@ import { useLocalStorageState } from 'ahooks';
 import React, { type PropsWithChildren, useCallback, useEffect, useRef, useState } from 'react';
 import { createContext, useContextSelector } from 'use-context-selector';
 import { AppContext } from '@/pageComponents/app/detail/context';
-import { useWorkflowSnapshot } from '@/web/core/workflow/editor/host';
+import { useWorkflowValue } from '@/web/core/workflow/editor';
 import { useWorkflowDemoTrack } from '@/web/common/middle/tracks/workflowDemoTrack';
 import type { OnConnectStartParams } from 'reactflow';
 import type { NodeTemplateContext } from '@fastgpt/global/core/workflow/type/node';
@@ -178,9 +178,9 @@ export const WorkflowUIProvider: React.FC<PropsWithChildren> = ({ children }) =>
 
   // ---- 演示模式埋点 ----
   const appId = useContextSelector(AppContext, (v) => v.appId);
-  // 埋点用的节点数走语义通道：快照身份只在语义版本变化时更换，
-  // 几何提交与 overlay 写入都不换，所以不需要 host 计数器当重算触发。
-  const nodeAmount = useWorkflowSnapshot()?.nodes.length ?? 0;
+  // 埋点用的节点数走结构通道并只返回原始值：节点数只随增删变化，
+  // 订阅语义快照会让 Provider 在每一笔字段提交后都白跑一次函数。
+  const nodeAmount = useWorkflowValue((structure) => structure.nodes.length);
   useWorkflowDemoTrack(appId, nodeAmount, presentationMode);
 
   // 右键菜单

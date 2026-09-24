@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { type NodeProps, Position, useStore } from 'reactflow';
+import { type NodeProps, Position } from 'reactflow';
 import { Box } from '@chakra-ui/react';
 import NodeCard from './render/NodeCard';
 import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
@@ -29,9 +29,6 @@ const NodeUserSelect = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { getEdges } = useWorkflowActions();
   // CustomComponent 是被 RenderInput 直接调用的普通函数，字段句柄必须在组件顶层取。
   const optionsField = useField(nodeId, NodeInputKeyEnum.userSelectOptions, 'input');
-  // zoom 在渲染期参与 DndDrag 占位高度，所以不能用 getZoom()；只订阅缩放分量，平移不再触发重渲染。
-  const zoom = useStore((state) => state.transform[2]);
-
   const CustomComponent = useMemo(
     () => ({
       [NodeInputKeyEnum.userSelectOptions]: (v: FlowNodeInputItemType) => {
@@ -42,7 +39,6 @@ const NodeUserSelect = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
           <Box>
             <DraggableInputList<UserSelectOptionItemType>
               items={options}
-              zoom={zoom}
               addText={t('common:core.module.Add_option')}
               onDragEnd={(list) => {
                 optionsField?.setValue(list);
@@ -97,7 +93,7 @@ const NodeUserSelect = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         );
       }
     }),
-    [getEdges, node, nodeId, optionsField, t, zoom]
+    [getEdges, node, nodeId, optionsField, t]
   );
 
   return (

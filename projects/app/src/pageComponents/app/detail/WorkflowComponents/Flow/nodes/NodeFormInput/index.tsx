@@ -2,7 +2,7 @@ import { FixedTableContainer } from '@fastgpt/web/components/common/FixedTable';
 import { type FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
 /* eslint-disable react-hooks/refs -- react-beautiful-dnd requires render-time drag props. */
 import React, { useMemo, useState } from 'react';
-import { type NodeProps, useStore } from 'reactflow';
+import { type NodeProps } from 'reactflow';
 import NodeCard from '../render/NodeCard';
 import Container from '../../components/Container';
 import RenderInput from '../render/RenderInput';
@@ -40,8 +40,6 @@ const NodeFormInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const node = useNode(nodeId);
   // 边集合只在改名/删除表单字段的回调里读，走非订阅 getter：点击时取当前值，组件不订阅结构变更。
   const { getEdges } = useWorkflowActions();
-  // zoom 在渲染期参与 DndDrag 占位高度，所以不能用 getZoom()；只订阅缩放分量，平移不再触发重渲染。
-  const zoom = useStore((state) => state.transform[2]);
 
   const [editField, setEditField] = useState<UserInputFormItemType>();
 
@@ -206,7 +204,6 @@ const NodeFormInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
                       />
                     );
                   }}
-                  zoom={zoom}
                 >
                   {({ provided }) => (
                     <Tbody {...provided.droppableProps} ref={provided.innerRef}>
@@ -237,7 +234,7 @@ const NodeFormInput = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
         );
       }
     }),
-    [t, editField, zoom, node, getEdges, nodeId]
+    [t, editField, node, getEdges, nodeId]
   );
 
   return (

@@ -19,7 +19,7 @@ import { useTranslation } from 'next-i18next';
 import React, { useCallback, useMemo } from 'react';
 import { useContextSelector } from 'use-context-selector';
 import type { RenderInputProps } from '../type';
-import { useWorkflowDocument } from '../../useWorkflowDocument';
+import { useNodeWorkflowDocument } from '../../useWorkflowDocument';
 
 /**
  * 通用输入模板：文本/多行文本/数字/开关/单选多选/JSON/模型选择等渲染类型共用。
@@ -32,8 +32,8 @@ const CommonInputForm = ({ item, nodeId }: RenderInputProps) => {
   const { t } = useTranslation();
   const node = useNode(nodeId);
   const field = useField(nodeId, item.key, 'input');
-  // 变量列表要按 id 查任意节点：语义快照提供 edges，按 id 查节点走 port 的 getNode。
-  const { workflow, getNodeById } = useWorkflowDocument();
+  // 变量列表只读本节点与其上游来源闭包：窄订阅让无关字段的提交不重算也不重渲染。
+  const { workflow, getNodeById, graph } = useNodeWorkflowDocument({ nodeId });
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
   const { feConfigs } = useSystemStore();
 
@@ -53,9 +53,10 @@ const CommonInputForm = ({ item, nodeId }: RenderInputProps) => {
       getNodeById,
       edges: workflow.edges,
       appDetail,
-      t
+      t,
+      getIncomingEdges: graph?.getIncomingEdges
     });
-  }, [nodeId, workflow, getNodeById, appDetail, t]);
+  }, [nodeId, workflow, getNodeById, graph, appDetail, t]);
 
   const externalVariables = useMemo(() => {
     return (

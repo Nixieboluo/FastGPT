@@ -56,12 +56,10 @@ export const addVariable = () => {
 
 const VariableEdit = ({
   variables = [],
-  onChange,
-  zoom = 1
+  onChange
 }: {
   variables?: VariableItemType[];
   onChange: (data: VariableItemType[]) => void;
-  zoom?: number;
 }) => {
   const { t } = useTranslation();
   const [editingVariable, setEditingVariable] = useState<VariableItemType | null>(null);
@@ -126,7 +124,6 @@ const VariableEdit = ({
                   variables={variables}
                 />
               )}
-              zoom={zoom}
             >
               {({ provided }) => (
                 <Tbody {...provided.droppableProps} ref={provided.innerRef}>

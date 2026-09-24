@@ -15,8 +15,8 @@ import { type ReferenceArrayValueType } from '@fastgpt/global/core/workflow/type
 import { type FlowNodeInputItemType } from '@fastgpt/global/core/workflow/type/io';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
 import { getWorkflowGlobalVariables } from '@/web/core/workflow/utils';
-import { useNode } from '@/web/core/workflow/editor';
-import { useWorkflowDocument } from '../nodes/render/useWorkflowDocument';
+import { useNode, useWorkflowValue } from '@/web/core/workflow/editor';
+import { useDocumentGetNodeById } from '../nodes/render/useWorkflowDocument';
 import { AppContext } from '../../../context';
 
 type UseNestedNodeParams = {
@@ -47,9 +47,10 @@ export const useNestedNode = ({
   inputs,
   arrayInputKey = NodeInputKeyEnum.nestedInputArray
 }: UseNestedNodeParams): UseNestedNodeResult => {
-  // 跨节点读取（引用来源的输出类型）与节点 id 列表都走语义快照：只在语义版本变化时重算，
-  // 按 id 查节点走 port 的 getNode（非订阅，读当前值）。
-  const { workflow, getNodeById } = useWorkflowDocument();
+  // 这里只用到「全量节点 id」与「按 id 查一个节点的 outputs」：
+  // id 列表属结构通道（单字段提交不通知），查节点走非订阅 getter，两者都不需要整份语义快照。
+  const structureNodes = useWorkflowValue((structure) => structure.nodes);
+  const getNodeById = useDocumentGetNodeById();
   const node = useNode(nodeId);
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
 
@@ -63,7 +64,7 @@ export const useNestedNode = ({
     if (!nestedInputArray) return WorkflowIOValueTypeEnum.arrayAny;
     const value = nestedInputArray.value as ReferenceArrayValueType;
 
-    const nodeIds = (workflow?.nodes ?? []).map((item) => item.nodeId);
+    const nodeIds = structureNodes.map((item) => item.nodeId);
     if (!value || value.length === 0 || !isValidArrayReferenceValue(value, nodeIds)) {
       return WorkflowIOValueTypeEnum.arrayAny;
     }
@@ -83,7 +84,7 @@ export const useNestedNode = ({
     })(value[0]);
 
     return ArrayTypeMap[valueType as keyof typeof ArrayTypeMap] ?? WorkflowIOValueTypeEnum.arrayAny;
-  }, [appDetail.chatConfig, nestedInputArray, workflow, getNodeById]);
+  }, [appDetail.chatConfig, nestedInputArray, structureNodes, getNodeById]);
 
   useEffect(() => {
     if (!nestedInputArray || !arrayInputKey || nestedInputArray.valueType === newValueType) return;

@@ -136,13 +136,16 @@ export const getEditorVariables = ({
   getNodeById,
   edges,
   appDetail,
-  t
+  t,
+  getIncomingEdges
 }: {
   nodeId: string;
   getNodeById: (nodeId: string | null | undefined) => FlowNodeItemType | undefined;
   edges: readonly WorkflowGraphEdge[];
   appDetail: AppDetailType;
   t: TFunction;
+  /** Runtime 入边索引；传了上游遍历就是 O(入度) 而不是每个节点全量扫一遍边。 */
+  getIncomingEdges?: (nodeId: string) => readonly WorkflowGraphEdge[];
 }) => {
   const currentNode = getNodeById(nodeId);
   if (!currentNode) return [];
@@ -164,7 +167,8 @@ export const getEditorVariables = ({
     getNodeById,
     edges,
     chatConfig: appDetail.chatConfig,
-    t
+    t,
+    getIncomingEdges
   });
 
   const sourceNodeVariables = !sourceNodes

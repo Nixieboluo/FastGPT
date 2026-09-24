@@ -25,7 +25,11 @@ import dynamic from 'next/dynamic';
 import { type FieldErrors, useForm } from 'react-hook-form';
 import { useContextSelector } from 'use-context-selector';
 import { WorkflowHostContext } from '@/web/core/workflow/editor/host';
-import { useWorkflowDocument } from '../nodes/render/useWorkflowDocument';
+import {
+  useDocumentGetNodeById,
+  useGraphQueries,
+  useWorkflowSnapshotGetter
+} from '../nodes/render/useWorkflowDocument';
 import { AppContext } from '../../../context';
 import { WorkflowDebugContext } from '../../context/workflowDebugContext';
 import {
@@ -54,7 +58,11 @@ export const useDebug = () => {
 
   // 可引用来源要按 id 查任意节点并展开容器子节点：语义快照提供 edges，
   // 节点查询走 port 的 getNode，子节点走 Runtime 图查询，app 侧不再自建索引。
-  const { workflow, getNodeById, graph } = useWorkflowDocument();
+  // 三者都是非订阅读取：useDebug 挂在每个节点的 MenuRender 上，订阅语义快照会让
+  // 任意一笔字段提交带动全部节点菜单重渲染，而来源列表只在抽屉打开后才需要。
+  const getWorkflow = useWorkflowSnapshotGetter();
+  const getNodeById = useDocumentGetNodeById();
+  const graph = useGraphQueries();
   const onStartNodeDebug = useContextSelector(WorkflowDebugContext, (v) => v.onStartNodeDebug);
   const setDebugChatId = useContextSelector(WorkflowDebugContext, (v) => v.setDebugChatId);
   const onOpenNodeDebug = useContextSelector(WorkflowDebugContext, (v) => v.onOpenNodeDebug);
@@ -135,6 +143,7 @@ export const useDebug = () => {
     const runtimeNode = runtimeNodes.find((node) => node.nodeId === runtimeNodeId);
 
     if (!runtimeNode) return <></>;
+    const workflow = getWorkflow();
     const referenceSourceNodes = getNodeAllSource({
       nodeId: runtimeNode.nodeId,
       getNodeById,
@@ -321,7 +330,7 @@ export const useDebug = () => {
     filteredVar,
     runtimeNodeId,
     onStartNodeDebug,
-    workflow,
+    getWorkflow,
     getNodeById,
     graph,
     appDetail.chatConfig

@@ -69,29 +69,34 @@ const NodeTemplatesModal = ({ isOpen, onClose }: ModuleTemplateListProps) => {
         userSelect: 'none',
         fontSize: 'sm'
       }}
+      // 收起时不挂 DOM：模板列表与头部标签栏都是重内容，挂着会跟着每次文档提交重渲染。
       header={
-        <NodeTemplateListHeader
-          onClose={onClose}
-          templateType={templateType}
-          onUpdateTemplateType={onUpdateTemplateType}
-          parentId={parentId}
-          parentSource={parentSource}
-          searchKey={searchKey}
-          setSearchKey={setSearchKey}
-          onUpdateParentId={onUpdateParentId}
-          selectedTagIds={selectedTagIds}
-          setSelectedTagIds={setSelectedTagIds}
-          toolTags={toolTags}
-        />
+        isOpen ? (
+          <NodeTemplateListHeader
+            onClose={onClose}
+            templateType={templateType}
+            onUpdateTemplateType={onUpdateTemplateType}
+            parentId={parentId}
+            parentSource={parentSource}
+            searchKey={searchKey}
+            setSearchKey={setSearchKey}
+            onUpdateParentId={onUpdateParentId}
+            selectedTagIds={selectedTagIds}
+            setSelectedTagIds={setSelectedTagIds}
+            toolTags={toolTags}
+          />
+        ) : undefined
       }
     >
-      <NodeTemplateList
-        onAddNode={onAddNode}
-        templates={templates}
-        templateType={templateType}
-        onUpdateParentId={onUpdateParentId}
-        ScrollData={TeamScrollData}
-      />
+      {isOpen && (
+        <NodeTemplateList
+          onAddNode={onAddNode}
+          templates={templates}
+          templateType={templateType}
+          onUpdateParentId={onUpdateParentId}
+          ScrollData={TeamScrollData}
+        />
+      )}
     </AppDetailPanelModal>
   );
 };

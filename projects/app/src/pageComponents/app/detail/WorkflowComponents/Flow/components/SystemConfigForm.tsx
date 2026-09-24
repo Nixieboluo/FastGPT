@@ -1,5 +1,4 @@
 import React, { type Dispatch, useCallback, useMemo } from 'react';
-import { useStore } from 'reactflow';
 import { Box } from '@chakra-ui/react';
 
 import QGConfig from '@/components/core/app/QGConfig';
@@ -192,9 +191,6 @@ function WelcomeText({
 }
 
 function WelcomeQuestions({ chatConfig: { welcomeConfig }, setAppDetail, mode }: ComponentProps) {
-  // zoom 在渲染期参与 DndDrag 占位高度，所以不能用 getZoom()；只订阅缩放分量。
-  const zoom = useStore((state) => state.transform[2]);
-
   const updateWelcomeQuestions = useCallback(
     (value: string[]) => {
       setAppDetail((state) => ({
@@ -215,7 +211,6 @@ function WelcomeQuestions({ chatConfig: { welcomeConfig }, setAppDetail, mode }:
     <Box className="nodrag" w={'100%'} mt={mode === 'drawer' ? 0 : 2}>
       <WelcomeQuestionsConfig
         value={welcomeConfig?.welcomeQuestions}
-        zoom={zoom}
         onChange={updateWelcomeQuestions}
       />
     </Box>
@@ -235,9 +230,8 @@ function ChatStartVariable({ chatConfig: { variables = [] }, setAppDetail }: Com
     },
     [setAppDetail]
   );
-  const zoom = useStore((state) => state.transform[2]);
 
-  return <VariableEdit variables={variables} onChange={updateVariables} zoom={zoom} />;
+  return <VariableEdit variables={variables} onChange={updateVariables} />;
 }
 
 function AutoExecute({ chatConfig: { autoExecute }, setAppDetail }: ComponentProps) {

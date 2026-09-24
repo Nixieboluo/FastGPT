@@ -1,9 +1,14 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useSyncExternalStore } from 'react';
 import { useContextSelector } from 'use-context-selector';
 import type { FlowNodeItemType } from '@fastgpt/global/core/workflow/type/node';
-import type { WorkflowGraphQueries } from '@fastgpt/global/core/workflow/editor/types';
+import type {
+  WorkflowChange,
+  WorkflowGraphQueries,
+  WorkflowRuntimePort
+} from '@fastgpt/global/core/workflow/editor/types';
 import { useWorkflowValue } from '@/web/core/workflow/editor';
 import { useWorkflowSnapshot, WorkflowHostContext } from '@/web/core/workflow/editor/host';
+import { getNodeAllSourceIds } from '@/web/core/workflow/utils';
 
 /**
  * 读取最新文档快照的稳定入口：不订阅工作流数据 Context，也不订阅任何计数器，
@@ -65,6 +70,169 @@ export const useWorkflowDocument = () => {
   const workflow = useWorkflowSnapshot();
   const getNodeById = useDocumentGetNodeById();
   const graph = useGraphQueries();
+
+  return { workflow, getNodeById, graph };
+};
+
+type UpstreamRevisionStore = {
+  subscribe: (listener: () => void) => () => void;
+  getRevision: () => number;
+};
+
+/**
+ * 建一个「本节点来源闭包」的失效计数器。
+ *
+ * 为什么不用 `runtime.getWorkflow()` 的快照身份：它按 semanticVersion 换，单字段提交也 bump，
+ * 于是任意一笔写入都会让所有语义派生列表重算 + 重渲染（N 节点 × M 字段 × O(V+E) 上游遍历）。
+ * 这里改成吃 Runtime 已经算好的精确变更记录（`changedRecords`）：只有变更命中本节点、
+ * 上游来源闭包或祖先容器链，以及 chatConfig / 结构变化时才 bump。
+ *
+ * 命中判定按派生列表真正读到的东西收：
+ * - 本节点与祖先容器链（`ownNodes`）参与列表的是 canEdit 输入与容器 reference 输入，
+ *   所以它们的**任何**变更都算命中；
+ * - 其余上游节点只贡献 name / avatar / catchError / outputs，纯输入值写入（`updateField`
+ *   与只改 inputs 的 `updateNode`）与列表无关，不算命中——这一条才是「打字不刷新下游」的关键；
+ * - `affectedRecords` 整个不参与判定：它是「引用状态需要重算」的下游集合，节点记录本身没变，
+ *   字段引用状态由 `useField` 那条通道自己投递。
+ *
+ * 稳态成本：无关提交通知到达时只做 O(变更条数) 的集合查询；来源闭包只在命中后作废重算，
+ * 结构变化时同样作废（闭包本身可能已经不同）。保守方向只会多算不会漏算。
+ */
+const createUpstreamRevisionStore = ({
+  runtime,
+  nodeId,
+  includeChildren
+}: {
+  runtime: WorkflowRuntimePort | null;
+  nodeId: string;
+  includeChildren?: boolean;
+}): UpstreamRevisionStore => {
+  const listeners = new Set<() => void>();
+  let revision = 0;
+  /** 来源闭包（含本节点）；undefined 表示待重算。 */
+  let sourceNodes: Set<string> | undefined;
+  /** 本节点 + 祖先容器链：这些节点的输入值也参与派生，任何变更都算命中。 */
+  let ownNodes: Set<string> | undefined;
+  let unsubscribeRuntime: (() => void) | undefined;
+
+  const readNode = (id: string | null | undefined) =>
+    id && runtime && !runtime.isDisposed()
+      ? (runtime.getNode(id) as unknown as FlowNodeItemType | undefined)
+      : undefined;
+
+  const computeNodeSets = () => {
+    const sources = new Set<string>([nodeId]);
+    const own = new Set<string>([nodeId]);
+    if (!runtime || runtime.isDisposed()) return { sources, own };
+    const graph = runtime.getGraphQueries();
+    getNodeAllSourceIds({
+      nodeId,
+      getNodeById: readNode,
+      edges: runtime.getWorkflow().edges,
+      includeChildren,
+      getChildNodeIds: graph.getChildNodeIds,
+      getIncomingEdges: graph.getIncomingEdges
+    }).forEach((id) => sources.add(id));
+    // 祖先容器链单独收：容器的 reference 输入会往闭包里追加来源，但容器本身不一定在闭包内。
+    const visited = new Set<string>([nodeId]);
+    let parentId = readNode(nodeId)?.parentNodeId;
+    while (parentId && !visited.has(parentId)) {
+      visited.add(parentId);
+      sources.add(parentId);
+      own.add(parentId);
+      parentId = readNode(parentId)?.parentNodeId;
+    }
+    return { sources, own };
+  };
+
+  const ensureNodeSets = () => {
+    if (!sourceNodes || !ownNodes) {
+      const sets = computeNodeSets();
+      sourceNodes = sets.sources;
+      ownNodes = sets.own;
+    }
+    return { sources: sourceNodes, own: ownNodes };
+  };
+
+  const onChange = (change: WorkflowChange) => {
+    // 几何提交不进语义快照，派生列表与它无关。
+    if (change.kind === 'geometry') return;
+    const structureChanged = change.kind === 'replace' || change.affectedRecords.structure;
+    let hit = structureChanged || change.changedRecords.chatConfig;
+    if (!hit) {
+      const { sources, own } = ensureNodeSets();
+      const fieldIds = change.changedRecords.fieldIds;
+      const changedIds = new Set([
+        ...change.changedRecords.nodeIds,
+        ...fieldIds.map((field) => field.nodeId)
+      ]);
+      hit = [...changedIds].some((id) => {
+        if (own.has(id)) return true;
+        if (!sources.has(id)) return false;
+        // 上游节点：没有任何字段级记录说明是记录级变更（改名、换头像、改 catchError 等），
+        // 有记录但全是 input 才是「与派生列表无关的纯输入值写入」。
+        const fields = fieldIds.filter((field) => field.nodeId === id);
+        return fields.length === 0 || fields.some((field) => field.kind !== 'input');
+      });
+    }
+    if (!hit) return;
+    sourceNodes = undefined;
+    ownNodes = undefined;
+    revision += 1;
+    listeners.forEach((listener) => listener());
+  };
+
+  return {
+    subscribe: (listener) => {
+      listeners.add(listener);
+      // runtime 订阅按 listener 数量引用计数：StrictMode 的双挂载不能让它 bump 两次。
+      if (!unsubscribeRuntime && runtime && !runtime.isDisposed()) {
+        unsubscribeRuntime = runtime.subscribe(onChange);
+      }
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0) {
+          unsubscribeRuntime?.();
+          unsubscribeRuntime = undefined;
+        }
+      };
+    },
+    getRevision: () => revision
+  };
+};
+
+/**
+ * 节点作用域的语义派生读取入口：形状与 `useWorkflowDocument` 相同，可以直接替换，
+ * 但 `workflow` 只在「本节点或其上游来源闭包」真的变化时才换身份。
+ *
+ * 适用面：`getEditorVariables` / `getReferenceList` 这类只读本节点 + 上游 name/outputs +
+ * chatConfig 的常驻派生列表。读全量节点（例如按 flowNodeType 找流程开始节点）的场景不要用它，
+ * 那些消费点的相关集合是整份文档，窄化没有意义。
+ *
+ * `includeChildren` 与 `getNodeAllSource` 同名参数一致：容器节点要把子工作流的输出算进来源时传 true。
+ */
+export const useNodeWorkflowDocument = ({
+  nodeId,
+  includeChildren
+}: {
+  nodeId: string;
+  includeChildren?: boolean;
+}) => {
+  const runtime = useContextSelector(WorkflowHostContext, (v) => v.runtime);
+  const store = useMemo(
+    () => createUpstreamRevisionStore({ runtime, nodeId, includeChildren }),
+    [runtime, nodeId, includeChildren]
+  );
+  const revision = useSyncExternalStore(store.subscribe, store.getRevision, store.getRevision);
+
+  const getWorkflow = useWorkflowSnapshotGetter();
+  const getNodeById = useDocumentGetNodeById();
+  const graph = useGraphQueries();
+  // revision 是唯一的失效信号：无关字段提交不 bump，memo 直接命中缓存，
+  // 派生列表既不重算也不带动子树重渲染。
+  // revision 是刻意的 memo key：闭包里不读它，只借身份变化触发作废。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const workflow = useMemo(() => getWorkflow(), [revision, getWorkflow]);
 
   return { workflow, getNodeById, graph };
 };

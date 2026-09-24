@@ -587,7 +587,8 @@ export const getNodeAllSourceIds = ({
   getNodeById,
   edges,
   includeChildren,
-  getChildNodeIds
+  getChildNodeIds,
+  getIncomingEdges
 }: {
   nodeId: string;
   getNodeById: (nodeId: string | null | undefined) => FlowNodeItemType | undefined;
@@ -595,6 +596,11 @@ export const getNodeAllSourceIds = ({
   includeChildren?: boolean;
   /** 容器的直接子节点：由 Runtime 图查询提供（byParent 索引），app 侧不再自建整表。 */
   getChildNodeIds?: (parentId: string) => readonly string[];
+  /**
+   * 指向某节点的入边：由 Runtime 图查询提供（byTarget 索引），O(入度)。
+   * 不传则回落到全量扫 `edges`（O(E)），每个节点扫一遍就是 O(V·E)。
+   */
+  getIncomingEdges?: (nodeId: string) => readonly WorkflowGraphEdge[];
 }): string[] => {
   const node = getNodeById(nodeId);
   if (!node) return [];
@@ -607,7 +613,10 @@ export const getNodeAllSourceIds = ({
       const targetNodeId = queue.shift();
       if (!targetNodeId || searchedTargetNodeIds.has(targetNodeId)) continue;
       searchedTargetNodeIds.add(targetNodeId);
-      edges.forEach((edge) => {
+      const incoming = getIncomingEdges
+        ? getIncomingEdges(targetNodeId)
+        : edges.filter((edge) => edge.target === targetNodeId);
+      incoming.forEach((edge) => {
         if (edge.target !== targetNodeId) return;
         if (!isWorkflowEdgeSourceHandleValid(getNodeById(edge.source), edge.sourceHandle)) return;
         sourceIds.add(edge.source);
@@ -658,7 +667,8 @@ export const getNodeAllSource = ({
   chatConfig,
   t,
   includeChildren,
-  getChildNodeIds
+  getChildNodeIds,
+  getIncomingEdges
 }: {
   nodeId: string;
   getNodeById: (nodeId: string | null | undefined) => FlowNodeItemType | undefined;
@@ -667,6 +677,7 @@ export const getNodeAllSource = ({
   t: TFunction;
   includeChildren?: boolean;
   getChildNodeIds?: (parentId: string) => readonly string[];
+  getIncomingEdges?: (nodeId: string) => readonly WorkflowGraphEdge[];
 }): FlowNodeItemType[] => {
   if (!getNodeById(nodeId)) return [];
 
@@ -675,7 +686,8 @@ export const getNodeAllSource = ({
     getNodeById,
     edges,
     includeChildren,
-    getChildNodeIds
+    getChildNodeIds,
+    getIncomingEdges
   })
     .map((sourceNodeId) => getNodeById(sourceNodeId))
     .filter((sourceNode): sourceNode is FlowNodeItemType => !!sourceNode);

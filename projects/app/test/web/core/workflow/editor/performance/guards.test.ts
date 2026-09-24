@@ -118,4 +118,22 @@ describe('workflow editor subscription guards', () => {
     // 投影与画布数组写入方一次都不许调它，否则每次重投影都是全量模板物化。
     expect(scan(projectionRoots, /\bstoreNode2FlowNode\b/)).toEqual([]);
   });
+
+  it('画布节点组件零 useWorkflowDocument()', () => {
+    // 整份语义快照的身份按 semanticVersion 换，单字段提交也 bump：节点组件订阅它等于
+    // 「任意一笔写入都重算并重渲染全部节点的派生列表」。节点作用域一律用
+    // useNodeWorkflowDocument({ nodeId })，它只在变更命中本节点或来源闭包时换身份。
+    // 定义文件自己的文档注释里写了调用形式，按文件名排掉。
+    expect(
+      scan([join(flowRoot, 'nodes')], /\buseWorkflowDocument\s*\(\s*\)/).filter(
+        (hit) => !hit.includes('render/useWorkflowDocument.ts')
+      )
+    ).toEqual([]);
+  });
+
+  it('编辑器目录零渲染期 zoom 订阅', () => {
+    // 滚轮缩放的每一帧都换 transform，渲染期订阅它会让侧边栏与节点表单逐帧重渲染。
+    // 事件回调里要缩放读 useReactFlow().getZoom()（函数，不订阅）。
+    expect(scan(editorRoots, /useStore\([^)]*\.transform\[2\]/)).toEqual([]);
+  });
 });

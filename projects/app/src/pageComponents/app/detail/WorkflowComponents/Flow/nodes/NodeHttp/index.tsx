@@ -53,7 +53,7 @@ import CatchError from '../render/RenderOutput/CatchError';
 import { useMemoEnhance } from '@fastgpt/web/hooks/useMemoEnhance';
 import FormLabel from '@fastgpt/web/components/common/MyBox/FormLabel';
 import { splitNodeOutputs, splitToolInputsByMode } from '@/web/core/workflow/utils';
-import { useIsToolNode, useWorkflowDocument } from '../render/useWorkflowDocument';
+import { useIsToolNode, useNodeWorkflowDocument } from '../render/useWorkflowDocument';
 import { useField, useNode } from '@/web/core/workflow/editor';
 
 const CurlImportModal = dynamic(() => import('./CurlImportModal'));
@@ -93,8 +93,8 @@ const RenderHttpMethodAndUrl = React.memo(function RenderHttpMethodAndUrl({
   const { t } = useTranslation();
   const { toast } = useToast();
 
-  // 变量列表要按 id 查任意节点：语义快照提供 edges，按 id 查节点走 port 的 getNode。
-  const { workflow, getNodeById } = useWorkflowDocument();
+  // 变量列表只读本节点与其上游来源闭包：窄订阅让无关字段的提交不重算也不重渲染。
+  const { workflow, getNodeById, graph } = useNodeWorkflowDocument({ nodeId });
   const node = useNode(nodeId);
   const urlField = useField(nodeId, NodeInputKeyEnum.httpReqUrl, 'input');
   const methodField = useField(nodeId, NodeInputKeyEnum.httpMethod, 'input');
@@ -163,9 +163,10 @@ const RenderHttpMethodAndUrl = React.memo(function RenderHttpMethodAndUrl({
       getNodeById,
       edges: workflow.edges,
       appDetail,
-      t
+      t,
+      getIncomingEdges: graph?.getIncomingEdges
     });
-  }, [nodeId, workflow, getNodeById, appDetail, t]);
+  }, [nodeId, workflow, getNodeById, graph, appDetail, t]);
 
   const externalProviderWorkflowVariables = useMemo(() => {
     return (
@@ -238,7 +239,7 @@ export function RenderHttpProps({
   const { t } = useTranslation();
   const [selectedTab, setSelectedTab] = useState(TabEnum.params);
 
-  const { workflow, getNodeById } = useWorkflowDocument();
+  const { workflow, getNodeById, graph } = useNodeWorkflowDocument({ nodeId });
   const headerSecretField = useField(nodeId, NodeInputKeyEnum.headerSecret, 'input');
   const appDetail = useContextSelector(AppContext, (v) => v.appDetail);
   const { feConfigs } = useSystemStore();
@@ -272,9 +273,10 @@ export function RenderHttpProps({
       getNodeById,
       edges: workflow.edges,
       appDetail,
-      t
+      t,
+      getIncomingEdges: graph?.getIncomingEdges
     });
-  }, [nodeId, workflow, getNodeById, appDetail, t]);
+  }, [nodeId, workflow, getNodeById, graph, appDetail, t]);
 
   const variableText = useMemo(() => {
     return variables

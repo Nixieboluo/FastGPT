@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import { FlowNodeTypeEnum } from '@fastgpt/global/core/workflow/node/constant';
-import { useWorkflowDocument } from '../nodes/render/useWorkflowDocument';
+import { useWorkflowSnapshotGetter } from '../nodes/render/useWorkflowDocument';
 
 /** 需要按 pluginId 去重的节点类型：同一工具/应用可多次添加，重名序号按同 pluginId 计数。 */
 const PLUGIN_SCOPED_NODE_TYPES: FlowNodeTypeEnum[] = [
@@ -11,8 +11,9 @@ const PLUGIN_SCOPED_NODE_TYPES: FlowNodeTypeEnum[] = [
 ];
 
 export const useWorkflowUtils = () => {
-  // 同名计数只读语义快照的节点列表：几何提交与 overlay 写入都不换快照身份。
-  const { workflow } = useWorkflowDocument();
+  // 同名计数只在「新建/复制节点」被点击的那一刻需要，因此用非订阅 getter 读当前文档。
+  // 订阅语义快照会让每个节点菜单（NodeCard 的 MenuRender）与添加节点侧边栏在任意字段提交时全量重渲染。
+  const getWorkflow = useWorkflowSnapshotGetter();
 
   /**
    * 计算新建节点的重名序号名称（`xxx#2`）。
@@ -29,7 +30,7 @@ export const useWorkflowUtils = () => {
       flowNodeType: FlowNodeTypeEnum;
       pluginId?: string;
     }) => {
-      const nodeLength = (workflow?.nodes ?? []).filter((node) => {
+      const nodeLength = (getWorkflow()?.nodes ?? []).filter((node) => {
         if (node.flowNodeType !== flowNodeType) return false;
         return PLUGIN_SCOPED_NODE_TYPES.includes(flowNodeType) ? node.pluginId === pluginId : true;
       }).length;
@@ -37,7 +38,7 @@ export const useWorkflowUtils = () => {
         ? `${templateName.replace(/#\d+$/, '')}#${nodeLength + 1}`
         : templateName;
     },
-    [workflow]
+    [getWorkflow]
   );
 
   return {

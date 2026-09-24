@@ -26,7 +26,7 @@ import RenderToolInput, { hasDynamicToolInput } from '../render/RenderToolInput'
 
 import { AppContext } from '@/pageComponents/app/detail/context';
 import { splitNodeOutputs, splitToolInputsByMode } from '@/web/core/workflow/utils';
-import { useIsToolNode, useWorkflowDocument } from '../render/useWorkflowDocument';
+import { useIsToolNode, useNodeWorkflowDocument } from '../render/useWorkflowDocument';
 import { useField, useNode } from '@/web/core/workflow/editor';
 
 import { useSystemStore } from '@/web/common/system/useSystemStore';
@@ -99,9 +99,9 @@ const NodeAgent = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
   const { t } = useTranslation();
   const { toast } = useToast();
 
-  // 变量列表要按 id 查任意节点：语义快照提供 edges，按 id 查节点走 port 的 getNode；
+  // 变量列表只读本节点与其上游来源闭包：窄订阅让无关字段的提交不重算也不重渲染；
   // 写入统一走 adapter 的 scoped hooks。
-  const { workflow, getNodeById } = useWorkflowDocument();
+  const { workflow, getNodeById, graph } = useNodeWorkflowDocument({ nodeId });
   const node = useNode(nodeId);
   const promptField = useField(nodeId, NodeInputKeyEnum.aiSystemPrompt, 'input');
   const skillsField = useField(nodeId, NodeInputKeyEnum.skills, 'input');
@@ -136,9 +136,10 @@ const NodeAgent = ({ data, selected }: NodeProps<FlowNodeItemType>) => {
       getNodeById,
       edges: workflow.edges,
       appDetail,
-      t
+      t,
+      getIncomingEdges: graph?.getIncomingEdges
     });
-  }, [nodeId, workflow, getNodeById, appDetail, t]);
+  }, [nodeId, workflow, getNodeById, graph, appDetail, t]);
   const externalVariables = useMemo(
     () =>
       externalProviderWorkflowVariables?.map((item) => ({

@@ -2,7 +2,11 @@ import React, { useCallback, useMemo, useState } from 'react';
 import type { RenderInputProps } from '../type';
 import { Flex, Box, type ButtonProps, Grid } from '@chakra-ui/react';
 import MyIcon from '@fastgpt/web/components/common/Icon';
-import { filterSelectableWorkflowNodeOutputs, getNodeAllSource } from '@/web/core/workflow/utils';
+import {
+  filterSelectableWorkflowNodeOutputs,
+  getNodeAllSource,
+  type WorkflowGraphEdge
+} from '@/web/core/workflow/utils';
 import { useSafeTranslation } from '@fastgpt/web/hooks/useSafeTranslation';
 import { WorkflowIOValueTypeEnum } from '@fastgpt/global/core/workflow/constants';
 import type {
@@ -24,7 +28,7 @@ import { useField, useNode } from '@/web/core/workflow/editor';
 import {
   useDocumentGetNodeById,
   useGraphQueries,
-  useWorkflowDocument,
+  useNodeWorkflowDocument,
   useWorkflowSnapshotGetter
 } from '../../useWorkflowDocument';
 
@@ -79,7 +83,8 @@ export const getReferenceList = ({
   nodeId,
   valueType = WorkflowIOValueTypeEnum.any,
   includeChildren,
-  t
+  t,
+  getIncomingEdges
 }: {
   /** 语义快照：只取 edges 与 chatConfig；按 id 查节点走 port 的 getNode。 */
   workflow: WorkflowSnapshot;
@@ -91,6 +96,8 @@ export const getReferenceList = ({
   /** 容器节点（loopRun）需要引用自身子工作流的输出时传 true。 */
   includeChildren?: boolean;
   t: TFunction;
+  /** Runtime 入边索引；传了上游遍历就是 O(入度) 而不是每个节点全量扫一遍边。 */
+  getIncomingEdges?: (nodeId: string) => readonly WorkflowGraphEdge[];
 }): ReferenceListItem[] => {
   const sourceNodes = getNodeAllSource({
     nodeId,
@@ -100,7 +107,8 @@ export const getReferenceList = ({
     chatConfig: workflow.chatConfig as AppChatConfigType,
     t,
     includeChildren,
-    getChildNodeIds
+    getChildNodeIds,
+    getIncomingEdges
   });
 
   const isArray = valueType?.includes('array');
@@ -131,7 +139,7 @@ export const getReferenceList = ({
 };
 
 /**
- * 常驻的可用引用列表：随语义快照身份变化重算（几何提交与 overlay 写入不带动），不订阅数据 Context。
+ * 常驻的可用引用列表：只在本节点或其上游来源闭包变化时重算，无关字段提交不带动。
  * 已选内容按 list 解析展示，因此列表必须常驻；只在打开时计算的场景用 useLazyReferenceList。
  */
 export const useReference = ({
@@ -144,7 +152,7 @@ export const useReference = ({
   includeChildren?: boolean;
 }) => {
   const { t } = useSafeTranslation();
-  const { workflow, getNodeById, graph } = useWorkflowDocument();
+  const { workflow, getNodeById, graph } = useNodeWorkflowDocument({ nodeId, includeChildren });
 
   const referenceList = useMemo(
     () =>
@@ -156,7 +164,8 @@ export const useReference = ({
             nodeId,
             valueType,
             includeChildren,
-            t
+            t,
+            getIncomingEdges: graph?.getIncomingEdges
           })
         : [],
     [workflow, getNodeById, graph, nodeId, valueType, includeChildren, t]
@@ -196,7 +205,8 @@ export const useLazyReferenceList = ({
         nodeId,
         valueType,
         includeChildren,
-        t
+        t,
+        getIncomingEdges: graph?.getIncomingEdges
       })
     );
   }, [getWorkflow, getNodeById, graph, includeChildren, nodeId, t, valueType]);

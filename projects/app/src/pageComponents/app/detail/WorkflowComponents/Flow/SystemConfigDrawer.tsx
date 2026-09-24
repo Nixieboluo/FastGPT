@@ -105,17 +105,19 @@ const SystemConfigDrawer = () => {
               }
             }}
           >
-            {isWorkflowTool ? (
-              <PluginConfigForm chatConfig={chatConfig} setAppDetail={setAppDetail} />
-            ) : (
-              <SystemConfigForm
-                chatConfig={chatConfig}
-                setAppDetail={setAppDetail}
-                mode={'drawer'}
-                isWelcomeTextFolded={isWelcomeTextFolded}
-                onToggleWelcomeTextFold={toggleWelcomeTextFold}
-              />
-            )}
+            {/* 收起时不挂 DOM：整份配置表单（含全局变量表与文件上传配置）挂着会跟着每次文档提交重渲染。 */}
+            {isOpen &&
+              (isWorkflowTool ? (
+                <PluginConfigForm chatConfig={chatConfig} setAppDetail={setAppDetail} />
+              ) : (
+                <SystemConfigForm
+                  chatConfig={chatConfig}
+                  setAppDetail={setAppDetail}
+                  mode={'drawer'}
+                  isWelcomeTextFolded={isWelcomeTextFolded}
+                  onToggleWelcomeTextFold={toggleWelcomeTextFold}
+                />
+              ))}
           </Box>
         </AppDetailPanelModal>
       </Portal>

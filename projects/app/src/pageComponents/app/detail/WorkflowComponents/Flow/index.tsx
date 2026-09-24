@@ -76,8 +76,56 @@ const edgeTypes = {
   [EDGE_TYPE]: ButtonEdge
 };
 
+/** 画布背景：写成模块常量，内联字面量会让 ReactFlow 每次渲染都收到新的 style 对象。 */
+const canvasStyle = { background: '#F7F8FA' };
+
+type CanvasOverlaysProps = {
+  isOpenTemplate: boolean;
+  onOpenTemplate: () => void;
+  onCloseTemplate: () => void;
+};
+
+/**
+ * 画布左上角按钮与三个侧边栏入口。
+ *
+ * 单独 memo 出来：`WorkflowCanvas` 会随每次投影（画布数组换身份）与手势起止重渲染，
+ * 而这一层的输入只有「添加节点侧边栏开合」，不该跟着刷新。
+ */
+const CanvasOverlays = React.memo(
+  ({ isOpenTemplate, onOpenTemplate, onCloseTemplate }: CanvasOverlaysProps) => {
+    const { t } = useTranslation();
+
+    return (
+      <>
+        <Box position={'absolute'} top={20} left={6} zIndex={1}>
+          <MyTooltip shouldWrapChildren={false} label={t('workflow:to_add_node')}>
+            <IconButton
+              icon={<MyIcon name="core/app/workflowToolbarAdd" boxSize={6} color={'white'} />}
+              w={9}
+              minW={9}
+              h={9}
+              p={1.5}
+              borderRadius={'50%'}
+              bg={'black'}
+              _hover={{ bg: 'myGray.700' }}
+              aria-label={t('workflow:to_add_node')}
+              border={'none'}
+              boxShadow={'0 4px 5px rgba(19, 51, 107, 0.20), 0 0 0.5px rgba(19, 51, 107, 0.50)'}
+              onClick={() => (isOpenTemplate ? onCloseTemplate() : onOpenTemplate())}
+            />
+          </MyTooltip>
+        </Box>
+        <SearchButton />
+        <SystemConfigDrawer />
+        <NodeTemplatesModal isOpen={isOpenTemplate} onClose={onCloseTemplate} />
+        <NodeTemplatesPopover />
+      </>
+    );
+  }
+);
+CanvasOverlays.displayName = 'CanvasOverlays';
+
 const WorkflowCanvas = () => {
-  const { t } = useTranslation();
   const nodes = useContextSelector(WorkflowCanvasContext, (v) => v.nodes);
   const edges = useContextSelector(WorkflowCanvasContext, (v) => v.edges);
   const helperLinesRef = useRef<HelperLinesController>(null);
@@ -110,6 +158,9 @@ const WorkflowCanvas = () => {
   } = useDisclosure();
 
   const [movingCanvas, setMovingCanvas] = useState(false);
+  // 手势起止只改一个 className 字符串，提成稳定引用后 ZoomPane 的 props 不再每帧换身份。
+  const onMoveStart = useCallback(() => setMovingCanvas(true), []);
+  const onMoveEnd = useCallback(() => setMovingCanvas(false), []);
 
   const { fitView } = useReactFlow();
   const fitViewDone = useRef(false);
@@ -146,36 +197,11 @@ const WorkflowCanvas = () => {
         }}
       >
         {/* open module template */}
-        <>
-          <Box position={'absolute'} top={20} left={6} zIndex={1}>
-            <MyTooltip shouldWrapChildren={false} label={t('workflow:to_add_node')}>
-              <IconButton
-                icon={<MyIcon name="core/app/workflowToolbarAdd" boxSize={6} color={'white'} />}
-                w={9}
-                minW={9}
-                h={9}
-                p={1.5}
-                borderRadius={'50%'}
-                bg={'black'}
-                _hover={{ bg: 'myGray.700' }}
-                aria-label={t('workflow:to_add_node')}
-                border={'none'}
-                boxShadow={'0 4px 5px rgba(19, 51, 107, 0.20), 0 0 0.5px rgba(19, 51, 107, 0.50)'}
-                onClick={() => {
-                  if (isOpenTemplate) {
-                    onCloseTemplate();
-                  } else {
-                    onOpenTemplate();
-                  }
-                }}
-              />
-            </MyTooltip>
-          </Box>
-          <SearchButton />
-          <SystemConfigDrawer />
-          <NodeTemplatesModal isOpen={isOpenTemplate} onClose={onCloseTemplate} />
-          <NodeTemplatesPopover />
-        </>
+        <CanvasOverlays
+          isOpenTemplate={isOpenTemplate}
+          onOpenTemplate={onOpenTemplate}
+          onCloseTemplate={onCloseTemplate}
+        />
 
         <ReactFlow
           ref={reactFlowWrapperCallback}
@@ -201,7 +227,7 @@ const WorkflowCanvas = () => {
           onPaneContextMenu={onPaneContextMenu}
           onPaneClick={onPaneClick}
           snapToGrid
-          style={{ background: '#F7F8FA' }}
+          style={canvasStyle}
           {...(workflowControlMode === 'select'
             ? {
                 selectionMode: SelectionMode.Full,
@@ -216,12 +242,8 @@ const WorkflowCanvas = () => {
           noWheelClassName={
             !movingCanvas || workflowControlMode === 'drag' ? 'nowheel' : 'nowheel-moving'
           }
-          onMoveStart={() => {
-            setMovingCanvas(true);
-          }}
-          onMoveEnd={() => {
-            setMovingCanvas(false);
-          }}
+          onMoveStart={onMoveStart}
+          onMoveEnd={onMoveEnd}
         >
           {!!menu && <ContextMenu />}
           <FlowController />
