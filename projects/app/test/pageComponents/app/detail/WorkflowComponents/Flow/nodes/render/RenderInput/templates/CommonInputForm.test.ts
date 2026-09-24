@@ -37,7 +37,7 @@ vi.mock('@/web/core/workflow/editor', () => ({
 vi.mock(
   '@/pageComponents/app/detail/WorkflowComponents/Flow/nodes/render/useWorkflowDocument',
   () => ({
-    useWorkflowDocument: () => ({
+    useNodeWorkflowDocument: () => ({
       workflow: undefined,
       getNodeById: () => undefined,
       graph: undefined
