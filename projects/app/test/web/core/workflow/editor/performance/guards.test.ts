@@ -1,8 +1,8 @@
 /**
  * 06a 的守门清单：把「不许把宽订阅写回来」固化成可执行断言。
  *
- * 允许集合断言（`render-baseline.test.ts`）只覆盖被登记的叶子标签，新代码完全可以在别处把宽订阅
- * 写回来而不触发任何一条；`AppContext` 整体订阅更是连叶子都挂不上（14 个标准交互没有一条会改
+ * 合成 React render harness 已删除；此前的叶子允许集合只覆盖被登记的消费点，新代码完全可以在别处把宽订阅
+ * 写回来而不触发静态规则。`AppContext` 整体订阅更是连叶子都挂不上（标准交互没有一条会改
  * `appDetail`，挂一个永远不会变的叶子只是假绿）。所以这两类都只能静态守。
  *
  * 断言依据是 06 总纲决策 5 / 13 / 14 与 06a-4..8 的收口结论；命中即失败，
@@ -91,7 +91,7 @@ describe('workflow editor subscription guards', () => {
   it('整个 Flow 目录零 adapter useWorkflow()', () => {
     // 上一条只守按实例数增长的 Handle 与 ButtonEdge；06a-5 的 B 类（只在事件回调里读 edges/nodes）
     // 散在 Flow 全目录，任何一处被写回无参 useWorkflow() 就是整体结构订阅，
-    // 而 render-baseline 的叶子白名单只覆盖已登记标签，管不到新代码。
+    // 合成叶子白名单只覆盖已登记标签，管不到新代码。
     // 同目录的画布交互 hook 是带参调用（useWorkflow({ helperLinesRef })），不在扫描范围内。
     expect(
       scan([flowRoot], /\buseWorkflow\s*\(\s*\)|\buseWorkflow as useWorkflowAdapter\b/)
